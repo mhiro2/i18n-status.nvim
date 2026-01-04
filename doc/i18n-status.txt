@@ -1,0 +1,321 @@
+*i18n-status.txt*  Inline-first i18n status & review tooling for Neovim
+
+==============================================================================
+CONTENTS                                                    *i18n-status-contents*
+
+  1. i18n-status.nvim                                     |i18n-status|
+  2. Setup                                                 |i18n-status-setup|
+     Configuration options                                 |i18n-status-config|
+  3. Commands                                              |i18n-status-commands|
+  4. Doctor                                                |i18n-status-doctor|
+  5. Completion (blink.cmp)                                |i18n-status-completion|
+  6. Highlights                                            |i18n-status-highlights|
+  7. Checkhealth                                           |i18n-status-checkhealth|
+  8. Notes / limitations                                   |i18n-status-notes|
+
+==============================================================================
+1. i18n-status.nvim                                                     *i18n-status*
+
+i18n-status.nvim shows i18n "health" inline while you edit JavaScript/TypeScript
+code that uses i18next / next-intl. It does NOT translate text.
+When you open a translation JSON file, it can show another language inline
+(`:I18nLang` controls the display language).
+
+Inline markers:
+  [=] all languages have identical values
+       All languages exist and values match.
+
+  [≠] localized values
+       All languages exist but values differ.
+       Note: If any language is missing, [?] is shown instead.
+
+  [?] fallback is used
+       Missing in some languages (but primary language exists).
+
+  [×] missing in primary language
+       Primary language value is missing or invalid.
+
+  [!] placeholder mismatch
+       Placeholders differ between languages (e.g., "{count}" vs "{name}").
+
+Priority: × > ! > ? > ≠ > =
+
+Examples:
+  [=] ja: "ログイン", en: "ログイン" (identical - may need translation)
+  [≠] ja: "ログイン", en: "Login" (both exist, localized values)
+  [?] ja: "ログイン", en: missing (primary exists, other missing)
+  [×] ja: missing, en: "Login" (primary missing)
+  [!] ja: "{count}件", en: "{name} items" (different placeholders)
+
+Supported filetypes:
+  javascript, typescript, javascriptreact, typescriptreact
+  json/jsonc (only for detected translation resource files)
+
+==============================================================================
+2. Setup                                                        *i18n-status-setup*
+
+Minimal by design:
+
+>
+  require("i18n-status").setup({
+    primary_lang = "en",
+    inline = {
+      position = "eol", -- or "after_key"
+    },
+    doctor = {
+      ignore_keys = { "^dev:", "^__" },
+    },
+    auto_hover = {
+      enabled = true, -- auto-show hover on cursor hold (default: true)
+    },
+  })
+<
+
+Everything else is auto-detected:
+  - languages
+  - namespaces
+  - resource roots (locales/, public/locales/ or messages/)
+
+Namespace is inferred from useTranslation(s)/getTranslations or explicit ns:key.
+If none is found, a best-effort fallback is used and :checkhealth will warn.
+
+Resource layouts:
+  i18next:
+    locales/{lang}/{namespace}.json
+    public/locales/{lang}/{namespace}.json
+  next-intl:
+    messages/{lang}.json (root file)
+    messages/{lang}/{namespace}.json (namespace file)
+    
+    Note: When both messages/{lang}.json (root file) and
+    messages/{lang}/{namespace}.json exist, the root file is prioritized.
+    Actions like "Add missing" and "Extract" will write to the root file
+    in this case.
+
+Configuration options                                   *i18n-status-config*
+
+primary_lang (default: "en")
+    Reference language that determines fallback and doctor results.
+
+inline.position (default: "eol")
+    Display inline status at the end of line or right after the key.
+
+inline.max_len (default: 80)
+    Trim inline previews after this many visible characters.
+
+inline.visible_only (default: true)
+    Resolve/refresh only the currently visible lines when possible.
+
+inline.status_only (default: false)
+    Show marker icons without the previewed translation text.
+
+inline.debounce_ms (default: 80)
+    Delay between buffer changes and inline refresh.
+
+inline.hl (default: { text = "Comment", same = "I18nStatusSame",
+    diff = "I18nStatusDiff", fallback = "I18nStatusFallback",
+    missing = "I18nStatusMissing", mismatch = "I18nStatusMismatch" })
+    Highlight groups used for inline text and status markers.
+
+resource_watch.enabled (default: true)
+    Start a filesystem watcher to hot-reload JSON resources.
+
+resource_watch.debounce_ms (default: 200)
+    Debounce applied to resource change notifications.
+
+doctor.ignore_keys (default: {})
+    Patterns that doctor should skip when reporting missing keys.
+
+auto_hover.enabled (default: true)
+    Show the hover window automatically on CursorHold for JS/TS buffers.
+
+review.float.width (default: 0.8)
+    Relative width of the Doctor/review floating window (0-1).
+
+review.float.height (default: 0.8)
+    Relative height of the Doctor/review floating window (0-1).
+
+review.float.border (default: "rounded")
+    Border style passed to `nvim_open_win`.
+
+==============================================================================
+3. Commands                                                   *i18n-status-commands*
+
+The plugin creates the following user commands:
+
+  :I18nHover          Show hover (markdown floating window) for the i18n key
+                      under cursor.
+
+  :I18nDoctor         Run diagnostics across the entire project and open
+                      Review UI (floating window).
+
+  :I18nAddKey         Add a new i18n key to all language files interactively.
+                      Prompts for key name and translations for all configured
+                      languages.
+
+  :I18nRefresh        Force refresh for current buffer.
+
+  :I18nLangNext        Cycle current language (yankround-style).
+  :I18nLangPrev        Cycle previous language (with history).
+  :I18nLang {lang}     Set current language explicitly. Warns when {lang} is
+                       not part of the detected languages for the project.
+
+Example keymaps:
+>
+  vim.keymap.set("n", "<leader>in", "<Cmd>I18nLangNext<CR>",
+    { desc = "Next language" })
+  vim.keymap.set("n", "<leader>ip", "<Cmd>I18nLangPrev<CR>",
+    { desc = "Previous language" })
+  vim.keymap.set("n", "<leader>id", "<Cmd>I18nDoctor<CR>",
+    { desc = "i18n doctor" })
+  vim.keymap.set("n", "<leader>ia", "<Cmd>I18nAddKey<CR>",
+    { desc = "Add new i18n key" })
+<
+
+Inline goto-definition is opt-in. Define your own mapping that calls
+`require("i18n-status").goto_definition()`; when it returns false you can fall
+back to your LSP definition handler. Example:
+>
+  vim.keymap.set("n", "gd", function()
+    if not require("i18n-status").goto_definition() then
+      vim.lsp.buf.definition()
+    end
+  end, { desc = "i18n-status: goto translation" })
+<
+
+==============================================================================
+4. Doctor                                                     *i18n-status-doctor*
+
+Run:
+  :I18nDoctor
+
+Doctor checks:
+  - missing keys in primary language
+  - placeholder mismatches
+  - resource errors (invalid JSON, missing roots)
+  - unused keys (not referenced in project)
+  - drift across languages (missing/extra keys)
+
+Note: :I18nDoctor scans project files and can be slow on large codebases.
+It runs only when you explicitly invoke it.
+
+Issue types:
+  missing         key is missing in the primary language
+  mismatch        placeholder mismatch between languages
+  unused          key exists in resources but is not referenced
+  drift           key differs across languages (missing/extra)
+  resource errors invalid JSON or read errors
+  roots missing   no resource root found (locales/, public/locales/, messages/)
+
+Review UI:
+  Doctor opens a floating window with two panes (left: key list, right: colored preview).
+  The detail pane is preview-only; all actions are dispatched from the list pane.
+
+  Modes:
+    Problems  Issue-only view (fast).
+    Overview  Full key list (includes same/≠ status; heavier).
+    Tab       Toggle Problems/Overview.
+
+  In Overview, "=" means the value matches the primary language, and "≠" means
+  the value is localized (differs from the primary language; informational only).
+
+  Keymaps:
+    q / <Esc> Close review UI
+    Tab       Toggle Problems/Overview
+    e         Edit display locale value (prompt shows key + locale above input)
+    E         Select locale to edit (same multi-line prompt)
+    r         Rename key (updates resources + open buffers)
+    a         Add missing key (only for missing primary keys)
+    gd        Jump to definition file (Overview opens resource file)
+    ?         Toggle keymap help overlay (statusline shows quick hints)
+
+  Tip:
+    The list pane statusline always lists the most common shortcuts so you can
+    keep working without opening the help overlay unless you need full details.
+
+  Highlight groups (linked to Telescope/Diagnostic groups by default):
+    Layout: I18nStatusReviewListNormal, I18nStatusReviewListCursorLine,
+            I18nStatusReviewDetailNormal, I18nStatusReviewBorder
+    Text:   I18nStatusReviewHeader, I18nStatusReviewDivider, I18nStatusReviewMeta,
+            I18nStatusReviewKey, I18nStatusReviewTableHeader
+    Status: I18nStatusReviewStatusOk, I18nStatusReviewStatusMissing,
+            I18nStatusReviewStatusFallback, I18nStatusReviewStatusLocalized,
+            I18nStatusReviewStatusMismatch, I18nStatusReviewPrimary,
+            I18nStatusReviewFocus, I18nStatusReviewStatusDefault
+
+==============================================================================
+5. Completion (blink.cmp)                                   *i18n-status-completion*
+
+Completion is provided via blink.cmp source module:
+
+>
+  require("blink.cmp").setup({
+    sources = {
+      default = { "lsp", "path", "buffer", "i18n_status" },
+      providers = {
+        i18n_status = { name = "i18n-status", module = "i18n-status.blink" },
+      },
+    },
+  })
+<
+
+Notes:
+  - Only completes the first argument of t("...") / something.t("...").
+  - Namespace is inferred from useTranslation/useTranslations/getTranslations scope.
+
+==============================================================================
+6. Highlights                                               *i18n-status-highlights*
+
+Default highlight links (created with default=true):
+  I18nStatusSame      -> DiagnosticHint
+  I18nStatusDiff      -> DiagnosticOk
+  I18nStatusFallback  -> DiagnosticWarn
+  I18nStatusMissing   -> DiagnosticError
+  I18nStatusMismatch  -> DiagnosticError
+
+You can override via setup():
+  inline.hl = {
+    text = "Comment",
+    same = "I18nStatusSame",
+    diff = "I18nStatusDiff",
+    fallback = "I18nStatusFallback",
+    missing = "I18nStatusMissing",
+    mismatch = "I18nStatusMismatch",
+  }
+
+==============================================================================
+7. Checkhealth                                           *i18n-status-checkhealth*
+
+Run:
+  :checkhealth i18n-status
+
+Health checks report:
+  - configuration (primary_lang)
+  - resource roots / languages / parse errors
+  - Tree-sitter parsers (javascript / typescript / tsx)
+  - blink.cmp integration status
+
+Note: checkhealth does NOT run :I18nDoctor.
+
+==============================================================================
+8. Notes / limitations                                          *i18n-status-notes*
+
+Dynamic key support is intentionally limited (no runtime evaluation).
+Supported examples:
+  - string literals
+  - literal concatenation ("a" + "b")
+  - template literals without ${}
+  - const string references in the same scope
+
+Not supported (initially):
+  - runtime-dependent expressions
+  - template literals with ${}
+
+next-intl root file priority:
+  When both messages/{lang}.json (root file) and
+  messages/{lang}/{namespace}.json exist, the root file is prioritized.
+  Actions like "Add missing" and "Extract" will write to the root file
+  in this case.
+
+==============================================================================
+vim:tw=78:ts=8:noet:ft=help
