@@ -1,5 +1,8 @@
 # 🌐 i18n-status.nvim
 
+[![GitHub Release](https://img.shields.io/github/release/mhiro2/i18n-status.nvim?style=flat)](https://github.com/mhiro2/i18n-status.nvim/releases/latest)
+[![CI](https://github.com/mhiro2/i18n-status.nvim/actions/workflows/ci.yaml/badge.svg)](https://github.com/mhiro2/i18n-status.nvim/actions/workflows/ci.yaml)
+
 **Inline-first i18n status & review tooling for Neovim**
 for **i18next / next-intl** projects
 
