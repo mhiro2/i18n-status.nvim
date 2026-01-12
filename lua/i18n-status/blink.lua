@@ -142,6 +142,23 @@ local function get_completion_items(ctx)
   local MAX_COMPLETION_ITEMS = 100
   local item_count = 0
 
+  local function build_documentation(key)
+    local lines = {}
+    local primary_entry = entries[key]
+    local primary_value = primary_entry and primary_entry.value or nil
+    local primary_text = is_missing_value(key, primary_value) and "(missing)" or tostring(primary_value)
+    table.insert(lines, primary .. ": " .. primary_text)
+    for _, lang in ipairs(cache.languages or {}) do
+      if lang ~= primary then
+        local lang_entry = (cache.index[lang] or {})[key]
+        local value = lang_entry and lang_entry.value or nil
+        local text = is_missing_value(key, value) and "(missing)" or tostring(value)
+        table.insert(lines, lang .. ": " .. text)
+      end
+    end
+    return table.concat(lines, "\n")
+  end
+
   for key, entry in pairs(entries) do
     if key ~= "__error__" then
       local include = true
@@ -161,7 +178,9 @@ local function get_completion_items(ctx)
           insertText = insert_key,
           sortText = sort_text,
           kind = vim.lsp.protocol.CompletionItemKind.Text,
-          documentation = entry.value,
+          documentation = build_documentation(key),
+          detail = "🌐 " .. key,
+          labelDetails = { description = "i18n" },
         })
 
         item_count = item_count + 1
