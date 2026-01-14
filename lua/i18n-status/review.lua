@@ -266,17 +266,22 @@ local function close_review(ctx)
     end
   end
 
-  -- CRITICAL: Return focus to source window BEFORE closing floating windows
-  -- This prevents Neovim from triggering heavy window focus transitions
-  if ctx.source_win and vim.api.nvim_win_is_valid(ctx.source_win) then
-    pcall(vim.api.nvim_set_current_win, ctx.source_win)
-  end
+  -- Decide whether we need to restore focus after closing
+  local current_win = vim.api.nvim_get_current_win()
+  local should_restore_focus = current_win == ctx.list_win or current_win == ctx.detail_win
 
-  -- Close windows synchronously
-  for _, w in ipairs({ ctx.list_win, ctx.detail_win }) do
+  -- CRITICAL: Close windows BEFORE returning focus to source window
+  -- This prevents race conditions where focus change interrupts window closing
+  -- Close detail first to reduce the chance of it lingering
+  for _, w in ipairs({ ctx.detail_win, ctx.list_win }) do
     if w and vim.api.nvim_win_is_valid(w) then
       pcall(vim.api.nvim_win_close, w, true)
     end
+  end
+
+  -- Only after windows are closed, return focus to source window if needed
+  if should_restore_focus and ctx.source_win and vim.api.nvim_win_is_valid(ctx.source_win) then
+    pcall(vim.api.nvim_set_current_win, ctx.source_win)
   end
 
   -- Delete buffers synchronously (not deferred) for faster cleanup
