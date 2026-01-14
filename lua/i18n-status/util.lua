@@ -119,7 +119,7 @@ end
 ---@return table|nil
 ---@return string|nil
 function M.json_decode(json)
-  local ok, result = pcall(vim.fn.json_decode, json)
+  local ok, result = pcall(vim.json.decode, json)
   if not ok then
     return nil, result
   end
@@ -205,7 +205,7 @@ local function encode_pretty(value, indent_unit, level)
     end
     local parts = { "{" }
     for i, k in ipairs(keys) do
-      local encoded_key = vim.fn.json_encode(k)
+      local encoded_key = vim.json.encode(k)
       local encoded_value = encode_pretty(value[k], indent_unit, level + 1)
       local line = next_indent .. encoded_key .. ": " .. encoded_value
       if i < #keys then
@@ -216,7 +216,7 @@ local function encode_pretty(value, indent_unit, level)
     table.insert(parts, indent .. "}")
     return table.concat(parts, "\n")
   end
-  return vim.fn.json_encode(value)
+  return vim.json.encode(value)
 end
 
 ---@param value any
