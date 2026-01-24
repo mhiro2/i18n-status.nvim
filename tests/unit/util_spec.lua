@@ -64,6 +64,63 @@ describe("util", function()
     end)
   end)
 
+  describe("sanitize_path", function()
+    local base_dir
+
+    before_each(function()
+      base_dir = vim.fn.tempname()
+      util.ensure_dir(base_dir)
+    end)
+
+    after_each(function()
+      if base_dir and util.is_dir(base_dir) then
+        vim.fn.delete(base_dir, "rf")
+      end
+    end)
+
+    it("should reject null bytes", function()
+      local path, err = util.sanitize_path("a\0b", base_dir)
+      assert.is_nil(path)
+      assert.is_not_nil(err)
+    end)
+
+    it("should accept existing files within base", function()
+      local file_path = util.path_join(base_dir, "dir", "file.json")
+      util.ensure_dir(util.dirname(file_path))
+      vim.fn.writefile({ "{}" }, file_path)
+
+      local path, err = util.sanitize_path(file_path, base_dir)
+      local real_base = (vim.uv.fs_realpath(base_dir) or base_dir):gsub("\\", "/")
+      if real_base:sub(-1) ~= "/" then
+        real_base = real_base .. "/"
+      end
+      assert.is_nil(err)
+      assert.is_true(path:find(real_base, 1, true) == 1)
+    end)
+
+    it("should accept non-existent files within base", function()
+      local file_path = util.path_join(base_dir, "new", "file.json")
+      local path, err = util.sanitize_path(file_path, base_dir)
+      local real_base = (vim.uv.fs_realpath(base_dir) or base_dir):gsub("\\", "/")
+      if real_base:sub(-1) ~= "/" then
+        real_base = real_base .. "/"
+      end
+      local base_hint = base_dir:gsub("\\", "/")
+      if base_hint:sub(-1) ~= "/" then
+        base_hint = base_hint .. "/"
+      end
+      assert.is_nil(err)
+      assert.is_true(path:find(real_base, 1, true) == 1 or path:find(base_hint, 1, true) == 1)
+    end)
+
+    it("should reject paths outside base", function()
+      local outside = util.path_join(base_dir, "..", "outside.json")
+      local path, err = util.sanitize_path(outside, base_dir)
+      assert.is_nil(path)
+      assert.is_not_nil(err)
+    end)
+  end)
+
   describe("extract_placeholders", function()
     it("should extract double-brace placeholders", function()
       local text = "Hello {{name}}, your balance is {{balance}}"

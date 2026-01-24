@@ -17,10 +17,15 @@ end
 
 ---@param timer uv_timer_t|nil
 local function close_timer(timer)
-  if timer and not timer:is_closing() then
-    timer:stop()
-    timer:close()
+  if not timer then
+    return
   end
+  pcall(function()
+    if not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
+  end)
 end
 
 ---@param bufnr integer

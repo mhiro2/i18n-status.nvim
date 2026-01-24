@@ -9,9 +9,19 @@ local scan = require("i18n-status.scan")
 
 local uv = vim.uv or vim.loop
 
-local function normalize_path(path)
+local function normalize_path(path, root)
+  -- Try to resolve to real path for comparison
   local real = uv.fs_realpath(path)
-  return real or path
+  if real then
+    return real
+  end
+  -- If path doesn't exist, normalize it using util.sanitize_path
+  local normalized, err = util.sanitize_path(path, root or ".")
+  if err then
+    -- Fall back to basic normalization if sanitize fails
+    return path:gsub("\\", "/")
+  end
+  return normalized
 end
 
 ---@param tbl table
@@ -201,7 +211,7 @@ function M.rename(opts)
           new_ns or "default"
         )
     end
-    local same_file = normalize_path(old_file) == normalize_path(new_file)
+    local same_file = normalize_path(old_file, root) == normalize_path(new_file, root)
 
     util.ensure_dir(util.dirname(new_file))
 

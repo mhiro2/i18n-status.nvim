@@ -1024,16 +1024,23 @@ local function edit_lang(ctx, lang)
       return
     end
 
-    util.ensure_dir(util.dirname(path))
-    local data, style = resources.read_json_table(path)
+    -- Sanitize file path for security
+    local sanitized_path, err = util.sanitize_path(path, root)
+    if err then
+      vim.notify("i18n-status review: invalid file path (" .. err .. ")", vim.log.levels.WARN)
+      return
+    end
+
+    util.ensure_dir(util.dirname(sanitized_path))
+    local data, style = resources.read_json_table(sanitized_path)
     if not data then
       vim.notify("i18n-status review: failed to read json (" .. (style.error or "unknown") .. ")", vim.log.levels.WARN)
       return
     end
 
-    local path_in_file = resources.key_path_for_file(namespace, key_path, root, lang, path)
+    local path_in_file = resources.key_path_for_file(namespace, key_path, root, lang, sanitized_path)
     util.set_nested(data, path_in_file, input)
-    resources.write_json_table(path, data, style)
+    resources.write_json_table(sanitized_path, data, style)
 
     if ctx.config then
       core.refresh_all(ctx.config)
@@ -1520,8 +1527,16 @@ local function jump_to_definition(ctx)
       return
     end
 
+    -- Sanitize file path before opening
+    local root = ctx.start_dir or resources.start_dir(ctx.source_buf or vim.api.nvim_get_current_buf())
+    local sanitized_path, err = util.sanitize_path(info.file, root)
+    if err then
+      vim.notify("i18n-status review: invalid file path (" .. err .. ")", vim.log.levels.WARN)
+      return
+    end
+
     close_review(ctx)
-    vim.api.nvim_cmd({ cmd = "edit", args = { info.file } }, {})
+    vim.api.nvim_cmd({ cmd = "edit", args = { sanitized_path } }, {})
     return
   end
 
@@ -1539,11 +1554,19 @@ local function jump_to_definition(ctx)
     return
   end
 
+  -- Sanitize file path before opening
+  local root = ctx.start_dir or resources.start_dir(ctx.source_buf or vim.api.nvim_get_current_buf())
+  local sanitized_path, err = util.sanitize_path(info.file, root)
+  if err then
+    vim.notify("i18n-status review: invalid file path (" .. err .. ")", vim.log.levels.WARN)
+    return
+  end
+
   -- Close the review UI
   close_review(ctx)
 
   -- Open the file
-  vim.api.nvim_cmd({ cmd = "edit", args = { info.file } }, {})
+  vim.api.nvim_cmd({ cmd = "edit", args = { sanitized_path } }, {})
 end
 
 ---@param ctx table
