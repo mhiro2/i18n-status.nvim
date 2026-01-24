@@ -197,13 +197,40 @@ function M.write_json_table(path, data, style, _opts)
   if newline then
     encoded = encoded .. "\n"
   end
-  local fd = uv.fs_open(path, "w", 420)
+
+  -- Write to temporary file first, then rename for atomicity
+  local tmp_path = path .. ".tmp." .. uv.getpid()
+  local fd = uv.fs_open(tmp_path, "w", 420)
   if fd then
     uv.fs_write(fd, encoded, 0)
+    uv.fs_fsync(fd)
     uv.fs_close(fd)
-    M.mark_dirty(path)
+    local ok, err = uv.fs_rename(tmp_path, path)
+    if ok then
+      M.mark_dirty(path)
+    else
+      local err_msg = tostring(err or "")
+      local is_exists = err_msg:lower():find("eexist") or err_msg:lower():find("exists")
+      if is_exists then
+        pcall(uv.fs_unlink, path)
+        ok, err = uv.fs_rename(tmp_path, path)
+        if ok then
+          M.mark_dirty(path)
+          return
+        end
+      end
+      pcall(uv.fs_unlink, tmp_path)
+      vim.schedule(function()
+        vim.notify(
+          string.format("i18n-status: failed to rename %s to %s: %s", tmp_path, path, err or "unknown"),
+          vim.log.levels.WARN
+        )
+      end)
+    end
   else
-    vim.notify("i18n-status: failed to write json file (" .. path .. ")", vim.log.levels.WARN)
+    vim.schedule(function()
+      vim.notify("i18n-status: failed to write json file (" .. path .. ")", vim.log.levels.WARN)
+    end)
   end
 end
 
