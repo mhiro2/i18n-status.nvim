@@ -352,8 +352,13 @@ function M.shorten_path(path)
   local git_root = M.find_git_root(file_dir)
 
   if git_root then
-    -- Convert to relative path from git root
-    local relative = path:sub(#git_root + 2) -- +2 to skip the trailing /
+    -- Ensure git_root ends with / for consistent substring calculation
+    local normalized_root = git_root
+    if normalized_root:sub(-1) ~= "/" then
+      normalized_root = normalized_root .. "/"
+    end
+    -- Skip past the normalized root (including the /)
+    local relative = path:sub(#normalized_root + 1)
     return relative
   end
 
