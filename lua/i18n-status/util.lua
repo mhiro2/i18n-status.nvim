@@ -366,4 +366,124 @@ function M.shorten_path(path)
   return path
 end
 
+---Normalize and validate a file path for security
+---Checks for null bytes, resolves to real path, and ensures it's within base_dir
+---@param path string The path to validate
+---@param base_dir string The base directory that the path must be within
+---@return string|nil normalized_path Normalized path if valid, nil if invalid
+---@return string|nil error Error message if validation fails
+function M.sanitize_path(path, base_dir)
+  if not path or path == "" then
+    return nil, "path is empty"
+  end
+  if not base_dir or base_dir == "" then
+    return nil, "base directory is empty"
+  end
+
+  -- Check for null bytes (security risk)
+  if path:find("\0") then
+    return nil, "path contains null byte"
+  end
+
+  local normalized_path = path:gsub("\\", "/")
+  local normalized_base = base_dir:gsub("\\", "/")
+  local real_base = uv.fs_realpath(normalized_base)
+  if not real_base then
+    return nil, "base directory does not exist"
+  end
+  real_base = real_base:gsub("\\", "/")
+  if real_base:sub(-1) ~= "/" then
+    real_base = real_base .. "/"
+  end
+  local base_hint = normalized_base
+  if base_hint:sub(-1) ~= "/" then
+    base_hint = base_hint .. "/"
+  end
+
+  local function is_within_base(target, base)
+    if target == base:sub(1, -2) then
+      return true
+    end
+    return target:sub(1, #base) == base
+  end
+
+  local abs_path
+  local function is_absolute_path(candidate)
+    if vim.fs and vim.fs.isabsolute then
+      return vim.fs.isabsolute(candidate)
+    end
+    if candidate:sub(1, 1) == "/" then
+      return true
+    end
+    if candidate:match("^%a:[/\\]") then
+      return true
+    end
+    return candidate:sub(1, 2) == "\\\\"
+  end
+
+  local function normalize_path(candidate)
+    if vim.fs and vim.fs.normalize then
+      return vim.fs.normalize(candidate)
+    end
+    local normalized = candidate:gsub("\\", "/")
+    local prefix = ""
+    local rest = normalized
+    local drive = normalized:match("^%a:[/]")
+    if drive then
+      prefix = drive
+      rest = normalized:sub(4)
+    elseif normalized:sub(1, 2) == "//" then
+      prefix = "//"
+      rest = normalized:sub(3)
+    elseif normalized:sub(1, 1) == "/" then
+      prefix = "/"
+      rest = normalized:sub(2)
+    end
+    local parts = {}
+    for part in rest:gmatch("[^/]+") do
+      if part ~= "." and part ~= "" then
+        if part == ".." then
+          if #parts > 0 and parts[#parts] ~= ".." then
+            table.remove(parts)
+          elseif prefix == "" then
+            table.insert(parts, part)
+          end
+        else
+          table.insert(parts, part)
+        end
+      end
+    end
+    local joined = table.concat(parts, "/")
+    if prefix ~= "" then
+      if joined ~= "" then
+        return prefix .. joined
+      end
+      return prefix
+    end
+    return joined
+  end
+
+  if is_absolute_path(normalized_path) then
+    abs_path = normalize_path(normalized_path)
+  else
+    abs_path = normalize_path(M.path_join(base_hint, normalized_path))
+  end
+  abs_path = abs_path:gsub("\\", "/")
+
+  local real_path = uv.fs_realpath(abs_path)
+  if real_path then
+    real_path = real_path:gsub("\\", "/")
+    if not is_within_base(real_path, real_base) then
+      return nil, "path is outside base directory"
+    end
+    return real_path, nil
+  end
+
+  if not is_within_base(abs_path, real_base) and not is_within_base(abs_path, base_hint) then
+    return nil, "path is outside base directory"
+  end
+
+  return abs_path, nil
+end
+
 return M
