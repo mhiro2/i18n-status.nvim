@@ -998,6 +998,18 @@ local function create_float_win(buf, width, height, row, col, border, focusable,
 end
 
 ---@param ctx table
+---@return string
+local function review_base_dir(ctx)
+  local start_dir = ctx.start_dir or resources.start_dir(ctx.source_buf or vim.api.nvim_get_current_buf())
+  local roots = ctx.cache and ctx.cache.roots or nil
+  local base_dir = resources.project_root(start_dir, roots)
+  if base_dir == "" then
+    return start_dir
+  end
+  return base_dir
+end
+
+---@param ctx table
 ---@param lang string
 local function edit_lang(ctx, lang)
   local item = ctx.detail_item
@@ -1025,7 +1037,8 @@ local function edit_lang(ctx, lang)
     end
 
     -- Sanitize file path for security
-    local sanitized_path, err = util.sanitize_path(path, root)
+    local base_dir = review_base_dir(ctx)
+    local sanitized_path, err = util.sanitize_path(path, base_dir)
     if err then
       vim.notify("i18n-status review: invalid file path (" .. err .. ")", vim.log.levels.WARN)
       return
@@ -1528,8 +1541,8 @@ local function jump_to_definition(ctx)
     end
 
     -- Sanitize file path before opening
-    local root = ctx.start_dir or resources.start_dir(ctx.source_buf or vim.api.nvim_get_current_buf())
-    local sanitized_path, err = util.sanitize_path(info.file, root)
+    local base_dir = review_base_dir(ctx)
+    local sanitized_path, err = util.sanitize_path(info.file, base_dir)
     if err then
       vim.notify("i18n-status review: invalid file path (" .. err .. ")", vim.log.levels.WARN)
       return
@@ -1555,8 +1568,8 @@ local function jump_to_definition(ctx)
   end
 
   -- Sanitize file path before opening
-  local root = ctx.start_dir or resources.start_dir(ctx.source_buf or vim.api.nvim_get_current_buf())
-  local sanitized_path, err = util.sanitize_path(info.file, root)
+  local base_dir = review_base_dir(ctx)
+  local sanitized_path, err = util.sanitize_path(info.file, base_dir)
   if err then
     vim.notify("i18n-status review: invalid file path (" .. err .. ")", vim.log.levels.WARN)
     return

@@ -120,6 +120,58 @@ function M.start_dir(bufnr)
   return vim.fn.getcwd()
 end
 
+---@param paths string[]
+---@return string
+local function common_ancestor(paths)
+  if not paths or #paths == 0 then
+    return ""
+  end
+  local common = paths[1]
+  for i = 2, #paths do
+    local parts1 = vim.split(common, "/", { plain = true })
+    local parts2 = vim.split(paths[i], "/", { plain = true })
+    local min_len = math.min(#parts1, #parts2)
+    local new_common = {}
+    for j = 1, min_len do
+      if parts1[j] == parts2[j] then
+        table.insert(new_common, parts1[j])
+      else
+        break
+      end
+    end
+    common = table.concat(new_common, "/")
+    if common == "" then
+      return ""
+    end
+  end
+  return common
+end
+
+---@param start_dir string
+---@param roots table|nil
+---@return string
+function M.project_root(start_dir, roots)
+  if not start_dir or start_dir == "" then
+    return ""
+  end
+  local git_root = util.find_git_root(start_dir)
+  if git_root and git_root ~= "" then
+    return git_root
+  end
+  local paths = { start_dir }
+  local root_list = roots or M.roots(start_dir)
+  for _, root in ipairs(root_list or {}) do
+    if root and root.path and root.path ~= "" then
+      table.insert(paths, root.path)
+    end
+  end
+  local common = common_ancestor(paths)
+  if common == "" then
+    return start_dir
+  end
+  return common
+end
+
 ---@param key string
 ---@return boolean
 local function is_watching(key)
