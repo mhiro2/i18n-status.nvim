@@ -240,6 +240,27 @@ function M.lang_set(lang)
   core.refresh(bufnr, config, 0, { force = true })
 end
 
+---@param arg_lead string
+---@param _cmdline string
+---@param _cursor_pos integer
+---@return string[]
+function M.lang_complete(arg_lead, _cmdline, _cursor_pos)
+  M.ensure_setup()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local project = select(1, state.project_for_buf(bufnr))
+  local languages = project.languages or {}
+  if not arg_lead or arg_lead == "" then
+    return languages
+  end
+  local matches = {}
+  for _, lang in ipairs(languages) do
+    if lang:sub(1, #arg_lead) == arg_lead then
+      table.insert(matches, lang)
+    end
+  end
+  return matches
+end
+
 ---@param bufnr integer|nil
 function M.goto_definition(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()

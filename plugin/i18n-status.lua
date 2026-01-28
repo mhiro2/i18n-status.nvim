@@ -31,6 +31,16 @@ vim.api.nvim_create_user_command("I18nLangPrev", function()
   end)
 end, {})
 
+---@param arg_lead string
+---@param cmdline string
+---@param cursor_pos integer
+---@return string[]
+local function complete_lang(arg_lead, cmdline, cursor_pos)
+  return with_module(function(mod)
+    return mod.lang_complete(arg_lead, cmdline, cursor_pos)
+  end) or {}
+end
+
 vim.api.nvim_create_user_command("I18nLang", function(args)
   with_module(function(mod)
     if not args.args or args.args == "" then
@@ -39,7 +49,7 @@ vim.api.nvim_create_user_command("I18nLang", function(args)
     end
     mod.lang_set(args.args)
   end)
-end, { nargs = "?" })
+end, { nargs = "?", complete = complete_lang })
 
 vim.api.nvim_create_user_command("I18nHover", function()
   with_module(function(mod)
