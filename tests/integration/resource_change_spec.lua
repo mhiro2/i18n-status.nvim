@@ -108,8 +108,21 @@ describe("resource change handling", function()
       assert.is_true(inline_text(buf):find("ログイン", 1, true) ~= nil)
 
       local updated = false
-      resources.start_watch(root, function()
+      resources.start_watch(root, function(event)
         updated = true
+        if event and event.paths and #event.paths > 0 and not event.needs_rebuild then
+          local cache_key = resources.get_watcher_key(root)
+          if cache_key then
+            local success, needs_rebuild = resources.apply_changes(cache_key, event.paths)
+            if not success and needs_rebuild then
+              resources.mark_dirty()
+            end
+          else
+            resources.mark_dirty()
+          end
+        else
+          resources.mark_dirty()
+        end
         core.refresh_all(config)
       end, { debounce_ms = 10 })
 
