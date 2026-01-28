@@ -17,10 +17,10 @@ describe("ops.rename", function()
     scan.extract = original_extract
   end)
 
-  local function make_buf(path, line)
+  local function make_buf(path, line, ft)
     local buf = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, { line })
-    vim.bo[buf].filetype = "typescript"
+    vim.bo[buf].filetype = ft or "typescript"
     vim.api.nvim_buf_set_name(buf, path)
     vim.api.nvim_set_current_buf(buf)
     return buf
@@ -157,6 +157,68 @@ describe("ops.rename", function()
       local ja = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
       assert.are.equal("ログイン", ja.rename.title)
       assert.are.equal("既存", ja.rename.heading)
+    end)
+  end)
+
+  it("skips non-target filetypes when renaming", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
+    vim.fn.mkdir(root .. "/src", "p")
+
+    helpers.with_cwd(root, function()
+      local ts_buf = make_buf(root .. "/src/app.ts", 't("rename.title")', "typescript")
+      local md_buf = make_buf(root .. "/src/notes.md", 't("rename.title")', "markdown")
+
+      local config = config_mod.setup({ primary_lang = "ja", inline = { visible_only = false } })
+      resources.ensure_index(root)
+
+      local rename_spans = {}
+      local function register_span(buf, literal)
+        local col, end_col = literal_range(buf, literal)
+        rename_spans[buf] = {
+          {
+            key = "common:rename.title",
+            raw = literal,
+            namespace = "common",
+            lnum = 0,
+            col = col,
+            end_col = end_col,
+          },
+        }
+      end
+      register_span(ts_buf, "rename.title")
+      register_span(md_buf, "rename.title")
+
+      scan.extract = function(bufnr)
+        return rename_spans[bufnr] or {}
+      end
+
+      local item = {
+        key = "common:rename.title",
+        namespace = "common",
+        hover = {
+          values = {
+            ja = { file = root .. "/locales/ja/common.json", value = "ログイン" },
+            en = { file = root .. "/locales/en/common.json", value = "Login" },
+          },
+        },
+      }
+
+      local ok, err = ops.rename({
+        item = item,
+        source_buf = ts_buf,
+        new_key = "common:rename.heading",
+        config = config,
+      })
+
+      assert.is_true(ok, err or "rename failed")
+
+      local ts_line = vim.api.nvim_buf_get_lines(ts_buf, 0, 1, false)[1]
+      local md_line = vim.api.nvim_buf_get_lines(md_buf, 0, 1, false)[1]
+      assert.is_true(ts_line:find("rename.heading", 1, true) ~= nil)
+      assert.is_true(md_line:find("rename.title", 1, true) ~= nil)
+      assert.is_true(md_line:find("rename.heading", 1, true) == nil)
     end)
   end)
 end)

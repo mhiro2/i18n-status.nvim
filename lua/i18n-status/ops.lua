@@ -9,6 +9,23 @@ local scan = require("i18n-status.scan")
 
 local uv = vim.uv or vim.loop
 
+---@param bufnr integer
+---@return boolean
+local function is_target_rename_buf(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_buf_is_loaded(bufnr) then
+    return false
+  end
+  local buftype = vim.bo[bufnr].buftype
+  if buftype ~= "" and buftype ~= "nofile" then
+    return false
+  end
+  if not vim.bo[bufnr].modifiable then
+    return false
+  end
+  local ft = vim.bo[bufnr].filetype
+  return ft == "javascript" or ft == "typescript" or ft == "javascriptreact" or ft == "typescriptreact"
+end
+
 local function normalize_path(path, root)
   -- Try to resolve to real path for comparison
   local real = uv.fs_realpath(path)
@@ -284,8 +301,7 @@ function M.rename(opts)
   local updated_bufs = {}
 
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    local buftype = vim.bo[buf].buftype
-    if vim.api.nvim_buf_is_loaded(buf) and (buftype == "" or buftype == "nofile") and vim.bo[buf].modifiable then
+    if is_target_rename_buf(buf) then
       local fb = resources.fallback_namespace_for_buf(buf)
       rename_in_buffer(buf, old_key, new_key, new_ns, explicit_ns, fb)
       table.insert(updated_bufs, buf)
