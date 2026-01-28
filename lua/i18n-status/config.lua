@@ -72,22 +72,6 @@ local defaults = {
 function M.setup(opts)
   local merged = util.tbl_deep_merge(defaults, opts or {})
 
-  -- Backward compatibility for top-level keys
-  if opts then
-    if opts.position and not (opts.inline and opts.inline.position) then
-      merged.inline.position = opts.position
-    end
-    if opts.max_inline_len and not (opts.inline and opts.inline.max_len) then
-      merged.inline.max_len = opts.max_inline_len
-    end
-    if opts.visible_only ~= nil and not (opts.inline and opts.inline.visible_only ~= nil) then
-      merged.inline.visible_only = opts.visible_only
-    end
-    if opts.debounce_ms ~= nil and not (opts.inline and opts.inline.debounce_ms ~= nil) then
-      merged.inline.debounce_ms = opts.debounce_ms
-    end
-  end
-
   -- Validation
   M._validate(merged)
 
