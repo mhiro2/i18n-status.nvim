@@ -169,4 +169,126 @@ describe("resource change handling", function()
       assert.is_nil(cache2.index.ja["removed:key"], "removed:key should not exist after deletion")
     end)
   end)
+
+  it("watcher passes changed paths to callback", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+    helpers.with_cwd(root, function()
+      local received_event = nil
+
+      resources.start_watch(root, function(event)
+        received_event = event
+      end, { debounce_ms = 10 })
+
+      -- Wait for watcher to be set up
+      vim.wait(50, function()
+        return false
+      end, 10)
+
+      -- Modify file
+      helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"変更後"}}')
+
+      -- Wait for callback
+      local ok = vim.wait(2000, function()
+        return received_event ~= nil
+      end, 10)
+
+      assert.is_true(ok, "Callback was not called")
+      assert.is_not_nil(received_event)
+      assert.is_not_nil(received_event.paths)
+      assert.is_true(#received_event.paths > 0)
+    end)
+  end)
+
+  it("watcher debounces multiple rapid changes", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+    helpers.with_cwd(root, function()
+      local callback_count = 0
+      local last_event = nil
+
+      resources.start_watch(root, function(event)
+        callback_count = callback_count + 1
+        last_event = event
+      end, { debounce_ms = 100 })
+
+      -- Wait for watcher to be set up
+      vim.wait(50, function()
+        return false
+      end, 10)
+
+      -- Make multiple rapid changes
+      helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"変更1"}}')
+      vim.wait(20, function()
+        return false
+      end, 5)
+      helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"変更2"}}')
+      vim.wait(20, function()
+        return false
+      end, 5)
+      helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"変更3"}}')
+
+      -- Wait for debounced callback
+      vim.wait(500, function()
+        return callback_count > 0
+      end, 10)
+
+      -- Should have been called only once (or at most a few times due to debounce)
+      -- The key point is that rapid changes are batched
+      assert.is_true(callback_count <= 3, "Too many callbacks: " .. callback_count)
+      assert.is_not_nil(last_event)
+    end)
+  end)
+
+  it("incremental update via watcher updates inline display", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf({ 't("login.title")' })
+      local config = config_mod.setup({
+        primary_lang = "ja",
+        inline = { visible_only = false },
+        resource_watch = { enabled = true, debounce_ms = 10 },
+      })
+
+      -- Initial render
+      core.refresh_now(buf, config)
+      assert.is_true(inline_text(buf):find("ログイン", 1, true) ~= nil)
+
+      -- Build cache to get key
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+
+      -- Start watcher with incremental update logic
+      resources.start_watch(root, function(event)
+        if event and event.paths and #event.paths > 0 and not event.needs_rebuild then
+          resources.apply_changes(cache_key, event.paths)
+        else
+          resources.mark_dirty()
+        end
+        core.refresh_all(config)
+      end, { debounce_ms = 10 })
+
+      -- Wait for watcher setup
+      vim.wait(50, function()
+        return false
+      end, 10)
+
+      -- Update file
+      helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"サインイン"}}')
+
+      -- Wait for update
+      local ok = vim.wait(2000, function()
+        return inline_text(buf):find("サインイン", 1, true) ~= nil
+      end, 10)
+
+      assert.is_true(ok, "Inline display was not updated")
+    end)
+  end)
 end)

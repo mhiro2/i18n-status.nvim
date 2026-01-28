@@ -115,4 +115,341 @@ describe("resources", function()
     local project_root = resources.project_root(root .. "/src/app")
     assert.are.equal(root, project_root)
   end)
+
+  describe("incremental scan", function()
+    local uv = vim.uv or vim.loop
+
+    it("builds cache with entries_by_key and file_entries", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+
+      -- Check that new data structures are populated
+      assert.is_not_nil(cache.entries_by_key)
+      assert.is_not_nil(cache.file_entries)
+      assert.is_not_nil(cache.file_meta)
+
+      -- Check entries_by_key has the expected structure
+      assert.is_not_nil(cache.entries_by_key.ja)
+      assert.is_not_nil(cache.entries_by_key.ja["common:login.title"])
+      assert.are.equal(1, #cache.entries_by_key.ja["common:login.title"])
+
+      -- Check file_entries has entries for the json file (use normalized path for lookup)
+      local ja_file = uv.fs_realpath(root .. "/locales/ja/common.json")
+      assert.is_not_nil(cache.file_entries[ja_file])
+      assert.is_true(#cache.file_entries[ja_file] > 0)
+    end)
+
+    it("apply_changes updates single file correctly", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+      assert.are.equal("ログイン", cache.index.ja["common:login.title"].value)
+
+      -- Update the file
+      vim.loop.sleep(10)
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"サインイン"}}')
+
+      -- Apply incremental change
+      local ja_file = root .. "/locales/ja/common.json"
+      local success, needs_rebuild = resources.apply_changes(cache_key, { ja_file })
+
+      assert.is_true(success)
+      assert.is_falsy(needs_rebuild)
+      assert.are.equal("サインイン", cache.index.ja["common:login.title"].value)
+    end)
+
+    it("apply_changes handles file deletion", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/ja/extra.json", '{"extra":"追加"}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+      assert.are.equal("追加", cache.index.ja["extra:extra"].value)
+
+      -- Normalize path before deletion (realpath won't work after file is gone on some systems)
+      local extra_file = uv.fs_realpath(root .. "/locales/ja/extra.json")
+      os.remove(extra_file)
+
+      -- Apply incremental change
+      local success, _ = resources.apply_changes(cache_key, { extra_file })
+
+      assert.is_true(success)
+      assert.is_nil(cache.index.ja["extra:extra"])
+    end)
+
+    it("apply_changes handles new file addition", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+      assert.is_nil(cache.index.ja["new:key"])
+
+      -- Add new file
+      local new_file = root .. "/locales/ja/new.json"
+      write(new_file, '{"key":"新しいキー"}')
+
+      -- Apply incremental change
+      local success, _ = resources.apply_changes(cache_key, { new_file })
+
+      assert.is_true(success)
+      assert.are.equal("新しいキー", cache.index.ja["new:key"].value)
+    end)
+
+    it("apply_changes preserves old entries on parse error", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+      assert.are.equal("ログイン", cache.index.ja["common:login.title"].value)
+
+      -- Normalize path before modifying
+      local ja_file = uv.fs_realpath(root .. "/locales/ja/common.json")
+
+      -- Write invalid JSON
+      write(ja_file, "{invalid json")
+
+      -- Apply incremental change
+      local success, _ = resources.apply_changes(cache_key, { ja_file })
+
+      -- Should succeed (old entries preserved) but record error
+      assert.is_true(success)
+      assert.are.equal("ログイン", cache.index.ja["common:login.title"].value)
+
+      -- Should record error
+      assert.is_not_nil(cache.file_errors)
+      assert.is_not_nil(cache.file_errors[ja_file])
+    end)
+
+    it("apply_changes clears error on recovery", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+      -- Normalize path while file exists
+      local ja_file = uv.fs_realpath(root .. "/locales/ja/common.json")
+
+      -- Write invalid JSON to create error state
+      write(ja_file, "{invalid json")
+      resources.apply_changes(cache_key, { ja_file })
+      assert.is_not_nil(cache.file_errors[ja_file])
+
+      -- Fix the JSON
+      write(ja_file, '{"login":{"title":"修正済み"}}')
+      local success, _ = resources.apply_changes(cache_key, { ja_file })
+
+      assert.is_true(success)
+      assert.is_nil(cache.file_errors[ja_file])
+      assert.are.equal("修正済み", cache.index.ja["common:login.title"].value)
+    end)
+
+    it("apply_changes maintains priority invariants with next-intl", function()
+      local root = helpers.tmpdir()
+      write(root .. "/messages/en/common.json", '{"title":"Namespace"}')
+      write(root .. "/messages/en.json", '{"common":{"title":"Root"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+
+      -- Root file (priority 40) should beat namespace file (priority 50)
+      assert.are.equal("Root", cache.index.en["common:title"].value)
+
+      -- Normalize paths while files exist
+      local ns_file = uv.fs_realpath(root .. "/messages/en/common.json")
+      local root_file = uv.fs_realpath(root .. "/messages/en.json")
+
+      -- Update namespace file
+      write(ns_file, '{"title":"Updated Namespace"}')
+      resources.apply_changes(cache_key, { ns_file })
+
+      -- Root should still win
+      assert.are.equal("Root", cache.index.en["common:title"].value)
+
+      -- Delete root file
+      os.remove(root_file)
+      resources.apply_changes(cache_key, { root_file })
+
+      -- Now namespace should be used
+      assert.are.equal("Updated Namespace", cache.index.en["common:title"].value)
+    end)
+
+    it("apply_changes sets needs_rebuild for directory events", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+
+      -- Apply change to directory path
+      local success, needs_rebuild = resources.apply_changes(cache_key, { root .. "/locales" })
+
+      -- Should indicate rebuild needed for directory
+      assert.is_true(needs_rebuild)
+    end)
+
+    it("apply_changes does not set dirty on successful incremental update", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+      cache.dirty = false -- Ensure clean state
+
+      -- Normalize path
+      local ja_file = uv.fs_realpath(root .. "/locales/ja/common.json")
+
+      -- Update file
+      vim.loop.sleep(10)
+      write(ja_file, '{"login":{"title":"サインイン"}}')
+
+      -- Apply incremental change
+      local success, needs_rebuild = resources.apply_changes(cache_key, { ja_file })
+
+      -- Dirty should NOT be set after successful incremental update
+      assert.is_true(success)
+      assert.is_falsy(needs_rebuild)
+      assert.is_false(cache.dirty)
+    end)
+
+    it("apply_changes removes language when last file of that language is deleted", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+
+      -- Verify both languages exist
+      assert.is_true(vim.tbl_contains(cache.languages, "ja"))
+      assert.is_true(vim.tbl_contains(cache.languages, "en"))
+
+      -- Normalize path before deletion
+      local ja_file = uv.fs_realpath(root .. "/locales/ja/common.json")
+
+      -- Delete the only Japanese file
+      os.remove(ja_file)
+
+      -- Apply incremental change
+      resources.apply_changes(cache_key, { ja_file })
+
+      -- Japanese should be removed from languages
+      assert.is_false(vim.tbl_contains(cache.languages, "ja"))
+      assert.is_true(vim.tbl_contains(cache.languages, "en"))
+    end)
+
+    it("apply_changes sets needs_rebuild for paths outside roots", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+
+      -- Create a file outside the root
+      local outside_file = root .. "/outside.json"
+      write(outside_file, '{"key":"value"}')
+
+      -- Apply change to path outside roots
+      local success, needs_rebuild = resources.apply_changes(cache_key, { outside_file })
+
+      -- Should indicate rebuild needed for path outside roots
+      assert.is_false(success)
+      assert.is_true(needs_rebuild)
+    end)
+
+    it("apply_changes handles new broken JSON file gracefully", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+
+      -- Add new file with broken JSON
+      local new_file = root .. "/locales/ja/broken.json"
+      write(new_file, "{broken json")
+      local new_file_normalized = uv.fs_realpath(new_file)
+
+      -- Apply incremental change
+      local success, _ = resources.apply_changes(cache_key, { new_file_normalized })
+
+      -- Should succeed (no old entries to preserve, just records error)
+      assert.is_true(success)
+
+      -- Should record error
+      assert.is_not_nil(cache.file_errors)
+      assert.is_not_nil(cache.file_errors[new_file_normalized])
+
+      -- Should also be in cache.errors for doctor display
+      local found_error = false
+      for _, err in ipairs(cache.errors or {}) do
+        if err.file == new_file_normalized then
+          found_error = true
+          break
+        end
+      end
+      assert.is_true(found_error)
+    end)
+
+    it("apply_changes keeps cache valid while watching after new file", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+
+      resources.start_watch(root, function() end, { debounce_ms = 10 })
+
+      -- Add new file and apply incremental update
+      local new_file = root .. "/locales/ja/extra.json"
+      write(new_file, '{"extra":"追加"}')
+      local success, needs_rebuild = resources.apply_changes(cache_key, { new_file })
+
+      assert.is_true(success)
+      assert.is_falsy(needs_rebuild)
+
+      -- Wait beyond CACHE_VALIDATE_INTERVAL_MS to trigger structural validation
+      vim.wait(1100, function()
+        return false
+      end, 10)
+
+      local cache2 = resources.ensure_index(root)
+      assert.is_true(cache == cache2)
+
+      resources.stop_watch()
+    end)
+
+    it("apply_changes treats non-json changes under root as rebuild-needed", function()
+      local root = helpers.tmpdir()
+      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+      local cache = resources.ensure_index(root)
+      local cache_key = cache.key
+
+      local non_json = root .. "/locales/ja/README.txt"
+      write(non_json, "note")
+
+      local success, needs_rebuild = resources.apply_changes(cache_key, { non_json })
+
+      assert.is_false(success)
+      assert.is_true(needs_rebuild)
+    end)
+  end)
 end)
