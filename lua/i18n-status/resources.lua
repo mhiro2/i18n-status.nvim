@@ -62,7 +62,9 @@ local function log_watcher_error(path, err)
     return
   end
   watcher_error_timestamps[path] = now
-  vim.notify(string.format("i18n-status: file watcher error for %s: %s", path, err), vim.log.levels.WARN)
+  vim.schedule(function()
+    vim.notify(string.format("i18n-status: file watcher error for %s: %s", path, err), vim.log.levels.WARN)
+  end)
 end
 
 local function current_cache()
@@ -302,6 +304,408 @@ local function set_entry(index, lang, key, value, file, priority)
   index[lang][key] = { value = value, file = file, priority = priority }
 end
 
+---Add entry with tracking in entries_by_key and file_entries
+---@param cache table
+---@param lang string
+---@param key string
+---@param value any
+---@param file string
+---@param priority integer
+local function set_entry_tracked(cache, lang, key, value, file, priority)
+  -- Update entries_by_key
+  cache.entries_by_key = cache.entries_by_key or {}
+  cache.entries_by_key[lang] = cache.entries_by_key[lang] or {}
+  cache.entries_by_key[lang][key] = cache.entries_by_key[lang][key] or {}
+  -- Check if this file already has an entry for this key
+  local found = false
+  for i, entry in ipairs(cache.entries_by_key[lang][key]) do
+    if entry.file == file then
+      cache.entries_by_key[lang][key][i] = { value = value, file = file, priority = priority }
+      found = true
+      break
+    end
+  end
+  if not found then
+    table.insert(cache.entries_by_key[lang][key], { value = value, file = file, priority = priority })
+  end
+
+  -- Update file_entries (reverse index)
+  cache.file_entries = cache.file_entries or {}
+  cache.file_entries[file] = cache.file_entries[file] or {}
+  -- Check if entry already exists
+  local entry_found = false
+  for _, entry in ipairs(cache.file_entries[file]) do
+    if entry.lang == lang and entry.key == key then
+      entry_found = true
+      break
+    end
+  end
+  if not entry_found then
+    table.insert(cache.file_entries[file], { lang = lang, key = key, priority = priority })
+  end
+
+  -- Update main index with best entry
+  cache.index = cache.index or {}
+  cache.index[lang] = cache.index[lang] or {}
+  local existing = cache.index[lang][key]
+  local existing_priority = existing and existing.priority or math.huge
+  if priority < existing_priority then
+    cache.index[lang][key] = { value = value, file = file, priority = priority }
+  end
+end
+
+---Reselect best entry for a key from entries_by_key
+---@param cache table
+---@param lang string
+---@param key string
+local function reselect_best_entry(cache, lang, key)
+  if not cache.entries_by_key or not cache.entries_by_key[lang] then
+    return
+  end
+  local entries = cache.entries_by_key[lang][key]
+  if not entries or #entries == 0 then
+    -- No entries left, remove from index
+    if cache.index and cache.index[lang] then
+      cache.index[lang][key] = nil
+    end
+    -- Cleanup empty table
+    cache.entries_by_key[lang][key] = nil
+    return
+  end
+  -- Find best priority entry
+  local best = nil
+  for _, entry in ipairs(entries) do
+    if not best or entry.priority < best.priority then
+      best = entry
+    end
+  end
+  if best then
+    cache.index[lang] = cache.index[lang] or {}
+    cache.index[lang][key] = { value = best.value, file = best.file, priority = best.priority }
+  end
+end
+
+---Parse a single resource file and return entries with metadata
+---@param path string
+---@param roots table
+---@return { entries: table, meta: table, mtime: integer }|nil, string|nil
+local function parse_file(path, roots)
+  if not path or path == "" then
+    return nil, "path is empty"
+  end
+  if not util.file_exists(path) then
+    return nil, "file not found"
+  end
+
+  local norm_path = normalize_path(path)
+  if not norm_path then
+    return nil, "failed to normalize path"
+  end
+
+  -- Determine root/kind/lang/namespace/is_root from path
+  local file_meta = nil
+  for _, root in ipairs(roots or {}) do
+    local root_path = normalize_path(root.path)
+    if root_path and path_under(norm_path, root_path) then
+      if norm_path == root_path then
+        break
+      end
+      local rel = norm_path:sub(#root_path + 2)
+      if rel:sub(-5) ~= ".json" then
+        break
+      end
+      local parts = vim.split(rel, "/", { plain = true })
+      if root.kind == "i18next" then
+        if #parts == 2 then
+          file_meta = {
+            kind = root.kind,
+            root = root_path,
+            lang = parts[1],
+            namespace = parts[2]:sub(1, -6),
+            is_root = false,
+          }
+          break
+        end
+      elseif root.kind == "next-intl" then
+        if #parts == 1 then
+          file_meta = {
+            kind = root.kind,
+            root = root_path,
+            lang = parts[1]:sub(1, -6),
+            namespace = nil,
+            is_root = true,
+          }
+          break
+        elseif #parts == 2 then
+          file_meta = {
+            kind = root.kind,
+            root = root_path,
+            lang = parts[1],
+            namespace = parts[2]:sub(1, -6),
+            is_root = false,
+          }
+          break
+        end
+      end
+      break
+    end
+  end
+
+  if not file_meta then
+    return nil, "file is not within any known root"
+  end
+
+  -- Read and parse JSON
+  local data, err = read_json(path)
+  if not data then
+    return nil, err or "json error"
+  end
+
+  local mtime = util.file_mtime(path)
+  local entries = {}
+
+  if file_meta.kind == "i18next" then
+    -- i18next: key = namespace:path, priority = 30
+    local flat = util.flatten_table(data)
+    for key, value in pairs(flat) do
+      local canonical = file_meta.namespace .. ":" .. key
+      table.insert(entries, {
+        lang = file_meta.lang,
+        key = canonical,
+        value = value,
+        priority = 30,
+      })
+    end
+  elseif file_meta.kind == "next-intl" then
+    if file_meta.is_root then
+      -- next-intl root file: contains multiple namespaces, priority = 40
+      for ns, ns_data in pairs(data) do
+        if type(ns_data) == "table" then
+          local flat = util.flatten_table(ns_data)
+          for key, value in pairs(flat) do
+            local canonical = ns .. ":" .. key
+            table.insert(entries, {
+              lang = file_meta.lang,
+              key = canonical,
+              value = value,
+              priority = 40,
+            })
+          end
+        end
+      end
+    else
+      -- next-intl namespace file: priority = 50
+      local flat = util.flatten_table(data)
+      for key, value in pairs(flat) do
+        local canonical = file_meta.namespace .. ":" .. key
+        table.insert(entries, {
+          lang = file_meta.lang,
+          key = canonical,
+          value = value,
+          priority = 50,
+        })
+      end
+    end
+  end
+
+  return { entries = entries, meta = file_meta, mtime = mtime }, nil
+end
+
+---Remove old entries for a file from the cache
+---@param cache table
+---@param path string
+local function remove_old_entries(cache, path)
+  local file_entries = cache.file_entries and cache.file_entries[path]
+  if not file_entries then
+    return
+  end
+
+  -- Track which (lang, key) pairs need reselection
+  local to_reselect = {}
+  for _, entry in ipairs(file_entries) do
+    local lang, key = entry.lang, entry.key
+    -- Remove this file's entry from entries_by_key
+    if cache.entries_by_key and cache.entries_by_key[lang] and cache.entries_by_key[lang][key] then
+      local entries = cache.entries_by_key[lang][key]
+      for i = #entries, 1, -1 do
+        if entries[i].file == path then
+          table.remove(entries, i)
+        end
+      end
+      to_reselect[lang] = to_reselect[lang] or {}
+      to_reselect[lang][key] = true
+    end
+  end
+
+  -- Reselect best entry for affected keys
+  for lang, keys in pairs(to_reselect) do
+    for key, _ in pairs(keys) do
+      reselect_best_entry(cache, lang, key)
+    end
+  end
+
+  -- Clear file_entries for this path
+  cache.file_entries[path] = nil
+end
+
+---Apply a single file change to the cache
+---@param cache table
+---@param path string
+---@return boolean success
+---@return string|nil error
+local function apply_file_change(cache, path)
+  local norm_path = normalize_path(path)
+  if not norm_path then
+    return false, "failed to normalize path"
+  end
+
+  if util.file_exists(norm_path) then
+    -- File exists: parse and update
+    local result, err = parse_file(norm_path, cache.roots)
+    if result then
+      -- Remove old entries first
+      remove_old_entries(cache, norm_path)
+
+      -- Insert new entries
+      for _, entry in ipairs(result.entries) do
+        set_entry_tracked(cache, entry.lang, entry.key, entry.value, norm_path, entry.priority)
+      end
+
+      -- Update file metadata
+      cache.files[norm_path] = result.mtime
+      cache.file_meta = cache.file_meta or {}
+      cache.file_meta[norm_path] = result.meta
+
+      -- Clear any previous error for this file
+      if cache.file_errors and cache.file_errors[norm_path] then
+        cache.file_errors[norm_path] = nil
+        -- Remove from cache.errors list
+        if cache.errors then
+          for i = #cache.errors, 1, -1 do
+            if cache.errors[i].file == norm_path then
+              table.remove(cache.errors, i)
+            end
+          end
+        end
+      end
+
+      -- Update languages if new lang discovered
+      local meta = result.meta
+      if meta and meta.lang then
+        local found = false
+        for _, lang in ipairs(cache.languages or {}) do
+          if lang == meta.lang then
+            found = true
+            break
+          end
+        end
+        if not found then
+          cache.languages = cache.languages or {}
+          table.insert(cache.languages, meta.lang)
+          table.sort(cache.languages)
+        end
+      end
+
+      return true, nil
+    else
+      -- Parse error: keep old entries, record error
+      cache.file_errors = cache.file_errors or {}
+      cache.file_errors[norm_path] = { error = err, mtime = util.file_mtime(norm_path) }
+
+      -- Add to cache.errors for doctor display
+      cache.errors = cache.errors or {}
+      local existing_error = false
+      for _, e in ipairs(cache.errors) do
+        if e.file == norm_path then
+          e.error = err
+          existing_error = true
+          break
+        end
+      end
+      if not existing_error then
+        local meta = cache.file_meta and cache.file_meta[norm_path]
+        local lang = meta and meta.lang or "unknown"
+        table.insert(cache.errors, { lang = lang, file = norm_path, error = err })
+      end
+
+      return false, err
+    end
+  else
+    -- File deleted: remove entries and metadata
+    remove_old_entries(cache, norm_path)
+
+    -- Save lang info before clearing file_meta (needed for language cleanup)
+    local deleted_lang = nil
+    if cache.file_meta and cache.file_meta[norm_path] then
+      deleted_lang = cache.file_meta[norm_path].lang
+    end
+
+    -- Clear file metadata
+    if cache.files then
+      cache.files[norm_path] = nil
+    end
+    if cache.file_meta then
+      cache.file_meta[norm_path] = nil
+    end
+    if cache.file_errors then
+      cache.file_errors[norm_path] = nil
+    end
+    -- Remove from cache.errors
+    if cache.errors then
+      for i = #cache.errors, 1, -1 do
+        if cache.errors[i].file == norm_path then
+          table.remove(cache.errors, i)
+        end
+      end
+    end
+
+    -- Check if language has no remaining entries and remove from languages list
+    if deleted_lang and cache.entries_by_key then
+      local lang_has_entries = false
+      if cache.entries_by_key[deleted_lang] then
+        for _, entries in pairs(cache.entries_by_key[deleted_lang]) do
+          if entries and #entries > 0 then
+            lang_has_entries = true
+            break
+          end
+        end
+      end
+      if not lang_has_entries and cache.languages then
+        for i = #cache.languages, 1, -1 do
+          if cache.languages[i] == deleted_lang then
+            table.remove(cache.languages, i)
+            break
+          end
+        end
+        -- Also cleanup empty entries_by_key table
+        if cache.entries_by_key[deleted_lang] then
+          local empty = true
+          for _, _ in pairs(cache.entries_by_key[deleted_lang]) do
+            empty = false
+            break
+          end
+          if empty then
+            cache.entries_by_key[deleted_lang] = nil
+          end
+        end
+        -- Cleanup empty index
+        if cache.index and cache.index[deleted_lang] then
+          local empty = true
+          for _, _ in pairs(cache.index[deleted_lang]) do
+            empty = false
+            break
+          end
+          if empty then
+            cache.index[deleted_lang] = nil
+          end
+        end
+      end
+    end
+
+    return true, nil
+  end
+end
+
 ---@param lang string
 ---@param namespace string
 ---@param data table
@@ -357,21 +761,50 @@ local function list_json_files(root)
 end
 
 ---@param root string
----@return table, table, table, I18nStatusResourceError[]
-local function load_i18next(root)
+---@param root_path string normalized root path for meta
+---@return table, table, table, I18nStatusResourceError[], table, table, table
+local function load_i18next(root, root_path)
   local index = {}
   local files = {}
   local languages = {}
   local errors = {}
+  local entries_by_key = {}
+  local file_entries = {}
+  local file_meta = {}
   for _, lang in ipairs(list_dirs(root)) do
     table.insert(languages, lang)
     local lang_root = util.path_join(root, lang)
-    for _, path in ipairs(list_json_files(lang_root)) do
+    for _, raw_path in ipairs(list_json_files(lang_root)) do
+      -- Normalize path for consistent lookups
+      local path = normalize_path(raw_path) or raw_path
       local namespace = vim.fn.fnamemodify(path, ":t:r")
       local data, err = read_json(path)
       files[path] = util.file_mtime(path)
+
+      -- Store file meta
+      file_meta[path] = {
+        kind = "i18next",
+        root = root_path or root,
+        lang = lang,
+        namespace = namespace,
+        is_root = false,
+      }
+
       if data then
-        merge_namespace(lang, namespace, data, index, path, 30)
+        local flat = util.flatten_table(data)
+        for key, value in pairs(flat) do
+          local canonical = namespace .. ":" .. key
+          set_entry(index, lang, canonical, value, path, 30)
+
+          -- Track in entries_by_key
+          entries_by_key[lang] = entries_by_key[lang] or {}
+          entries_by_key[lang][canonical] = entries_by_key[lang][canonical] or {}
+          table.insert(entries_by_key[lang][canonical], { value = value, file = path, priority = 30 })
+
+          -- Track in file_entries
+          file_entries[path] = file_entries[path] or {}
+          table.insert(file_entries[path], { lang = lang, key = canonical, priority = 30 })
+        end
       else
         local message = err or "json error"
         set_entry(index, lang, "__error__", message, path, 1)
@@ -379,39 +812,92 @@ local function load_i18next(root)
       end
     end
   end
-  return index, files, languages, errors
+  return index, files, languages, errors, entries_by_key, file_entries, file_meta
 end
 
 ---@param root string
----@return table, table, table, I18nStatusResourceError[]
-local function load_next_intl(root)
+---@param root_path string normalized root path for meta
+---@return table, table, table, I18nStatusResourceError[], table, table, table
+local function load_next_intl(root, root_path)
   local index = {}
   local files = {}
   local languages = {}
   local errors = {}
+  local entries_by_key = {}
+  local file_entries = {}
+  local file_meta = {}
   for _, lang in ipairs(list_dirs(root)) do
     table.insert(languages, lang)
     local lang_root = util.path_join(root, lang)
-    for _, path in ipairs(list_json_files(lang_root)) do
+    for _, raw_path in ipairs(list_json_files(lang_root)) do
+      -- Normalize path for consistent lookups
+      local path = normalize_path(raw_path) or raw_path
       local namespace = vim.fn.fnamemodify(path, ":t:r")
       local data, err = read_json(path)
       files[path] = util.file_mtime(path)
+
+      -- Store file meta
+      file_meta[path] = {
+        kind = "next-intl",
+        root = root_path or root,
+        lang = lang,
+        namespace = namespace,
+        is_root = false,
+      }
+
       if data then
-        merge_namespace(lang, namespace, data, index, path, 50)
+        local flat = util.flatten_table(data)
+        for key, value in pairs(flat) do
+          local canonical = namespace .. ":" .. key
+          set_entry(index, lang, canonical, value, path, 50)
+
+          -- Track in entries_by_key
+          entries_by_key[lang] = entries_by_key[lang] or {}
+          entries_by_key[lang][canonical] = entries_by_key[lang][canonical] or {}
+          table.insert(entries_by_key[lang][canonical], { value = value, file = path, priority = 50 })
+
+          -- Track in file_entries
+          file_entries[path] = file_entries[path] or {}
+          table.insert(file_entries[path], { lang = lang, key = canonical, priority = 50 })
+        end
       else
         local message = err or "json error"
         set_entry(index, lang, "__error__", message, path, 1)
         table.insert(errors, { lang = lang, file = path, error = message })
       end
     end
-    local root_file = util.path_join(root, lang .. ".json")
-    if util.file_exists(root_file) then
+    local raw_root_file = util.path_join(root, lang .. ".json")
+    if util.file_exists(raw_root_file) then
+      -- Normalize path for consistent lookups
+      local root_file = normalize_path(raw_root_file) or raw_root_file
       local data, err = read_json(root_file)
       files[root_file] = util.file_mtime(root_file)
+
+      -- Store file meta for root file
+      file_meta[root_file] = {
+        kind = "next-intl",
+        root = root_path or root,
+        lang = lang,
+        namespace = nil,
+        is_root = true,
+      }
+
       if data then
         for ns, ns_data in pairs(data) do
           if type(ns_data) == "table" then
             merge_namespace(lang, ns, ns_data, index, root_file, 40)
+
+            -- Track in entries_by_key and file_entries for root file
+            local flat = util.flatten_table(ns_data)
+            for key, value in pairs(flat) do
+              local canonical = ns .. ":" .. key
+              entries_by_key[lang] = entries_by_key[lang] or {}
+              entries_by_key[lang][canonical] = entries_by_key[lang][canonical] or {}
+              table.insert(entries_by_key[lang][canonical], { value = value, file = root_file, priority = 40 })
+
+              file_entries[root_file] = file_entries[root_file] or {}
+              table.insert(file_entries[root_file], { lang = lang, key = canonical, priority = 40 })
+            end
           end
         end
       else
@@ -421,7 +907,7 @@ local function load_next_intl(root)
       end
     end
   end
-  return index, files, languages, errors
+  return index, files, languages, errors, entries_by_key, file_entries, file_meta
 end
 
 ---@param roots table
@@ -563,12 +1049,19 @@ function M.build_index(roots)
   local languages = {}
   local lang_seen = {}
   local errors = {}
+  local merged_entries_by_key = {}
+  local merged_file_entries = {}
+  local merged_file_meta = {}
   for _, root in ipairs(roots) do
-    local index, root_files, root_langs, root_errors = {}, {}, {}, {}
+    local index, root_files, root_langs, root_errors, entries_by_key, file_entries, file_meta =
+      {}, {}, {}, {}, {}, {}, {}
+    local norm_root_path = normalize_path(root.path)
     if root.kind == "i18next" then
-      index, root_files, root_langs, root_errors = load_i18next(root.path)
+      index, root_files, root_langs, root_errors, entries_by_key, file_entries, file_meta =
+        load_i18next(root.path, norm_root_path)
     else
-      index, root_files, root_langs, root_errors = load_next_intl(root.path)
+      index, root_files, root_langs, root_errors, entries_by_key, file_entries, file_meta =
+        load_next_intl(root.path, norm_root_path)
     end
     for path, mtime in pairs(root_files) do
       files[path] = mtime
@@ -588,9 +1081,39 @@ function M.build_index(roots)
     for _, entry in ipairs(root_errors) do
       table.insert(errors, entry)
     end
+    -- Merge entries_by_key
+    for lang, keys in pairs(entries_by_key) do
+      merged_entries_by_key[lang] = merged_entries_by_key[lang] or {}
+      for key, entries in pairs(keys) do
+        merged_entries_by_key[lang][key] = merged_entries_by_key[lang][key] or {}
+        for _, entry in ipairs(entries) do
+          table.insert(merged_entries_by_key[lang][key], entry)
+        end
+      end
+    end
+    -- Merge file_entries
+    for path, entries in pairs(file_entries) do
+      merged_file_entries[path] = merged_file_entries[path] or {}
+      for _, entry in ipairs(entries) do
+        table.insert(merged_file_entries[path], entry)
+      end
+    end
+    -- Merge file_meta
+    for path, meta in pairs(file_meta) do
+      merged_file_meta[path] = meta
+    end
   end
   table.sort(languages)
-  return { index = merged_index, files = files, languages = languages, roots = roots, errors = errors }
+  return {
+    index = merged_index,
+    files = files,
+    languages = languages,
+    roots = roots,
+    errors = errors,
+    entries_by_key = merged_entries_by_key,
+    file_entries = merged_file_entries,
+    file_meta = merged_file_meta,
+  }
 end
 
 ---@return boolean
@@ -667,6 +1190,82 @@ function M.ensure_index(start_dir)
   M.caches[key] = built
   M.last_cache_key = key
   return built
+end
+
+---Apply incremental changes to the cache
+---@param cache_key string
+---@param paths string[]
+---@param opts table|nil
+---@return boolean success
+---@return boolean|nil needs_rebuild
+function M.apply_changes(cache_key, paths, opts)
+  opts = opts or {}
+  local cache = M.caches[cache_key]
+  if not cache then
+    -- No cache, need full rebuild
+    return false, true
+  end
+
+  local needs_rebuild = false
+
+  for _, path in ipairs(paths or {}) do
+    local norm_path = normalize_path(path)
+    if not norm_path then
+      needs_rebuild = true
+    else
+      -- Check if path is a directory
+      local stat = uv.fs_stat(norm_path)
+      if stat and stat.type == "directory" then
+        needs_rebuild = true
+      else
+        -- Check if path is within any root
+        local within_root = false
+        for _, root in ipairs(cache.roots or {}) do
+          local root_path = normalize_path(root.path)
+          if root_path and path_under(norm_path, root_path) then
+            within_root = true
+            break
+          end
+        end
+
+        if not within_root then
+          -- Path outside roots, might be a new file structure
+          needs_rebuild = true
+        else
+          -- Non-json files under root may change structure; rebuild is safer.
+          if norm_path:sub(-5) ~= ".json" then
+            needs_rebuild = true
+          else
+            -- Apply file change
+            local ok, err = apply_file_change(cache, norm_path)
+            if not ok and err == "file is not within any known root" then
+              needs_rebuild = true
+            end
+          end
+        end
+      end
+    end
+  end
+
+  if needs_rebuild and opts.allow_rebuild ~= false then
+    -- Trigger full rebuild
+    cache.dirty = true
+    return false, true
+  end
+
+  if not needs_rebuild then
+    -- Update structural signature and namespaces
+    local signature = compute_structural_signature(cache.roots)
+    cache.structural_signature = signature
+    cache.namespaces = collect_namespaces(cache.index)
+
+    local watch = M.watchers[cache_key]
+    if watch then
+      watch.signature = signature
+    end
+  end
+
+  return true, needs_rebuild
 end
 
 ---@param start_dir string
@@ -921,7 +1520,7 @@ local function restart_watch(watch)
 end
 
 ---@param start_dir string
----@param on_change fun()
+---@param on_change fun(event: table|nil)
 ---@param opts table|nil
 ---@return string|nil key watcher key for reference counting
 function M.start_watch(start_dir, on_change, opts)
@@ -969,12 +1568,19 @@ function M.start_watch(start_dir, on_change, opts)
     debounce_ms = debounce,
     needs_rescan = false,
     rescan_paths = rescan_paths,
+    pending_paths = {},
+    pending_needs_rebuild = false,
   }
   M.watchers[key] = watch
 
-  local function schedule_change(rescan)
+  local function schedule_change(rescan, changed_path)
     if rescan then
       watch.needs_rescan = true
+      watch.pending_needs_rebuild = true
+    end
+    -- Collect changed path
+    if changed_path then
+      watch.pending_paths[changed_path] = true
     end
     safe_close_handle(watch.timer)
     watch.timer = uv.new_timer()
@@ -983,10 +1589,21 @@ function M.start_watch(start_dir, on_change, opts)
       0,
       vim.schedule_wrap(function()
         watch.timer = nil
-        mark_cache_dirty(key)
+        -- Collect pending paths into a list
+        local collected_paths = {}
+        for p, _ in pairs(watch.pending_paths) do
+          table.insert(collected_paths, p)
+        end
+        local needs_rebuild = watch.pending_needs_rebuild
+        -- Clear pending state
+        watch.pending_paths = {}
+        watch.pending_needs_rebuild = false
+
+        -- NOTE: Do NOT call mark_cache_dirty here - let the callback decide
+        -- whether to use incremental update or mark dirty for full rebuild
         local cb = watch.on_change
         if cb then
-          cb()
+          cb({ paths = collected_paths, needs_rebuild = needs_rebuild })
         end
         if watch.needs_rescan and watch.start_dir and watch.on_change then
           watch.needs_rescan = false
@@ -1001,7 +1618,7 @@ function M.start_watch(start_dir, on_change, opts)
       local handle = uv.new_fs_event()
       if handle then
         local start_ok, start_err = pcall(function()
-          handle:start(path, {}, function(err, _filename, _events)
+          handle:start(path, {}, function(err, filename, _events)
             if err then
               log_watcher_error(path, err)
               -- Schedule recovery: stop current watcher and restart after delay
@@ -1012,7 +1629,15 @@ function M.start_watch(start_dir, on_change, opts)
               end, 5000)
               return
             end
-            schedule_change(rescan_paths[path] == true)
+            -- Determine the actual changed file path
+            local changed_path = path
+            if filename and filename ~= "" then
+              local stat = uv.fs_stat(path)
+              if stat and stat.type == "directory" then
+                changed_path = util.path_join(path, filename)
+              end
+            end
+            schedule_change(rescan_paths[path] == true, changed_path)
           end)
         end)
 

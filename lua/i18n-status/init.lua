@@ -22,7 +22,22 @@ local function setup_watch(cfg, bufnr)
 
     -- Start watcher and record key for this buffer
     -- resources.start_watch handles reference counting internally
-    local watcher_key = resources.start_watch(start_dir, function()
+    local watcher_key = resources.start_watch(start_dir, function(event)
+      -- Try incremental update if we have specific paths
+      if event and event.paths and #event.paths > 0 and not event.needs_rebuild then
+        local cache_key = resources.get_watcher_key(start_dir)
+        if cache_key then
+          local success, needs_rebuild = resources.apply_changes(cache_key, event.paths)
+          if not success and needs_rebuild then
+            -- Fall back to mark dirty for full rebuild
+            resources.mark_dirty()
+          end
+        else
+          resources.mark_dirty()
+        end
+      else
+        resources.mark_dirty()
+      end
       core.refresh_all(cfg)
     end, { debounce_ms = debounce_ms })
 
