@@ -3,11 +3,30 @@ local M = {}
 
 local util = require("i18n-status.util")
 
+---@class I18nStatusHoverValue
+---@field value string|nil
+---@field file string|nil
+---@field missing boolean
+
+---@class I18nStatusHoverInfo
+---@field key string
+---@field namespace string|nil
+---@field status string|nil
+---@field reason string|nil
+---@field primary_lang string
+---@field display_lang string
+---@field focus_lang string
+---@field lang_order string[]
+---@field values table<string, I18nStatusHoverValue>
+---@field missing_langs string[]|nil
+---@field localized_langs string[]|nil
+---@field mismatch_langs string[]|nil
+
 ---@class I18nStatusResolved
 ---@field key string
 ---@field text string
 ---@field status string
----@field hover table
+---@field hover I18nStatusHoverInfo
 
 ---@param value string|nil
 ---@param key string|nil
