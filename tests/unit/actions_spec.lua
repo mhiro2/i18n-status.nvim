@@ -40,6 +40,37 @@ describe("actions (unit)", function()
     assert.is_nil(item)
   end)
 
+  it("uses window cursor for non-current buffer", function()
+    local current_buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(current_buf, 0, -1, false, { "current" })
+    vim.api.nvim_set_current_buf(current_buf)
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "01234567890" })
+    state.inline_by_buf[buf] = {
+      [0] = {
+        { col = 0, end_col = 4, resolved = { key = "first", hover = { values = {} } } },
+        { col = 6, end_col = 10, resolved = { key = "second", hover = { values = {} } } },
+      },
+    }
+
+    local win = vim.api.nvim_open_win(buf, false, {
+      relative = "editor",
+      row = 0,
+      col = 0,
+      width = 12,
+      height = 1,
+      style = "minimal",
+    })
+    vim.api.nvim_win_set_cursor(win, { 1, 7 })
+
+    local item = actions.item_at_cursor(buf)
+
+    vim.api.nvim_win_close(win, true)
+
+    assert.are.equal("second", item.key)
+  end)
+
   it("prefers current language when jumping to definition", function()
     local original_cmd = vim.api.nvim_cmd
     local opened = nil
