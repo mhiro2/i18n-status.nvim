@@ -865,6 +865,16 @@ end
 -- Forward declarations
 local refresh_doctor_items
 
+---@param ctx table
+---@param opts? { full?: boolean }
+local function refresh_doctor_async(ctx, opts)
+  local doctor = require("i18n-status.doctor")
+  doctor.refresh(ctx, opts, function(issues)
+    ctx.issues = issues
+    refresh_doctor_items(ctx)
+  end)
+end
+
 ---@param issues I18nStatusDoctorIssue[]
 ---@param cache table
 ---@param primary_lang string
@@ -1062,9 +1072,7 @@ local function edit_lang(ctx, lang)
     end
 
     if ctx.is_doctor_review then
-      local doctor = require("i18n-status.doctor")
-      ctx.issues = doctor.refresh(ctx)
-      refresh_doctor_items(ctx)
+      refresh_doctor_async(ctx)
     end
   end)
 end
@@ -1229,9 +1237,7 @@ local function rename_item(ctx)
       return
     end
     if ctx.is_doctor_review then
-      local doctor = require("i18n-status.doctor")
-      ctx.issues = doctor.refresh(ctx, { full = true })
-      refresh_doctor_items(ctx)
+      refresh_doctor_async(ctx, { full = true })
     end
   end)
 end
@@ -1363,9 +1369,7 @@ local function add_key(ctx)
       core.refresh_all(ctx.config)
     end
     if ctx.is_doctor_review then
-      local doctor = require("i18n-status.doctor")
-      ctx.issues = doctor.refresh(ctx)
-      refresh_doctor_items(ctx)
+      refresh_doctor_async(ctx)
     end
   end)
 end
