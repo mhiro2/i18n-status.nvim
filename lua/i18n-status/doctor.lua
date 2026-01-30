@@ -237,82 +237,6 @@ local function determine_project_root(roots, start_dir)
   return util.dirname(common) or common
 end
 
----@param project_root string
----@return string[]
-local function get_files_via_git(project_root)
-  local function run_git(cwd, args)
-    local cmd = { "git" }
-    if cwd and cwd ~= "" then
-      table.insert(cmd, "-C")
-      table.insert(cmd, cwd)
-    end
-    for _, arg in ipairs(args) do
-      table.insert(cmd, arg)
-    end
-    local ok, job = pcall(vim.system, cmd, { text = true })
-    if not ok or not job then
-      return nil, "failed to start git"
-    end
-    local ok_wait, status = pcall(function()
-      return job:wait()
-    end)
-    if not ok_wait or not status then
-      return nil, "git wait failed"
-    end
-    if status.code ~= 0 then
-      return nil, job.stderr or "git failed"
-    end
-    return job.stdout or "", nil
-  end
-
-  local inside = run_git(project_root, { "rev-parse", "--is-inside-work-tree" })
-  if not inside or vim.trim(inside) ~= "true" then
-    return {}
-  end
-
-  local git_root = project_root
-  local top = run_git(project_root, { "rev-parse", "--show-toplevel" })
-  if top and top ~= "" then
-    git_root = vim.trim(top)
-  end
-
-  local ls_out = run_git(git_root, { "ls-files", "-z", "--cached", "--others", "--exclude-standard" })
-  if not ls_out or ls_out == "" then
-    return {}
-  end
-  return parse_git_ls_output(git_root, ls_out)
-end
-
----@param project_root string
----@return string[]
-local function get_files_via_fs_walk(project_root)
-  local files = {}
-  local function walk(dir)
-    local ok, handle = pcall(uv.fs_scandir, dir)
-    if not ok or not handle then
-      return
-    end
-    while true do
-      local name, typ = uv.fs_scandir_next(handle)
-      if not name then
-        break
-      end
-      local full_path = util.path_join(dir, name)
-      if typ == "directory" then
-        if not is_excluded_path(full_path) then
-          walk(full_path)
-        end
-      elseif typ == "file" then
-        if is_target_file(name) then
-          table.insert(files, full_path)
-        end
-      end
-    end
-  end
-  walk(project_root)
-  return files
-end
-
 ---@param file_path string
 ---@param fallback_ns string
 ---@param open_buf_paths table<string, boolean>
@@ -346,28 +270,6 @@ local function extract_keys_from_file(file_path, fallback_ns, open_buf_paths)
   local items = scan.extract_text(content, lang, { fallback_namespace = fallback_ns })
   for _, item in ipairs(items) do
     used_keys[item.key] = true
-  end
-  return used_keys
-end
-
----@param project_root string
----@param fallback_ns string
----@param open_buf_paths table<string, boolean>
----@return I18nStatusDoctorKeySet
-local function collect_keys_from_project(project_root, fallback_ns, open_buf_paths)
-  local used_keys = {}
-  -- Try git first
-  local files = get_files_via_git(project_root)
-  if #files == 0 then
-    -- Fallback to FS walk
-    files = get_files_via_fs_walk(project_root)
-  end
-  -- Extract keys from each file
-  for _, file_path in ipairs(files) do
-    local keys = extract_keys_from_file(file_path, fallback_ns, open_buf_paths)
-    for key, _ in pairs(keys) do
-      used_keys[key] = true
-    end
   end
   return used_keys
 end
@@ -875,20 +777,27 @@ end
 
 ---@param bufnr integer|nil
 ---@param config I18nStatusConfig|nil
----@return I18nStatusDoctorIssue[]
-function M.diagnose(bufnr, config)
+---@param cb fun(issues: I18nStatusDoctorIssue[])
+function M.diagnose(bufnr, config, cb)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   local ctx = prepare_context(bufnr, config)
-  ctx.project_keys = collect_keys_from_project(ctx.project_root, ctx.fallback_ns, ctx.open_buf_paths)
-  return finalize_issues(ctx)
+  ctx.cancelled = false
+
+  collect_project_keys_async(ctx, function(project_keys)
+    if ctx.cancelled then
+      return
+    end
+    ctx.project_keys = project_keys
+    cb(finalize_issues(ctx))
+  end)
 end
 
 ---Refresh doctor context.
 ---Lightweight by default; set opts.full = true to re-collect project_keys.
 ---@param ctx I18nStatusDoctorContext
 ---@param opts? { full?: boolean }
----@return I18nStatusDoctorIssue[]
-function M.refresh(ctx, opts)
+---@param cb fun(issues: I18nStatusDoctorIssue[])
+function M.refresh(ctx, opts, cb)
   opts = opts or {}
   local full = opts.full == true
 
@@ -907,8 +816,16 @@ function M.refresh(ctx, opts)
     ctx.used_keys = base.used_keys
     ctx.open_buf_paths = base.open_buf_paths
     ctx.project_root = base.project_root
-    ctx.project_keys = collect_keys_from_project(ctx.project_root, ctx.fallback_ns, ctx.open_buf_paths or {})
-    return finalize_issues(ctx)
+
+    ctx.cancelled = false
+    collect_project_keys_async(ctx, function(project_keys)
+      if ctx.cancelled then
+        return
+      end
+      ctx.project_keys = project_keys
+      cb(finalize_issues(ctx))
+    end)
+    return
   end
 
   if not ctx.fallback_ns or ctx.fallback_ns == "" then
@@ -943,7 +860,7 @@ function M.refresh(ctx, opts)
   end
 
   -- Re-finalize issues (reuses ctx.project_keys)
-  return finalize_issues(ctx)
+  cb(finalize_issues(ctx))
 end
 
 ---@param bufnr integer|nil

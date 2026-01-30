@@ -3,6 +3,20 @@ local config_mod = require("i18n-status.config")
 local helpers = require("tests.helpers")
 local state = require("i18n-status.state")
 
+local function diagnose(bufnr, config)
+  local done = false
+  local result = nil
+  doctor.diagnose(bufnr, config, function(issues)
+    result = issues
+    done = true
+  end)
+  local ok = vim.wait(5000, function()
+    return done
+  end)
+  assert.is_true(ok, "doctor.diagnose timed out")
+  return result
+end
+
 local function init_git_repo()
   if vim.fn.executable("git") == 0 then
     return nil
@@ -36,7 +50,7 @@ describe("doctor", function()
         primary_lang = "ja",
       })
 
-      local issues = doctor.diagnose(buf, config)
+      local issues = diagnose(buf, config)
       local counts = { missing = 0, unused = 0 }
       for _, issue in ipairs(issues) do
         if issue.kind == "missing" then
@@ -60,7 +74,7 @@ describe("doctor", function()
         primary_lang = "ja",
       })
 
-      local issues = doctor.diagnose(buf, config)
+      local issues = diagnose(buf, config)
       local found = false
       for _, issue in ipairs(issues) do
         if issue.kind == "resource_root_missing" then
@@ -84,7 +98,7 @@ describe("doctor", function()
         doctor = { ignore_keys = { "^common:ignore$" } },
       })
 
-      local issues = doctor.diagnose(buf, config)
+      local issues = diagnose(buf, config)
       local drift_extra = false
       local ignored_seen = false
       for _, issue in ipairs(issues) do
@@ -114,7 +128,7 @@ describe("doctor", function()
         primary_lang = "ja",
       })
 
-      local issues = doctor.diagnose(buf, config)
+      local issues = diagnose(buf, config)
       local unused_used = false
       local unused_unused = false
       for _, issue in ipairs(issues) do
@@ -154,7 +168,7 @@ describe("doctor", function()
       end
 
       local ok, err = pcall(function()
-        doctor.diagnose(buf, config)
+        diagnose(buf, config)
       end)
 
       vim.api.nvim_create_buf = original_create_buf
@@ -181,7 +195,7 @@ describe("doctor", function()
     local config = config_mod.setup({
       primary_lang = "ja",
     })
-    local issues = doctor.diagnose(buf, config)
+    local issues = diagnose(buf, config)
     local unused = {}
     for _, issue in ipairs(issues) do
       if issue.kind == "unused" then
@@ -218,7 +232,7 @@ describe("doctor", function()
     vim.bo[buf].filetype = "typescriptreact"
 
     local config = config_mod.setup({ primary_lang = "ja" })
-    local issues = doctor.diagnose(buf, config)
+    local issues = diagnose(buf, config)
     local unused = {}
     for _, issue in ipairs(issues) do
       if issue.kind == "unused" then
@@ -251,7 +265,7 @@ describe("doctor", function()
     vim.bo[buf].filetype = "typescript"
 
     local config = config_mod.setup({ primary_lang = "ja" })
-    local issues = doctor.diagnose(buf, config)
+    local issues = diagnose(buf, config)
     local unused = {}
     for _, issue in ipairs(issues) do
       if issue.kind == "unused" then
@@ -279,7 +293,7 @@ describe("doctor", function()
     vim.bo[buf].filetype = "typescript"
 
     local config = config_mod.setup({ primary_lang = "ja" })
-    local issues = doctor.diagnose(buf, config)
+    local issues = diagnose(buf, config)
     local unused = {}
     for _, issue in ipairs(issues) do
       if issue.kind == "unused" then
@@ -306,7 +320,7 @@ describe("doctor", function()
     vim.bo[buf].filetype = "typescriptreact"
 
     local config = config_mod.setup({ primary_lang = "ja" })
-    local issues = doctor.diagnose(buf, config)
+    local issues = diagnose(buf, config)
     local unused = {}
     for _, issue in ipairs(issues) do
       if issue.kind == "unused" then
