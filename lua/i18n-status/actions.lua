@@ -5,6 +5,21 @@ local ui = require("i18n-status.ui")
 local state = require("i18n-status.state")
 local unpack = unpack
 
+---@param bufnr integer
+---@return integer|nil
+local function window_for_buf(bufnr)
+  local current = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_get_buf(current) == bufnr then
+    return current
+  end
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(win) == bufnr then
+      return win
+    end
+  end
+  return nil
+end
+
 ---@param path string
 local function edit_file(path)
   if vim.api.nvim_cmd then
@@ -17,7 +32,11 @@ end
 ---@param bufnr integer
 ---@return I18nStatusResolved|nil
 function M.item_at_cursor(bufnr)
-  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+  local winid = window_for_buf(bufnr)
+  if not winid then
+    return nil
+  end
+  local row, col = unpack(vim.api.nvim_win_get_cursor(winid))
   row = row - 1
   local entries = state.inline_by_buf[bufnr] and state.inline_by_buf[bufnr][row] or nil
   if not entries then
