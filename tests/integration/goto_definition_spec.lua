@@ -35,6 +35,7 @@ describe("goto definition mapping", function()
       vim.api.nvim_cmd = function(cmd, opts)
         if cmd.cmd == "edit" then
           opened = cmd.args[1]
+          return
         end
         return original_cmd(cmd, opts)
       end
