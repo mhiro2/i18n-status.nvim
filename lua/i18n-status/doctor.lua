@@ -178,29 +178,11 @@ local function rebuild_open_buf_paths(ctx)
   ctx.open_buf_paths = open_buf_paths
 end
 
----@param start_dir string
----@return string|nil
-local function find_git_root(start_dir)
-  local dir = start_dir
-  while dir and dir ~= "" do
-    local marker = util.path_join(dir, ".git")
-    if util.file_exists(marker) or util.is_dir(marker) then
-      return dir
-    end
-    local parent = util.dirname(dir)
-    if not parent or parent == "" or parent == dir then
-      break
-    end
-    dir = parent
-  end
-  return nil
-end
-
 ---@param roots table
 ---@param start_dir string
 ---@return string
 local function determine_project_root(roots, start_dir)
-  local git_root = find_git_root(start_dir)
+  local git_root = util.find_git_root(start_dir)
   if git_root then
     return git_root
   end
