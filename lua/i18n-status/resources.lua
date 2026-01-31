@@ -8,6 +8,45 @@ local M = {
 }
 
 local util = require("i18n-status.util")
+
+---@class I18nStatusResourceItem
+---@field value string|nil
+---@field file string|nil
+---@field priority integer
+
+---@class I18nStatusFileEntry
+---@field lang string
+---@field key string
+---@field priority integer
+
+---@class I18nStatusFileMeta
+---@field lang string
+---@field namespace string|nil
+
+---@class I18nStatusResourceError
+---@field lang string
+---@field file string
+---@field error string
+
+---@class I18nStatusRootInfo
+---@field path string
+---@field kind "i18next"|"next_intl"
+
+---@class I18nStatusCache
+---@field key string|nil
+---@field index table<string, table<string, I18nStatusResourceItem>> Map of lang -> key -> resource item
+---@field files table<string, integer> Map of file path -> mtime
+---@field languages string[] List of detected languages
+---@field roots I18nStatusRootInfo[] List of resource root directories
+---@field errors I18nStatusResourceError[] List of parsing errors
+---@field namespaces string[] List of detected namespaces
+---@field dirty boolean Whether cache needs rebuild
+---@field checked_at integer Timestamp of last validation check
+---@field structural_signature string|nil Hash of directory structure
+---@field entries_by_key table<string, table<string, table>> Map of lang -> key -> entries with file/priority
+---@field file_entries table<string, I18nStatusFileEntry[]> Map of file -> list of entries
+---@field file_meta table<string, I18nStatusFileMeta> Map of file -> metadata
+---@field file_errors table<string, {error: string, mtime: integer}> Map of file -> parse error info
 local uv = vim.uv or vim.loop
 
 local CACHE_VALIDATE_INTERVAL_MS = 1000

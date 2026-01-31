@@ -292,6 +292,8 @@ function M.refresh()
   if core.should_refresh(bufnr) then
     core.refresh(bufnr, config, 0, { force = true })
     vim.notify("i18n-status: refreshed", vim.log.levels.INFO)
+  else
+    vim.notify("i18n-status: not a supported filetype", vim.log.levels.WARN)
   end
 end
 

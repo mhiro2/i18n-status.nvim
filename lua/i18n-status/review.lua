@@ -43,6 +43,8 @@ local REVIEW_NS = vim.api.nvim_create_namespace("i18n-status-review")
 local highlights_ready = false
 local hl_cache = {}
 
+---@param name string
+---@return boolean
 local function hl_exists(name)
   -- Check cache first to avoid repeated pcall overhead
   if hl_cache[name] ~= nil then
@@ -62,6 +64,8 @@ vim.api.nvim_create_autocmd("ColorScheme", {
   end,
 })
 
+---@vararg string
+---@return string
 local function choose_hl(...)
   local candidates = { ... }
   for _, candidate in ipairs(candidates) do
@@ -72,6 +76,8 @@ local function choose_hl(...)
   return "Normal"
 end
 
+---@param group string
+---@vararg string
 local function define_hl(group, ...)
   vim.api.nvim_set_hl(0, group, { default = true, link = choose_hl(...) })
 end
@@ -223,6 +229,8 @@ local function update_winbar(ctx)
   end
 end
 
+---@param status I18nStatusString|nil
+---@return string
 local function highlight_for_status(status)
   return status_highlights[status] or "I18nStatusReviewStatusDefault"
 end
@@ -337,6 +345,7 @@ local function add_list_divider(buf, width)
   })
 end
 
+---@return string[]
 local function build_keymap_help_lines()
   local title = "I18nDoctor keymaps"
   local divider = string.rep("-", #title)

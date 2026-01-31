@@ -51,6 +51,12 @@ vim.api.nvim_create_user_command("I18nLang", function(args)
   end)
 end, { nargs = "?", complete = complete_lang })
 
+vim.api.nvim_create_user_command("I18nGotoDefinition", function()
+  with_module(function(mod)
+    mod.goto_definition()
+  end)
+end, {})
+
 vim.api.nvim_create_user_command("I18nHover", function()
   with_module(function(mod)
     mod.hover()
