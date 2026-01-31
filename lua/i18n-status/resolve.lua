@@ -110,16 +110,19 @@ function M.compute(items, state, index)
   end
 
   local languages = state.languages or {}
+  local primary = state.primary_lang
+
+  -- Build lang_order once outside the items loop
+  local lang_order = { primary }
+  for _, lang in ipairs(languages) do
+    if lang ~= primary then
+      table.insert(lang_order, lang)
+    end
+  end
+
   for _, item in ipairs(items) do
     local key = item.key
-    local primary = state.primary_lang
     local display_lang = state.current_lang or primary
-    local lang_order = { primary }
-    for _, lang in ipairs(languages) do
-      if lang ~= primary then
-        table.insert(lang_order, lang)
-      end
-    end
     local primary_item = safe_index_get(index, primary, key)
     local primary_value = primary_item and primary_item.value or nil
     local display_item = safe_index_get(index, display_lang, key)

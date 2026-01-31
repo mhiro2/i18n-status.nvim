@@ -1221,7 +1221,7 @@ local function rename_item(ctx)
 
   local source_buf = ctx.source_buf or vim.api.nvim_get_current_buf()
   vim.ui.input({ prompt = "Rename i18n key", default = item.key }, function(input)
-    if not input or util.trim(input) == "" or input == item.key then
+    if not input or vim.trim(input) == "" or input == item.key then
       return
     end
     local ok, err = ops.rename({
@@ -1379,7 +1379,7 @@ end
 ---@return boolean valid Whether the key is valid
 ---@return string|nil error_msg Error message if invalid
 local function validate_key_name(key)
-  if not key or util.trim(key) == "" then
+  if not key or vim.trim(key) == "" then
     return false, "Key name cannot be empty"
   end
 
@@ -1442,7 +1442,7 @@ end
 ---@return boolean valid
 local function validate_translations_non_empty(translations, languages)
   for _, lang in ipairs(languages) do
-    if not translations[lang] or util.trim(translations[lang]) == "" then
+    if not translations[lang] or vim.trim(translations[lang]) == "" then
       vim.notify("All language values must be provided (empty values not allowed)", vim.log.levels.ERROR)
       return false
     end
@@ -1476,7 +1476,7 @@ function M.add_key_command(cfg)
       return
     end
 
-    local key = util.trim(key_input)
+    local key = vim.trim(key_input)
     local valid, err_msg = validate_key_name(key)
     if not valid then
       vim.notify(err_msg, vim.log.levels.ERROR)
