@@ -169,6 +169,13 @@ describe("scan", function()
     assert.are.equal("common:login.title", items[1].key)
   end)
 
+  it("fallback regex handles t() at the start of a line", function()
+    local text = 't("start.key")'
+    local items = scan.extract_text(text, nil, { fallback_namespace = "common" })
+    assert.are.equal(1, #items)
+    assert.are.equal("common:start.key", items[1].key)
+  end)
+
   it("extracts keys from namespace resource file", function()
     local buf = make_buf({
       "{",
