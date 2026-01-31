@@ -3,37 +3,11 @@ local M = {}
 
 local uv = vim.uv or vim.loop
 
----@param tbl table
----@return table
-local function deep_copy(tbl)
-  if type(tbl) ~= "table" then
-    return tbl
-  end
-  local out = {}
-  for k, v in pairs(tbl) do
-    if type(v) == "table" then
-      out[k] = deep_copy(v)
-    else
-      out[k] = v
-    end
-  end
-  return out
-end
-
 ---@param base table
 ---@param extra table
 ---@return table
 function M.tbl_deep_merge(base, extra)
-  -- Deep copy base to avoid mutating it
-  local out = deep_copy(base)
-  for k, v in pairs(extra or {}) do
-    if type(v) == "table" and type(out[k]) == "table" then
-      out[k] = M.tbl_deep_merge(out[k], v)
-    else
-      out[k] = v
-    end
-  end
-  return out
+  return vim.tbl_deep_extend("force", {}, base, extra or {})
 end
 
 ---@param ... string
