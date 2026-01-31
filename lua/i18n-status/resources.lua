@@ -2,12 +2,11 @@
 local M = {
   reader = nil,
   caches = {},
-  watchers = {},
-  watcher_refcounts = {},
   last_cache_key = nil,
 }
 
 local util = require("i18n-status.util")
+local watcher = require("i18n-status.watcher")
 
 ---@class I18nStatusResourceItem
 ---@field value string|nil
@@ -52,9 +51,6 @@ local uv = vim.uv or vim.loop
 local CACHE_VALIDATE_INTERVAL_MS = 1000
 local WATCH_MAX_FILES = 200
 
-local WATCHER_ERROR_THROTTLE_MS = 60000
-local watcher_error_timestamps = {}
-
 local function normalize_path(path)
   if not path or path == "" then
     return path
@@ -77,33 +73,6 @@ local function path_under(path, root)
     prefix = prefix .. "/"
   end
   return path:sub(1, #prefix) == prefix
-end
-
----@param handle userdata|nil
-local function safe_close_handle(handle)
-  if not handle then
-    return
-  end
-  pcall(function()
-    if not handle:is_closing() then
-      handle:stop()
-      handle:close()
-    end
-  end)
-end
-
----@param path string
----@param err string
-local function log_watcher_error(path, err)
-  local now = uv.now()
-  local last_logged = watcher_error_timestamps[path] or 0
-  if (now - last_logged) < WATCHER_ERROR_THROTTLE_MS then
-    return
-  end
-  watcher_error_timestamps[path] = now
-  vim.schedule(function()
-    vim.notify(string.format("i18n-status: file watcher error for %s: %s", path, err), vim.log.levels.WARN)
-  end)
 end
 
 local function current_cache()
@@ -211,13 +180,6 @@ function M.project_root(start_dir, roots)
     return start_dir
   end
   return common
-end
-
----@param key string
----@return boolean
-local function is_watching(key)
-  local watch = M.watchers[key]
-  return watch and watch.signature ~= nil and watch.handles ~= nil and #watch.handles > 0
 end
 
 ---@class I18nStatusResourceItem
@@ -1068,15 +1030,16 @@ local function compute_structural_signature(roots)
 end
 
 ---@param roots table
+---@param roots table
 ---@param key string
 ---@return boolean
 local function cache_valid_structural(roots, key)
-  local watch = M.watchers[key]
-  if not watch or not watch.signature then
+  local stored = watcher.signature(key)
+  if not stored then
     return false
   end
-  local signature = table.concat(watch_paths(roots), "|")
-  return signature == watch.signature
+  local current = table.concat(watch_paths(roots), "|")
+  return current == stored
 end
 
 ---@param roots table
@@ -1202,7 +1165,7 @@ function M.ensure_index(start_dir)
   local cache = M.caches[key]
   if cache and not cache.dirty then
     M.last_cache_key = key
-    local watching = is_watching(key)
+    local watching = watcher.is_watching(key)
     if watching then
       -- When watching: throttle validation
       local now = uv.now()
@@ -1298,10 +1261,7 @@ function M.apply_changes(cache_key, paths, opts)
     cache.structural_signature = signature
     cache.namespaces = collect_namespaces(cache.index)
 
-    local watch = M.watchers[cache_key]
-    if watch then
-      watch.signature = signature
-    end
+    watcher.set_signature(cache_key, signature)
   end
 
   return true, needs_rebuild
@@ -1501,63 +1461,6 @@ function M.key_path_for_file(namespace, key_path, start_dir, lang, path)
   return key_path
 end
 
-local function stop_single_watch(watch)
-  if not watch then
-    return
-  end
-  safe_close_handle(watch.timer)
-  watch.timer = nil
-  for _, handle in ipairs(watch.handles or {}) do
-    safe_close_handle(handle)
-  end
-  watch.handles = {}
-  watch.signature = nil
-  watch.start_dir = nil
-  watch.needs_rescan = false
-end
-
-local function inc_refcount(key, opts)
-  if opts and opts._skip_refcount then
-    return
-  end
-  M.watcher_refcounts[key] = (M.watcher_refcounts[key] or 0) + 1
-end
-
-local function stop_watch_internal(key, opts)
-  local keep_refcount = opts and opts._keep_refcount
-  if key then
-    local watch = M.watchers[key]
-    if watch then
-      stop_single_watch(watch)
-      M.watchers[key] = nil
-    end
-    if not keep_refcount then
-      M.watcher_refcounts[key] = nil
-    end
-    return
-  end
-  for k, watch in pairs(M.watchers) do
-    stop_single_watch(watch)
-    M.watchers[k] = nil
-    if not keep_refcount then
-      M.watcher_refcounts[k] = nil
-    end
-  end
-  if not keep_refcount then
-    M.watcher_refcounts = {}
-  end
-end
-
-local function restart_watch(watch)
-  if not watch or not watch.start_dir or not watch.on_change then
-    return
-  end
-  M.start_watch(watch.start_dir, watch.on_change, {
-    debounce_ms = watch.debounce_ms,
-    _skip_refcount = true,
-  })
-end
-
 ---@param start_dir string
 ---@param on_change fun(event: table|nil)
 ---@param opts table|nil
@@ -1569,161 +1472,50 @@ function M.start_watch(start_dir, on_change, opts)
   local roots = resolve_roots(start_dir)
   local key = compute_cache_key(roots, start_dir)
   if #roots == 0 then
-    M.stop_watch(key)
+    watcher.stop(key)
     return
   end
 
-  -- Increment reference count for this watcher key
-  inc_refcount(key, opts)
-
   local paths = watch_paths(roots)
   if #paths == 0 then
+    if not (opts and opts._skip_refcount) then
+      watcher.inc_refcount(key)
+    end
     return key
   end
-  local signature = table.concat(paths, "|")
-  local debounce = (opts and opts.debounce_ms) or 200
-
-  if M.watchers[key] and M.watchers[key].signature == signature then
-    local existing = M.watchers[key]
-    existing.on_change = on_change
-    existing.debounce_ms = debounce
-    return key
-  end
-
-  stop_watch_internal(key, { _keep_refcount = true })
 
   local rescan_paths = {}
   for _, root in ipairs(roots) do
     rescan_paths[root.path] = true
   end
 
-  local watch = {
-    key = key,
-    start_dir = start_dir,
-    signature = signature,
-    handles = {},
-    timer = nil,
-    on_change = on_change,
-    debounce_ms = debounce,
-    needs_rescan = false,
+  watcher.start(key, {
+    paths = paths,
     rescan_paths = rescan_paths,
-    pending_paths = {},
-    pending_needs_rebuild = false,
-  }
-  M.watchers[key] = watch
-
-  local function schedule_change(rescan, changed_path)
-    if rescan then
-      watch.needs_rescan = true
-      watch.pending_needs_rebuild = true
-    end
-    -- Collect changed path
-    if changed_path then
-      watch.pending_paths[changed_path] = true
-    end
-    safe_close_handle(watch.timer)
-    watch.timer = uv.new_timer()
-    watch.timer:start(
-      watch.debounce_ms,
-      0,
-      vim.schedule_wrap(function()
-        watch.timer = nil
-        -- Collect pending paths into a list
-        local collected_paths = {}
-        for p, _ in pairs(watch.pending_paths) do
-          table.insert(collected_paths, p)
-        end
-        local needs_rebuild = watch.pending_needs_rebuild
-        -- Clear pending state
-        watch.pending_paths = {}
-        watch.pending_needs_rebuild = false
-
-        -- NOTE: Do NOT call mark_cache_dirty here - let the callback decide
-        -- whether to use incremental update or mark dirty for full rebuild
-        local cb = watch.on_change
-        if cb then
-          cb({ paths = collected_paths, needs_rebuild = needs_rebuild })
-        end
-        if watch.needs_rescan and watch.start_dir and watch.on_change then
-          watch.needs_rescan = false
-          restart_watch(watch)
-        end
-      end)
-    )
-  end
-
-  for _, path in ipairs(paths) do
-    if util.file_exists(path) then
-      local handle = uv.new_fs_event()
-      if handle then
-        local start_ok, start_err = pcall(function()
-          handle:start(path, {}, function(err, filename, _events)
-            if err then
-              log_watcher_error(path, err)
-              -- Schedule recovery: stop current watcher and restart after delay
-              vim.defer_fn(function()
-                if watch and watch.start_dir and watch.on_change then
-                  restart_watch(watch)
-                end
-              end, 5000)
-              return
-            end
-            -- Determine the actual changed file path
-            local changed_path = path
-            if filename and filename ~= "" then
-              local stat = uv.fs_stat(path)
-              if stat and stat.type == "directory" then
-                changed_path = util.path_join(path, filename)
-              end
-            end
-            schedule_change(rescan_paths[path] == true, changed_path)
-          end)
-        end)
-
-        if not start_ok then
-          log_watcher_error(path, start_err or "unknown error starting watcher")
-        else
-          table.insert(watch.handles, handle)
-        end
-      end
-    end
-  end
+    on_change = on_change,
+    debounce_ms = (opts and opts.debounce_ms) or 200,
+    skip_refcount = opts and opts._skip_refcount,
+    restart_fn = function()
+      M.start_watch(start_dir, on_change, {
+        debounce_ms = opts and opts.debounce_ms,
+        _skip_refcount = true,
+      })
+    end,
+  })
 
   return key
 end
 
 ---@param key string|nil
 function M.stop_watch(key)
-  stop_watch_internal(key, nil)
+  watcher.stop(key)
 end
 
 ---Stop watcher with reference counting for buffer cleanup
 ---@param key string|nil watcher key
 ---@return boolean stopped true if watcher was actually stopped
 function M.stop_watch_for_buffer(key)
-  if not key then
-    return false
-  end
-
-  local refcount = M.watcher_refcounts[key] or 0
-  if refcount <= 0 then
-    return false
-  end
-
-  M.watcher_refcounts[key] = refcount - 1
-
-  -- Stop watcher when reference count reaches 0
-  if M.watcher_refcounts[key] == 0 then
-    local watch = M.watchers[key]
-    if watch then
-      stop_single_watch(watch)
-      M.watchers[key] = nil
-    end
-    M.watcher_refcounts[key] = nil
-    return true
-  end
-
-  return false
+  return watcher.stop_for_buffer(key)
 end
 
 ---@param path string|nil
