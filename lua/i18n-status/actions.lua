@@ -3,7 +3,6 @@ local M = {}
 
 local ui = require("i18n-status.ui")
 local state = require("i18n-status.state")
-local unpack = unpack
 
 ---@param bufnr integer
 ---@return integer|nil
