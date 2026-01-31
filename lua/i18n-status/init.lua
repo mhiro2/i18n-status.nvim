@@ -143,6 +143,14 @@ function M.setup(opts)
           return
         end
         if core.should_refresh(args.buf) then
+          -- Skip TextChanged/TextChangedI for JSON resource files;
+          -- the file watcher handles those on save.
+          if args.event == "TextChanged" or args.event == "TextChangedI" then
+            local ft = vim.bo[args.buf].filetype
+            if ft == "json" or ft == "jsonc" then
+              return
+            end
+          end
           core.refresh(args.buf, config)
         end
       end,
