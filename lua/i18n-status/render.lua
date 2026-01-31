@@ -6,12 +6,18 @@ local state = require("i18n-status.state")
 
 local ns_id = vim.api.nvim_create_namespace("i18n-status")
 
+local highlights_set = false
+
 local function ensure_highlights()
+  if highlights_set then
+    return
+  end
   vim.api.nvim_set_hl(0, "I18nStatusSame", { link = "DiagnosticHint", default = true })
   vim.api.nvim_set_hl(0, "I18nStatusDiff", { link = "DiagnosticOk", default = true })
   vim.api.nvim_set_hl(0, "I18nStatusFallback", { link = "DiagnosticWarn", default = true })
   vim.api.nvim_set_hl(0, "I18nStatusMissing", { link = "DiagnosticError", default = true })
   vim.api.nvim_set_hl(0, "I18nStatusMismatch", { link = "DiagnosticError", default = true })
+  highlights_set = true
 end
 
 ---@param config I18nStatusConfig
