@@ -185,14 +185,12 @@ local function get_completion_items(ctx)
 
         item_count = item_count + 1
         if item_count >= MAX_COMPLETION_ITEMS then
-          -- Reached limit, return without sorting for performance
-          return items
+          break
         end
       end
     end
   end
 
-  -- Only sort if below limit
   table.sort(items, function(a, b)
     return a.sortText < b.sortText
   end)

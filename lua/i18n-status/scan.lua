@@ -326,7 +326,7 @@ local function fallback_extract(bufnr, opts, range, lines)
         if not s then
           break
         end
-        local prev = line:sub(s - 1, s - 1)
+        local prev = s > 1 and line:sub(s - 1, s - 1) or ""
         if prev == "." or prev == "" or not prev:match("[%w_]") then
           local quote_pos = line:find(quote, s, true)
           if quote_pos then

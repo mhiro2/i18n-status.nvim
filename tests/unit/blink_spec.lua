@@ -88,4 +88,28 @@ describe("blink", function()
       assert.are.equal("common:z.missing", result[1].label)
     end)
   end)
+
+  it("returns sorted items even when reaching the completion limit", function()
+    local root = helpers.tmpdir()
+    -- Create enough keys to exceed the internal limit
+    local keys = {}
+    for i = 1, 120 do
+      keys[string.format("k%03d", i)] = string.format("v%03d", i)
+    end
+    helpers.write_file(root .. "/locales/ja/common.json", vim.json.encode(keys))
+    with_cwd(root, function()
+      local result = nil
+      blink.complete({}, function(items)
+        result = items
+      end)
+      assert.is_true(#result >= 2)
+      -- Verify items are sorted by sortText
+      for i = 2, #result do
+        assert.is_true(
+          result[i - 1].sortText <= result[i].sortText,
+          string.format("items not sorted at index %d: %s > %s", i, result[i - 1].sortText, result[i].sortText)
+        )
+      end
+    end)
+  end)
 end)
