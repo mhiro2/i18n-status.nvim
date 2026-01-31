@@ -50,6 +50,7 @@ local uv = vim.uv or vim.loop
 
 local CACHE_VALIDATE_INTERVAL_MS = 1000
 local WATCH_MAX_FILES = 200
+local FILE_PERMISSION_RW = 420 -- 0644 (rw-r--r--)
 
 local function normalize_path(path)
   if not path or path == "" then
@@ -255,7 +256,7 @@ function M.write_json_table(path, data, style, _opts)
 
   -- Write to temporary file first, then rename for atomicity
   local tmp_path = path .. ".tmp." .. uv.getpid()
-  local fd = uv.fs_open(tmp_path, "w", 420)
+  local fd = uv.fs_open(tmp_path, "w", FILE_PERMISSION_RW)
   if fd then
     uv.fs_write(fd, encoded, 0)
     uv.fs_fsync(fd)
