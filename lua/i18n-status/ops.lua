@@ -80,7 +80,7 @@ end
 ---@param fallback_ns string
 ---@return string, string, string, boolean
 local function normalize_key(input, fallback_ns)
-  local key = util.trim(input)
+  local key = vim.trim(input)
   local ns = key:match("^(.-):")
   local explicit_ns = ns ~= nil
   if not ns then
@@ -171,7 +171,7 @@ function M.rename(opts)
 
   local fallback_ns = item.namespace or resources.fallback_namespace_for_buf(source_buf)
   local old_key = item.key
-  local new_key_input = util.trim(opts.new_key)
+  local new_key_input = vim.trim(opts.new_key)
   if new_key_input == "" then
     return false, "new key is empty"
   end

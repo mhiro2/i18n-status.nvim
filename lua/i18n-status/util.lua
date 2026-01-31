@@ -45,7 +45,7 @@ end
 ---@param path string
 ---@return string
 function M.dirname(path)
-  return vim.fn.fnamemodify(path, ":h")
+  return vim.fs.dirname(path) or "."
 end
 
 ---@param path string
@@ -319,7 +319,7 @@ end
 ---@param text string
 ---@return string
 function M.trim(text)
-  return (text:gsub("^%s+", ""):gsub("%s+$", ""))
+  return vim.trim(text)
 end
 
 ---@param start_dir string
