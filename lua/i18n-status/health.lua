@@ -5,7 +5,7 @@ local config_mod = require("i18n-status.config")
 local resources = require("i18n-status.resources")
 local util = require("i18n-status.util")
 
-local health = vim.health or require("health")
+local health = vim.health
 
 ---@param message string
 local function info(message)
