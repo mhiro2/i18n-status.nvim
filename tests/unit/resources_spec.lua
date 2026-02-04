@@ -295,7 +295,7 @@ describe("resources", function()
       local cache_key = cache.key
 
       -- Apply change to directory path
-      local success, needs_rebuild = resources.apply_changes(cache_key, { root .. "/locales" })
+      local _, needs_rebuild = resources.apply_changes(cache_key, { root .. "/locales" })
 
       -- Should indicate rebuild needed for directory
       assert.is_true(needs_rebuild)

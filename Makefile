@@ -70,7 +70,7 @@ stylua-check:
 	stylua --check .
 
 selene:
-	selene ./lua ./plugin
+	selene ./lua ./plugin ./tests
 
 test: deps
 	PLENARY_PATH="$(PLENARY_PATH)" TREESITTER_INSTALL_DIR="$(TREESITTER_INSTALL_DIR)" TREESITTER_PATH="$(TREESITTER_PATH)" \
