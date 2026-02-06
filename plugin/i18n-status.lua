@@ -69,6 +69,12 @@ vim.api.nvim_create_user_command("I18nDoctor", function()
   end)
 end, {})
 
+vim.api.nvim_create_user_command("I18nDoctorCancel", function()
+  with_module(function(mod)
+    mod.doctor_cancel()
+  end)
+end, {})
+
 vim.api.nvim_create_user_command("I18nRefresh", function()
   with_module(function(mod)
     mod.refresh()

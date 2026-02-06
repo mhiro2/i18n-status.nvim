@@ -147,6 +147,7 @@ Inline:
 
 - **`:I18nHover`**: Hover details for the i18n key under cursor
 - **`:I18nDoctor`**: Diagnose i18n issues across the entire project and open Review UI
+- **`:I18nDoctorCancel`**: Cancel a running doctor scan
 - **`:I18nAddKey`**: Add a new i18n key to all language files interactively
 - **`:I18nRefresh`**: Force refresh current buffer
 
