@@ -289,6 +289,31 @@ describe("resources", function()
     end)
   end)
 
+  it("reuses cached watch paths for repeated watcher setup", function()
+    local root = helpers.tmpdir()
+    write(root .. "/locales/ja/common.json", '{"hello":"ja"}')
+    write(root .. "/locales/en/common.json", '{"hello":"en"}')
+
+    local uv = vim.uv
+    local original_scandir = uv.fs_scandir
+    local scandir_calls = 0
+    uv.fs_scandir = function(...)
+      scandir_calls = scandir_calls + 1
+      return original_scandir(...)
+    end
+
+    resources.start_watch(root, function() end, { debounce_ms = 10 })
+    local first_calls = scandir_calls
+    resources.start_watch(root, function() end, { debounce_ms = 10 })
+    local second_calls = scandir_calls - first_calls
+
+    resources.stop_watch()
+    uv.fs_scandir = original_scandir
+
+    assert.is_true(first_calls > 0)
+    assert.are.equal(0, second_calls)
+  end)
+
   describe("incremental scan", function()
     local uv = vim.uv or vim.loop
 

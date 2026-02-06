@@ -50,7 +50,10 @@ local uv = vim.uv or vim.loop
 
 local CACHE_VALIDATE_INTERVAL_MS = 1000
 local WATCH_MAX_FILES = 200
+local WATCH_PATHS_CACHE_TTL_MS = 1000
 local FILE_PERMISSION_RW = 420 -- 0644 (rw-r--r--)
+---@type table<string, { paths: string[], signature: string, updated_at: integer }>
+local watch_paths_cache = {}
 
 local function normalize_path(path)
   if not path or path == "" then
@@ -85,6 +88,7 @@ end
 
 ---@param key string|nil
 local function mark_cache_dirty(key)
+  watch_paths_cache = {}
   if key then
     local cache = M.caches[key]
     if cache then
@@ -1014,8 +1018,18 @@ local function resolve_roots(start_dir)
 end
 
 ---@param roots table
+---@param opts? { force?: boolean }
 ---@return string[]
-local function watch_paths(roots)
+local function watch_paths(roots, opts)
+  opts = opts or {}
+  local force = opts.force == true
+  local key = roots_key(roots) or "__none__"
+  local now = uv.now()
+  local cached = watch_paths_cache[key]
+  if not force and cached and (now - cached.updated_at) < WATCH_PATHS_CACHE_TTL_MS then
+    return cached.paths
+  end
+
   -- NOTE: watcher setup should be cheap; avoid building the full index here.
   local paths = {}
   local seen = {}
@@ -1055,18 +1069,33 @@ local function watch_paths(roots)
     end
   end
   table.sort(paths)
+  watch_paths_cache[key] = {
+    paths = paths,
+    signature = table.concat(paths, "|"),
+    updated_at = now,
+  }
   return paths
 end
 
 ---Compute structural signature for cache validation (detects new/deleted files)
 ---@param roots table
+---@param opts? { force?: boolean }
 ---@return string|nil signature, or nil if no roots
-local function compute_structural_signature(roots)
+local function compute_structural_signature(roots, opts)
+  opts = opts or {}
+  local force = opts.force == true
   if not roots or #roots == 0 then
     return nil
   end
-  local paths = watch_paths(roots)
-  return table.concat(paths, "|")
+  local key = roots_key(roots) or "__none__"
+  local now = uv.now()
+  local cached = watch_paths_cache[key]
+  if not force and cached and (now - cached.updated_at) < WATCH_PATHS_CACHE_TTL_MS then
+    return cached.signature
+  end
+  watch_paths(roots, { force = force })
+  local refreshed = watch_paths_cache[key]
+  return refreshed and refreshed.signature or nil
 end
 
 ---@param roots table
@@ -1078,7 +1107,7 @@ local function cache_valid_structural(roots, key)
   if not stored then
     return false
   end
-  local current = table.concat(watch_paths(roots), "|")
+  local current = compute_structural_signature(roots)
   return current == stored
 end
 
@@ -1183,7 +1212,7 @@ local function cache_still_valid(cache, roots)
 
   -- First check: structural changes (new/deleted files)
   -- This is cheap and catches most changes
-  local current_signature = compute_structural_signature(roots)
+  local current_signature = compute_structural_signature(roots, { force = true })
   if cache.structural_signature ~= current_signature then
     return false
   end
@@ -1297,7 +1326,7 @@ function M.apply_changes(cache_key, paths, opts)
 
   if not needs_rebuild then
     -- Update structural signature and namespaces
-    local signature = compute_structural_signature(cache.roots)
+    local signature = compute_structural_signature(cache.roots, { force = true })
     cache.structural_signature = signature
     cache.namespaces = collect_namespaces(cache.index)
 
