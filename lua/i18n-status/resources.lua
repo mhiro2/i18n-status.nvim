@@ -246,6 +246,22 @@ end
 ---@param data table
 ---@param style table|nil
 ---@param _opts table|nil
+---@param path string
+---@param stage string
+---@param err string|nil
+local function notify_write_failure(path, stage, err)
+  vim.schedule(function()
+    vim.notify(
+      string.format("i18n-status: failed to write json file (%s, %s): %s", path, stage, err or "unknown"),
+      vim.log.levels.WARN
+    )
+  end)
+end
+
+---@param path string
+---@param data table
+---@param style table|nil
+---@param _opts table|nil
 function M.write_json_table(path, data, style, _opts)
   local indent = (style and style.indent) or "  "
   local newline = style and style.newline
@@ -256,38 +272,61 @@ function M.write_json_table(path, data, style, _opts)
 
   -- Write to temporary file first, then rename for atomicity
   local tmp_path = path .. ".tmp." .. uv.getpid()
-  local fd = uv.fs_open(tmp_path, "w", FILE_PERMISSION_RW)
-  if fd then
-    uv.fs_write(fd, encoded, 0)
-    uv.fs_fsync(fd)
-    uv.fs_close(fd)
-    local ok, err = uv.fs_rename(tmp_path, path)
+  local fd, open_err = uv.fs_open(tmp_path, "w", FILE_PERMISSION_RW)
+  if not fd then
+    notify_write_failure(path, "fs_open", open_err)
+    return
+  end
+
+  local function cleanup_tmp()
+    pcall(uv.fs_unlink, tmp_path)
+  end
+
+  local function close_fd()
+    return uv.fs_close(fd)
+  end
+
+  local written, write_err = uv.fs_write(fd, encoded, 0)
+  if type(written) ~= "number" or written ~= #encoded then
+    local _, close_err = close_fd()
+    cleanup_tmp()
+    notify_write_failure(path, "fs_write", write_err or close_err or "short write")
+    return
+  end
+
+  local fsync_ok, fsync_err = uv.fs_fsync(fd)
+  if not fsync_ok then
+    local _, close_err = close_fd()
+    cleanup_tmp()
+    notify_write_failure(path, "fs_fsync", fsync_err or close_err)
+    return
+  end
+
+  local close_ok, close_err = close_fd()
+  if not close_ok then
+    cleanup_tmp()
+    notify_write_failure(path, "fs_close", close_err)
+    return
+  end
+
+  local ok, err = uv.fs_rename(tmp_path, path)
+  if ok then
+    M.mark_dirty(path)
+    return
+  end
+
+  local err_msg = tostring(err or "")
+  local is_exists = err_msg:lower():find("eexist") or err_msg:lower():find("exists")
+  if is_exists then
+    pcall(uv.fs_unlink, path)
+    ok, err = uv.fs_rename(tmp_path, path)
     if ok then
       M.mark_dirty(path)
-    else
-      local err_msg = tostring(err or "")
-      local is_exists = err_msg:lower():find("eexist") or err_msg:lower():find("exists")
-      if is_exists then
-        pcall(uv.fs_unlink, path)
-        ok, err = uv.fs_rename(tmp_path, path)
-        if ok then
-          M.mark_dirty(path)
-          return
-        end
-      end
-      pcall(uv.fs_unlink, tmp_path)
-      vim.schedule(function()
-        vim.notify(
-          string.format("i18n-status: failed to rename %s to %s: %s", tmp_path, path, err or "unknown"),
-          vim.log.levels.WARN
-        )
-      end)
+      return
     end
-  else
-    vim.schedule(function()
-      vim.notify("i18n-status: failed to write json file (" .. path .. ")", vim.log.levels.WARN)
-    end)
   end
+  cleanup_tmp()
+  notify_write_failure(path, "fs_rename", err)
 end
 
 ---@param index table
