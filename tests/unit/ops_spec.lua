@@ -28,7 +28,7 @@ describe("ops.rename", function()
 
   local function literal_range(buf, literal)
     local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
-    local start_byte, end_byte = line:find('"' .. literal:gsub("(%p)", "%%%1") .. '"')
+    local start_byte = line:find('"' .. literal:gsub("(%p)", "%%%1") .. '"')
     assert.is_not_nil(start_byte, 'literal "' .. literal .. '" not found')
     local col = start_byte - 1
     local end_col = col + (#literal + 2)

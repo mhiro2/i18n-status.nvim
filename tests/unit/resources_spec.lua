@@ -116,6 +116,179 @@ describe("resources", function()
     assert.are.equal(root, project_root)
   end)
 
+  describe("write_json_table", function()
+    local uv
+    local original_notify
+    local original_getpid
+    local original_fs_open
+    local original_fs_write
+    local original_fs_fsync
+    local original_fs_close
+    local original_fs_rename
+    local original_fs_unlink
+
+    before_each(function()
+      uv = vim.uv
+      original_notify = vim.notify
+      original_getpid = uv.getpid
+      original_fs_open = uv.fs_open
+      original_fs_write = uv.fs_write
+      original_fs_fsync = uv.fs_fsync
+      original_fs_close = uv.fs_close
+      original_fs_rename = uv.fs_rename
+      original_fs_unlink = uv.fs_unlink
+    end)
+
+    after_each(function()
+      vim.notify = original_notify
+      uv.getpid = original_getpid
+      uv.fs_open = original_fs_open
+      uv.fs_write = original_fs_write
+      uv.fs_fsync = original_fs_fsync
+      uv.fs_close = original_fs_close
+      uv.fs_rename = original_fs_rename
+      uv.fs_unlink = original_fs_unlink
+    end)
+
+    it("rolls back when fs_write fails", function()
+      local notifications = {}
+      local tmp_path = nil
+      local rename_called = false
+      local close_called = false
+      local unlink_path = nil
+
+      vim.notify = function(msg)
+        table.insert(notifications, msg)
+      end
+      uv.getpid = function()
+        return 42
+      end
+      uv.fs_open = function(path)
+        tmp_path = path
+        return 10
+      end
+      uv.fs_write = function()
+        return nil, "disk full"
+      end
+      uv.fs_fsync = function()
+        return true
+      end
+      uv.fs_close = function()
+        close_called = true
+        return true
+      end
+      uv.fs_rename = function()
+        rename_called = true
+        return true
+      end
+      uv.fs_unlink = function(path)
+        unlink_path = path
+        return true
+      end
+
+      resources.write_json_table("/tmp/out.json", { a = "b" }, { indent = "  " })
+      vim.wait(50, function()
+        return #notifications > 0
+      end)
+
+      assert.is_true(close_called)
+      assert.is_false(rename_called)
+      assert.are.equal(tmp_path, unlink_path)
+      assert.is_truthy(notifications[1] and notifications[1]:match("fs_write"))
+    end)
+
+    it("rolls back when fs_fsync fails", function()
+      local notifications = {}
+      local tmp_path = nil
+      local rename_called = false
+      local close_called = false
+      local unlink_path = nil
+
+      vim.notify = function(msg)
+        table.insert(notifications, msg)
+      end
+      uv.getpid = function()
+        return 43
+      end
+      uv.fs_open = function(path)
+        tmp_path = path
+        return 10
+      end
+      uv.fs_write = function(_fd, content)
+        return #content
+      end
+      uv.fs_fsync = function()
+        return nil, "fsync failed"
+      end
+      uv.fs_close = function()
+        close_called = true
+        return true
+      end
+      uv.fs_rename = function()
+        rename_called = true
+        return true
+      end
+      uv.fs_unlink = function(path)
+        unlink_path = path
+        return true
+      end
+
+      resources.write_json_table("/tmp/out.json", { a = "b" }, { indent = "  " })
+      vim.wait(50, function()
+        return #notifications > 0
+      end)
+
+      assert.is_true(close_called)
+      assert.is_false(rename_called)
+      assert.are.equal(tmp_path, unlink_path)
+      assert.is_truthy(notifications[1] and notifications[1]:match("fs_fsync"))
+    end)
+
+    it("rolls back when fs_close fails", function()
+      local notifications = {}
+      local tmp_path = nil
+      local rename_called = false
+      local unlink_path = nil
+
+      vim.notify = function(msg)
+        table.insert(notifications, msg)
+      end
+      uv.getpid = function()
+        return 44
+      end
+      uv.fs_open = function(path)
+        tmp_path = path
+        return 10
+      end
+      uv.fs_write = function(_fd, content)
+        return #content
+      end
+      uv.fs_fsync = function()
+        return true
+      end
+      uv.fs_close = function()
+        return nil, "close failed"
+      end
+      uv.fs_rename = function()
+        rename_called = true
+        return true
+      end
+      uv.fs_unlink = function(path)
+        unlink_path = path
+        return true
+      end
+
+      resources.write_json_table("/tmp/out.json", { a = "b" }, { indent = "  " })
+      vim.wait(50, function()
+        return #notifications > 0
+      end)
+
+      assert.is_false(rename_called)
+      assert.are.equal(tmp_path, unlink_path)
+      assert.is_truthy(notifications[1] and notifications[1]:match("fs_close"))
+    end)
+  end)
+
   describe("incremental scan", function()
     local uv = vim.uv or vim.loop
 
@@ -295,7 +468,7 @@ describe("resources", function()
       local cache_key = cache.key
 
       -- Apply change to directory path
-      local success, needs_rebuild = resources.apply_changes(cache_key, { root .. "/locales" })
+      local _, needs_rebuild = resources.apply_changes(cache_key, { root .. "/locales" })
 
       -- Should indicate rebuild needed for directory
       assert.is_true(needs_rebuild)

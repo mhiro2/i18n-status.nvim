@@ -199,7 +199,7 @@ describe("doctor review edit", function()
 
       local original_input = vim.ui.input
       local original_select = vim.ui.select
-      vim.ui.select = function(items, _opts, on_choice)
+      vim.ui.select = function(_items, _opts, on_choice)
         -- Select "ja" (primary language)
         on_choice("ja")
       end
