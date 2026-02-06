@@ -51,7 +51,9 @@ local uv = vim.uv or vim.loop
 local CACHE_VALIDATE_INTERVAL_MS = 1000
 local WATCH_MAX_FILES = 200
 local WATCH_PATHS_CACHE_TTL_MS = 1000
+local BUILD_YIELD_EVERY = 50
 local FILE_PERMISSION_RW = 420 -- 0644 (rw-r--r--)
+local build_yield_counter = 0
 ---@type table<string, { paths: string[], signature: string, updated_at: integer }>
 local watch_paths_cache = {}
 
@@ -110,6 +112,22 @@ local function contains(list, value)
     end
   end
   return false
+end
+
+local function reset_build_yield_counter()
+  build_yield_counter = 0
+end
+
+local function maybe_yield_build()
+  build_yield_counter = build_yield_counter + 1
+  if build_yield_counter < BUILD_YIELD_EVERY then
+    return
+  end
+  build_yield_counter = 0
+  -- Keep UI responsive during large index rebuilds.
+  vim.wait(0, function()
+    return false
+  end, 0)
 end
 
 ---@param bufnr integer|nil
@@ -820,6 +838,7 @@ local function load_i18next(root, root_path)
     table.insert(languages, lang)
     local lang_root = util.path_join(root, lang)
     for _, raw_path in ipairs(list_json_files(lang_root)) do
+      maybe_yield_build()
       -- Normalize path for consistent lookups
       local path = normalize_path(raw_path) or raw_path
       local namespace = vim.fn.fnamemodify(path, ":t:r")
@@ -875,6 +894,7 @@ local function load_next_intl(root, root_path)
     table.insert(languages, lang)
     local lang_root = util.path_join(root, lang)
     for _, raw_path in ipairs(list_json_files(lang_root)) do
+      maybe_yield_build()
       -- Normalize path for consistent lookups
       local path = normalize_path(raw_path) or raw_path
       local namespace = vim.fn.fnamemodify(path, ":t:r")
@@ -913,6 +933,7 @@ local function load_next_intl(root, root_path)
     end
     local raw_root_file = util.path_join(root, lang .. ".json")
     if util.file_exists(raw_root_file) then
+      maybe_yield_build()
       -- Normalize path for consistent lookups
       local root_file = normalize_path(raw_root_file) or raw_root_file
       local data, err = read_json(root_file)
@@ -1115,6 +1136,7 @@ end
 ---@return table
 function M.build_index(roots)
   roots = roots or {}
+  reset_build_yield_counter()
   local merged_index = {}
   local files = {}
   local languages = {}

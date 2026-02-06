@@ -106,6 +106,26 @@ describe("resources", function()
     assert.are.equal("value2", cache.index.ja["new:key2"].value)
   end)
 
+  it("yields during large index rebuilds", function()
+    local root = helpers.tmpdir()
+    for i = 1, 60 do
+      write(root .. "/locales/ja/ns" .. i .. ".json", '{"k":"ja"}')
+      write(root .. "/locales/en/ns" .. i .. ".json", '{"k":"en"}')
+    end
+
+    local original_wait = vim.wait
+    local wait_calls = 0
+    vim.wait = function()
+      wait_calls = wait_calls + 1
+      return true
+    end
+
+    resources.ensure_index(root)
+
+    vim.wait = original_wait
+    assert.is_true(wait_calls > 0)
+  end)
+
   it("computes project root from common ancestor when no git root", function()
     local root = helpers.tmpdir()
     write(root .. "/public/locales/ja/translation.json", '{"title":"JA"}')
