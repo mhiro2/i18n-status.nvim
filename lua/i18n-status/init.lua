@@ -294,6 +294,11 @@ function M.doctor()
   doctor.run(vim.api.nvim_get_current_buf(), config)
 end
 
+function M.doctor_cancel()
+  M.ensure_setup()
+  doctor.cancel()
+end
+
 function M.refresh()
   M.ensure_setup()
   local bufnr = vim.api.nvim_get_current_buf()

@@ -86,7 +86,7 @@ Resource layouts:
   next-intl:
     messages/{lang}.json (root file)
     messages/{lang}/{namespace}.json (namespace file)
-    
+
     Note: When both messages/{lang}.json (root file) and
     messages/{lang}/{namespace}.json exist, the root file is prioritized.
     Actions like "Add missing" and "Extract" will write to the root file
@@ -148,6 +148,8 @@ The plugin creates the following user commands:
 
   :I18nDoctor         Run diagnostics across the entire project and open
                       Review UI (floating window).
+
+  :I18nDoctorCancel   Cancel a running doctor scan.
 
   :I18nAddKey         Add a new i18n key to all language files interactively.
                       Prompts for key name and translations for all configured

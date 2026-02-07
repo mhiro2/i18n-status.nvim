@@ -114,6 +114,25 @@ describe("doctor", function()
     end)
   end)
 
+  it("does not crash on invalid ignore key pattern", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"a":"A"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"a":"A","extra":"Y"}')
+    helpers.with_cwd(root, function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("a")' })
+      vim.bo[buf].filetype = "typescript"
+      local config = config_mod.setup({
+        primary_lang = "ja",
+        doctor = { ignore_keys = { "[" } },
+      })
+
+      local issues = diagnose(buf, config)
+      assert.is_true(type(issues) == "table")
+      assert.is_true(#issues > 0)
+    end)
+  end)
+
   it("scans project files, not just open buffers", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"used":"使用中","unused":"未使用"}')

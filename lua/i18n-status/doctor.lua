@@ -7,6 +7,7 @@ local resolve = require("i18n-status.resolve")
 local state = require("i18n-status.state")
 local util = require("i18n-status.util")
 local uv = vim.uv or vim.loop
+local INVALID_PATTERN_WARNED = {}
 
 local ASYNC_BATCH_SIZE = 20
 local DEFAULT_EXCLUDE_DIRS = {
@@ -257,6 +258,32 @@ local function extract_keys_from_file(file_path, fallback_ns, open_buf_paths)
 end
 
 ---@param patterns string[]|nil
+---@return string[]
+local function sanitize_ignore_patterns(patterns)
+  local valid_patterns = {}
+  for _, pattern in ipairs(patterns or {}) do
+    local ok, err = pcall(string.match, "", pattern)
+    if ok then
+      table.insert(valid_patterns, pattern)
+    elseif not INVALID_PATTERN_WARNED[pattern] then
+      INVALID_PATTERN_WARNED[pattern] = true
+      vim.schedule(function()
+        vim.notify(
+          string.format("i18n-status doctor: invalid ignore pattern '%s' (%s)", pattern, err or "pattern error"),
+          vim.log.levels.WARN
+        )
+      end)
+    end
+  end
+  return valid_patterns
+end
+
+---@param message string
+local function echo_progress(message)
+  vim.api.nvim_echo({ { message, "Normal" } }, false, {})
+end
+
+---@param patterns string[]|nil
 ---@return I18nStatusDoctorIgnoreFn
 local function make_ignore_fn(patterns)
   if not patterns or #patterns == 0 then
@@ -266,7 +293,8 @@ local function make_ignore_fn(patterns)
   end
   return function(key)
     for _, pattern in ipairs(patterns) do
-      if key:match(pattern) then
+      local ok, matched = pcall(string.match, key, pattern)
+      if ok and matched then
         return true
       end
     end
@@ -282,7 +310,7 @@ local function prepare_context(bufnr, config)
   local start_dir = resources.start_dir(bufnr)
   local cache = resources.ensure_index(start_dir)
   local fallback_ns = resources.fallback_namespace(start_dir)
-  local ignore_patterns = (config.doctor and config.doctor.ignore_keys) or {}
+  local ignore_patterns = sanitize_ignore_patterns((config.doctor and config.doctor.ignore_keys) or {})
   local is_ignored = make_ignore_fn(ignore_patterns)
 
   local buffers = {}
@@ -631,7 +659,6 @@ local function process_files_async(ctx, files, cb)
   end
   local progress = { idx = 1, used = {} }
   local total = #files
-  local last_notify = 0
   local function step()
     if ctx.cancelled then
       return
@@ -648,20 +675,9 @@ local function process_files_async(ctx, files, cb)
         end
       end
     end
-    -- Show progress every 100 files or at the end
     if progress.idx > total then
-      vim.api.nvim_echo({
-        { string.format("i18n-status doctor: analyzing files... (%d/%d)", total, total), "Normal" },
-      }, false, {})
       cb(progress.used)
     else
-      local current = progress.idx - 1
-      if current - last_notify >= 100 or current == total then
-        vim.api.nvim_echo({
-          { string.format("i18n-status doctor: analyzing files... (%d/%d)", current, total), "Normal" },
-        }, false, {})
-        last_notify = current
-      end
       vim.defer_fn(step, 0)
     end
   end
@@ -676,8 +692,7 @@ local function collect_project_keys_async(ctx, cb)
     return
   end
 
-  -- Show progress in command line (avoids notification replacement issues)
-  vim.api.nvim_echo({ { "i18n-status doctor: collecting files...", "Normal" } }, false, {})
+  echo_progress("i18n-status doctor: collecting files... (:I18nDoctorCancel to cancel)")
 
   collect_project_files_async(ctx, function(files)
     if ctx.cancelled then
@@ -685,13 +700,11 @@ local function collect_project_keys_async(ctx, cb)
       return
     end
     if not files or #files == 0 then
-      vim.api.nvim_echo({ { "i18n-status doctor: no files found", "Normal" } }, false, {})
+      echo_progress("i18n-status doctor: no files found")
       cb({})
       return
     end
-    vim.api.nvim_echo({
-      { string.format("i18n-status doctor: found %d files to analyze", #files), "Normal" },
-    }, false, {})
+    echo_progress(string.format("i18n-status doctor: analyzing %d files... (:I18nDoctorCancel to cancel)", #files))
 
     process_files_async(ctx, files, function(keys)
       if ctx.cancelled then
@@ -714,12 +727,12 @@ local active_job = nil
 
 local function cancel_active_job()
   if not active_job then
-    return
+    return false
   end
   local job = active_job
   if job.state ~= "running" then
     active_job = nil
-    return
+    return false
   end
 
   job.state = "cancelling"
@@ -747,6 +760,7 @@ local function cancel_active_job()
   if not git_job then
     active_job = nil
   end
+  return true
 end
 
 ---@param job I18nStatusAsyncJob
@@ -851,7 +865,7 @@ function M.run(bufnr, config)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   cancel_active_job()
 
-  vim.notify("i18n-status doctor: running...", vim.log.levels.INFO)
+  vim.notify("i18n-status doctor: running... (:I18nDoctorCancel to cancel)", vim.log.levels.INFO)
 
   -- Defer heavy work to next tick so the notification appears first
   vim.defer_fn(function()
@@ -873,6 +887,17 @@ function M.run(bufnr, config)
       report_issues(issues, ctx, config)
     end)
   end, 0)
+end
+
+---@return boolean
+function M.cancel()
+  local cancelled = cancel_active_job()
+  if cancelled then
+    vim.notify("i18n-status doctor: cancel requested", vim.log.levels.INFO)
+  else
+    vim.notify("i18n-status doctor: no running job", vim.log.levels.INFO)
+  end
+  return cancelled
 end
 
 return M

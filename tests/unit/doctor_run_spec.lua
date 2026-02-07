@@ -70,4 +70,32 @@ describe("doctor async run", function()
       assert.is_truthy(final and final.msg:match("i18n%-status doctor"))
     end)
   end)
+
+  it("cancels active async job", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+    helpers.write_file(root .. "/src.tsx", 't("login.title")')
+
+    helpers.with_cwd(root, function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("login.title")' })
+      vim.bo[buf].filetype = "typescript"
+
+      local killed_signal = nil
+      vim.system = function(_cmd, _opts, _on_exit)
+        return {
+          kill = function(_, signal)
+            killed_signal = signal
+          end,
+        }
+      end
+
+      doctor.run(buf, config_mod.setup({ primary_lang = "ja" }))
+      local cancelled = doctor.cancel()
+
+      assert.is_true(cancelled)
+      assert.are.equal(15, killed_signal)
+    end)
+  end)
 end)
