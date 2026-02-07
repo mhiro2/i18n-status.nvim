@@ -15,10 +15,28 @@ local group = nil
 local auto_hover_autocmd = nil
 ---@param cfg I18nStatusConfig
 ---@param bufnr integer|nil
-local function setup_watch(cfg, bufnr)
+---@param should_refresh boolean|nil
+local function setup_watch(cfg, bufnr, should_refresh)
   if cfg.resource_watch and cfg.resource_watch.enabled ~= false then
+    if should_refresh == false then
+      return
+    end
+    if should_refresh == nil and (not bufnr or not core.should_refresh(bufnr)) then
+      return
+    end
+
     local start_dir = resources.start_dir(bufnr)
     local debounce_ms = cfg.resource_watch.debounce_ms
+    local prev_key = state.buf_watcher_keys[bufnr]
+    local next_key = resources.get_watcher_key(start_dir)
+
+    -- Keep one reference per buffer. Only re-register when watcher key changes.
+    if prev_key and prev_key ~= next_key then
+      resources.stop_watch_for_buffer(prev_key)
+      state.buf_watcher_keys[bufnr] = nil
+    elseif prev_key and prev_key == next_key then
+      return
+    end
 
     -- Start watcher and record key for this buffer
     -- resources.start_watch handles reference counting internally
@@ -135,8 +153,9 @@ function M.setup(opts)
             if vim.bo[args.buf].filetype == "i18n-status-review" then
               return
             end
-            setup_watch(config, args.buf)
-            if core.should_refresh(args.buf) then
+            local should_refresh = core.should_refresh(args.buf)
+            setup_watch(config, args.buf, should_refresh)
+            if should_refresh then
               core.refresh(args.buf, config)
             end
           end)
@@ -173,7 +192,8 @@ function M.setup(opts)
 
   configure_auto_hover()
 
-  setup_watch(config, vim.api.nvim_get_current_buf())
+  local current_buf = vim.api.nvim_get_current_buf()
+  setup_watch(config, current_buf, core.should_refresh(current_buf))
 
   if need_refresh_all then
     core.refresh_all(config)

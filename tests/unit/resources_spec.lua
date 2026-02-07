@@ -334,6 +334,32 @@ describe("resources", function()
     assert.are.equal(0, second_calls)
   end)
 
+  it("marks only caches under the exact root boundary", function()
+    local root = helpers.tmpdir()
+    local original_caches = resources.caches
+
+    resources.caches = {
+      one = {
+        dirty = false,
+        checked_at = 1,
+        roots = { { path = root .. "/locale", kind = "i18next" } },
+      },
+      two = {
+        dirty = false,
+        checked_at = 1,
+        roots = { { path = root .. "/locales", kind = "i18next" } },
+      },
+    }
+
+    resources.mark_dirty(root .. "/locales/ja/common.json")
+
+    assert.is_false(resources.caches.one.dirty)
+    assert.is_true(resources.caches.two.dirty)
+    assert.are.equal(0, resources.caches.two.checked_at)
+
+    resources.caches = original_caches
+  end)
+
   describe("incremental scan", function()
     local uv = vim.uv or vim.loop
 

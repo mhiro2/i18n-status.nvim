@@ -1615,11 +1615,17 @@ function M.mark_dirty(path)
     mark_cache_dirty(nil)
     return
   end
+  local normalized_path = normalize_path(path)
+  if not normalized_path then
+    mark_cache_dirty(nil)
+    return
+  end
   local matched = false
   for key, cache in pairs(M.caches) do
     if cache.roots then
       for _, root in ipairs(cache.roots) do
-        if path:sub(1, #root.path) == root.path then
+        local root_path = normalize_path(root.path)
+        if root_path and path_under(normalized_path, root_path) then
           mark_cache_dirty(key)
           matched = true
           break
