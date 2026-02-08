@@ -49,6 +49,17 @@ function M.should_refresh(bufnr)
 end
 
 ---@param bufnr integer
+---@return boolean
+local function visible_range_unchanged(bufnr)
+  local prev = state.visible_range_by_buf[bufnr]
+  if not prev then
+    return false
+  end
+  local top, bottom = util.visible_range(bufnr)
+  return prev.top == top and prev.bottom == bottom
+end
+
+---@param bufnr integer
 ---@param config I18nStatusConfig
 function M.refresh_now(bufnr, config)
   if not buf_ready(bufnr) then
@@ -60,15 +71,23 @@ function M.refresh_now(bufnr, config)
   state.set_buf_project(bufnr, cache.key)
   local fallback_ns = resources.fallback_namespace(start_dir)
   local scan_opts = { fallback_namespace = fallback_ns }
+  local visible_top = nil
+  local visible_bottom = nil
   if config.inline.visible_only then
     local top, bottom = util.visible_range(bufnr)
     local line_count = math.max(1, vim.api.nvim_buf_line_count(bufnr))
     top = math.max(1, math.min(top, line_count))
     bottom = math.max(top, math.min(bottom, line_count))
+    visible_top = top
+    visible_bottom = bottom
     scan_opts.range = {
       start_line = top - 1,
       end_line = bottom - 1,
     }
+  end
+  state.visible_range_by_buf[bufnr] = nil
+  if visible_top and visible_bottom then
+    state.visible_range_by_buf[bufnr] = { top = visible_top, bottom = visible_bottom }
   end
   local info = resources.resource_info(start_dir, vim.api.nvim_buf_get_name(bufnr))
   local items
@@ -102,7 +121,11 @@ function M.refresh(bufnr, config, debounce_ms, opts)
   local force = opts and opts.force == true
   if not force and state.inline_by_buf[bufnr] then
     local tick = vim.api.nvim_buf_get_changedtick(bufnr)
-    if state.last_changedtick[bufnr] == tick then
+    local same_visible = true
+    if config.inline.visible_only then
+      same_visible = visible_range_unchanged(bufnr)
+    end
+    if state.last_changedtick[bufnr] == tick and same_visible then
       return
     end
   end

@@ -85,10 +85,7 @@ local function configure_auto_hover()
         if not core.should_refresh(bufnr) then
           return
         end
-        local item = actions.item_at_cursor(bufnr)
-        if item then
-          M.hover()
-        end
+        M.hover()
       end,
     })
   end
@@ -109,8 +106,8 @@ local function goto_definition(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return false
   end
-  if core.should_refresh(bufnr) and not state.inline_by_buf[bufnr] then
-    core.refresh_now(bufnr, config)
+  if core.should_refresh(bufnr) then
+    core.refresh(bufnr, config, 0)
   end
 
   local item = actions.item_at_cursor(bufnr)
@@ -299,8 +296,8 @@ end
 function M.hover()
   M.ensure_setup()
   local bufnr = vim.api.nvim_get_current_buf()
-  if core.should_refresh(bufnr) and not state.inline_by_buf[bufnr] then
-    core.refresh_now(bufnr, config)
+  if core.should_refresh(bufnr) then
+    core.refresh(bufnr, config, 0)
   end
   actions.hover(bufnr)
 end

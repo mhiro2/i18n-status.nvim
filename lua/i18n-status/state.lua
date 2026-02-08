@@ -15,6 +15,7 @@ local M = {
   buf_watcher_keys = {},
   inline_by_buf = {},
   resolved_by_buf = {},
+  visible_range_by_buf = {},
   last_changedtick = {},
   timers = {},
 }
@@ -46,6 +47,7 @@ function M.init(primary, languages)
   M.buf_watcher_keys = {}
   M.inline_by_buf = {}
   M.resolved_by_buf = {}
+  M.visible_range_by_buf = {}
   M.last_changedtick = {}
   M.timers = {}
   local project = ensure_project(DEFAULT_KEY)
@@ -190,6 +192,7 @@ end
 function M.clear_buf(bufnr)
   M.inline_by_buf[bufnr] = nil
   M.resolved_by_buf[bufnr] = nil
+  M.visible_range_by_buf[bufnr] = nil
   M.last_changedtick[bufnr] = nil
   M.buf_project[bufnr] = nil
 end
