@@ -38,21 +38,32 @@ Examples:
 
 ## 🎬 Demo
 
-### Inline status (hover)
-
-<img src="https://github.com/user-attachments/assets/32691d2b-bfb6-4615-9105-e2b88fa86a26" width="100%" alt="Inline status hover (5 types)" />
-
-### Inline key translation + :I18nLang
-
-<img src="https://github.com/user-attachments/assets/8c0c5bae-7f52-486c-848f-bc00ba046b32" width="100%" alt="Inline key translation and I18nLang switch" />
-
-### blink.cmp integration
-
-<img src="https://github.com/user-attachments/assets/95c003e7-58b8-4c1d-8fc5-763c03d8b4d8" width="100%" alt="blink.cmp completion with i18n-status" />
-
-### Review / Doctor
-
-<img src="https://github.com/user-attachments/assets/33ad6a20-9dda-4f56-867e-6346d9f9d649" width="100%" alt="Review / Doctor UI" />
+<table>
+  <tr>
+    <th>Inline Status + Hover</th>
+    <th>Inline Key Translation + <code>:I18nLang</code></th>
+  </tr>
+  <tr>
+    <td>
+      <img src="./assets/inline_status_and_hover.gif" alt="Inline status and hover" />
+    </td>
+    <td>
+      <img src="./assets/inline_key_translation.gif" alt="Inline key translation and I18nLang switch" />
+    </td>
+  </tr>
+  <tr>
+    <th><code>blink.cmp</code> Integration</th>
+    <th>Review / Doctor</th>
+  </tr>
+  <tr>
+    <td>
+      <img src="./assets/blink_cmp.png" alt="blink.cmp completion with i18n-status" />
+    </td>
+    <td>
+      <img src="./assets/review_doctor.gif" alt="Review and Doctor UI" />
+    </td>
+  </tr>
+</table>
 
 ## ✨ Features
 
