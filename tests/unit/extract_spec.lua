@@ -374,4 +374,35 @@ describe("extract", function()
     assert.is_true(#clear_calls > 0)
     assert.are.same({ 1, 2 }, cursor_calls[#cursor_calls].pos)
   end)
+
+  it("processes extraction targets from top to bottom", function()
+    local buf = make_buf({ "Top", "Bottom" }, "typescriptreact", "/tmp/project/src/file9.tsx")
+    hardcoded_items = {
+      {
+        bufnr = buf,
+        lnum = 1,
+        col = 0,
+        end_lnum = 1,
+        end_col = 6,
+        text = "Bottom",
+        kind = "jsx_text",
+      },
+      {
+        bufnr = buf,
+        lnum = 0,
+        col = 0,
+        end_lnum = 0,
+        end_col = 3,
+        text = "Top",
+        kind = "jsx_text",
+      },
+    }
+    input_queue = { "__DEFAULT__", "__DEFAULT__" }
+    local cfg = config_mod.setup({ primary_lang = "ja" })
+
+    extract.run(buf, cfg, {})
+
+    assert.is_true(input_calls[1].prompt:find('Extract "Top" (1:1): ', 1, true) ~= nil)
+    assert.is_true(input_calls[2].prompt:find('Extract "Bottom" (2:1): ', 1, true) ~= nil)
+  end)
 end)
