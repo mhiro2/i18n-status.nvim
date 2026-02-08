@@ -40,8 +40,8 @@ Examples:
 
 <table>
   <tr>
-    <th>Inline Status + Hover</th>
-    <th>Inline Key Translation + <code>:I18nLang</code></th>
+    <th>Inline Status and Hover</th>
+    <th>Inline Translation Preview and Language Switch (<code>:I18nLang</code>)</th>
   </tr>
   <tr>
     <td>
@@ -52,8 +52,8 @@ Examples:
     </td>
   </tr>
   <tr>
-    <th><code>blink.cmp</code> Integration</th>
-    <th>Review / Doctor</th>
+    <th>blink.cmp Completion for i18n Keys</th>
+    <th>Project Review and Diagnostics (<code>:I18nDoctor</code>)</th>
   </tr>
   <tr>
     <td>
@@ -61,6 +61,18 @@ Examples:
     </td>
     <td>
       <img src="./assets/review_doctor.gif" alt="Review and Doctor UI" />
+    </td>
+  </tr>
+  <tr>
+    <th>Extract Translations from JSX/Text (<code>:I18nExtract</code>)</th>
+    <th>Add New Keys Across Locales (<code>:I18nAddKey</code>)</th>
+  </tr>
+  <tr>
+    <td>
+      <img src="./assets/i18n_extract.gif" alt="I18nExtract: detect hardcoded JSX text and replace it with translation keys" />
+    </td>
+    <td>
+      <img src="./assets/i18n_add_key.gif" alt="I18nAddKey: add a new key across all locale files interactively" />
     </td>
   </tr>
 </table>
