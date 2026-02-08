@@ -73,6 +73,7 @@ Examples:
 - 🔁 **Language cycling**: yankround-style next/prev + "back to previous".
 - 🎯 **Inline goto definition (opt-in)**: Map any keys (e.g. `gd`) to jump straight to the translation file under the cursor.
 - 🩺 **Doctor + Review**: Diagnose project-wide issues and review/fix them in a two-pane floating UI where the left list drives every action and the right side stays as a live preview.
+- ✂️ **Interactive JSX extraction**: Detect hardcoded JSX text, then extract it with per-item prompts that show text preview, jump to the target, and highlight the exact replacement range.
 - ⚡ **Completion**: blink.cmp source (first argument only), missing-first sorting.
 - 🔄 **Auto reload**: Translation file changes update inline quickly (watcher + cache).
 
@@ -162,7 +163,7 @@ Inline:
 - **`:I18nDoctor`**: Diagnose i18n issues across the entire project and open Review UI
 - **`:I18nDoctorCancel`**: Cancel a running doctor scan
 - **`:I18nAddKey`**: Add a new i18n key to all language files interactively
-- **`:I18nExtract`**: Detect and extract hardcoded JSX text in current buffer (supports `:'<,'>I18nExtract`)
+- **`:I18nExtract`**: Detect and extract hardcoded JSX text in current buffer (supports `:'<,'>I18nExtract`), with text preview + target focus/highlight while prompting
 - **`:I18nRefresh`**: Force refresh current buffer
 
 ### Language
