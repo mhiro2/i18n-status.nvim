@@ -127,6 +127,8 @@ vim.api.nvim_create_autocmd("LspAttach", {
 - **`doctor.float.height`** *(number)*: Height of Doctor UI floating window (0.0-1.0). Default: `0.8`.
 - **`doctor.float.border`** *(string)*: Border style for Doctor UI. Default: `"rounded"`. Options: `"none"`, `"single"`, `"double"`, `"rounded"`, `"solid"`, `"shadow"`.
 - **`auto_hover.enabled`** *(boolean)*: Automatically show hover when cursor stops on i18n key. Default: `true`. Uses `vim.opt.updatetime` for delay (default 4000ms). Set to `false` to disable.
+- **`extract.min_length`** *(integer)*: Minimum text length to consider for `:I18nExtract`. Default: `2`.
+- **`extract.exclude_components`** *(string[])*: JSX component names to skip during extraction. Default: `{ "Trans", "Translation" }`.
 
 Resource roots are auto-detected from the current buffer's directory.
 Namespace is inferred from `useTranslation(s)/getTranslations` or explicit `ns:key`.
@@ -149,6 +151,7 @@ Inline:
 - **`:I18nDoctor`**: Diagnose i18n issues across the entire project and open Review UI
 - **`:I18nDoctorCancel`**: Cancel a running doctor scan
 - **`:I18nAddKey`**: Add a new i18n key to all language files interactively
+- **`:I18nExtract`**: Detect and extract hardcoded JSX text in current buffer (supports `:'<,'>I18nExtract`)
 - **`:I18nRefresh`**: Force refresh current buffer
 
 ### Language
