@@ -342,6 +342,33 @@ local function namespace_for(scopes, row)
   return nil
 end
 
+---@param scopes table[]
+---@param row integer
+---@return table|nil
+local function translation_scope_for(scopes, row)
+  for _, scope in ipairs(scopes) do
+    if row >= scope.start_row and row <= scope.end_row then
+      return scope
+    end
+  end
+  return nil
+end
+
+---@param func_name string
+---@param row integer
+---@param translation_scopes table[]
+---@return boolean
+local function is_translation_call(func_name, row, translation_scopes)
+  if func_name == "t" then
+    return true
+  end
+  local scope = translation_scope_for(translation_scopes, row)
+  if not scope then
+    return false
+  end
+  return scope.t_func == func_name
+end
+
 ---@param bufnr integer|nil
 ---@param opts table
 ---@param range table|nil
@@ -435,6 +462,7 @@ local function extract_from_parser(lang, parser, source, opts, range, meta)
   local root = tree:root()
   local consts = collect_consts(root, source, lang)
   local scopes = collect_namespaces(root, source, lang)
+  local translation_scopes = collect_translation_scopes(root, source, lang, consts)
 
   local query_call = get_query(lang, "call", QUERY_CALL)
   local query_member = get_query(lang, "member", QUERY_MEMBER)
@@ -486,8 +514,12 @@ local function extract_from_parser(lang, parser, source, opts, range, meta)
     for _, match in query_call:iter_matches(root, source) do
       local func = capture_node(match, 1)
       local arg = capture_node(match, 2)
-      if func and arg and node_text(func, source) == "t" then
-        handle_call(arg)
+      if func and arg then
+        local row = select(1, arg:range())
+        local func_name = node_text(func, source)
+        if is_translation_call(func_name, row, translation_scopes) then
+          handle_call(arg)
+        end
       end
     end
   end

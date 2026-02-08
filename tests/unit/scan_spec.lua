@@ -42,6 +42,19 @@ describe("scan", function()
     assert.are.equal("auth:login.title", items[1].key)
   end)
 
+  it("detects alias call from useTranslation", function()
+    local buf = make_buf({
+      'const { t: tr } = useTranslation("auth")',
+      'tr("login.title")',
+    }, "typescript")
+    if skip_if_no_parser(buf, "typescript") then
+      return
+    end
+    local items = scan.extract(buf, { fallback_namespace = "common" })
+    assert.are.equal(1, #items)
+    assert.are.equal("auth:login.title", items[1].key)
+  end)
+
   it("detects member call", function()
     local buf = make_buf({
       'i18next.t("home.title")',
