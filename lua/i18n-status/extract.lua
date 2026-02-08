@@ -7,6 +7,173 @@ local key_write = require("i18n-status.key_write")
 local resources = require("i18n-status.resources")
 local scan = require("i18n-status.scan")
 
+local EXTRACT_NS = vim.api.nvim_create_namespace("i18n-status-extract")
+local EXTRACT_TRACK_NS = vim.api.nvim_create_namespace("i18n-status-extract-track")
+local PREVIEW_MAX_LEN = 40
+
+---@class I18nStatusExtractWindowState
+---@field winid integer|nil
+---@field cursor integer[]|nil
+---@field view table|nil
+
+---@param bufnr integer
+---@return integer|nil
+local function window_for_buf(bufnr)
+  local current = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_get_buf(current) == bufnr then
+    return current
+  end
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(win) == bufnr then
+      return win
+    end
+  end
+  return nil
+end
+
+---@param text string
+---@return string
+local function prompt_preview(text)
+  local normalized = vim.trim((text or ""):gsub("%s+", " "))
+  if normalized == "" then
+    normalized = "<empty>"
+  end
+  if #normalized > PREVIEW_MAX_LEN then
+    normalized = normalized:sub(1, PREVIEW_MAX_LEN - 3) .. "..."
+  end
+  return normalized:gsub('"', '\\"')
+end
+
+---@param item I18nStatusHardcodedItem
+---@return string
+local function prompt_for_item(item)
+  local preview = prompt_preview(item.text)
+  return string.format('Extract "%s" (%d:%d): ', preview, item.lnum + 1, item.col + 1)
+end
+
+---@param bufnr integer
+local function clear_extract_highlight(bufnr)
+  if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+    vim.api.nvim_buf_clear_namespace(bufnr, EXTRACT_NS, 0, -1)
+  end
+end
+
+---@param bufnr integer
+local function clear_extract_tracking(bufnr)
+  if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+    vim.api.nvim_buf_clear_namespace(bufnr, EXTRACT_TRACK_NS, 0, -1)
+  end
+end
+
+---@param bufnr integer
+---@param item I18nStatusHardcodedItem
+local function highlight_item(bufnr, item)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  clear_extract_highlight(bufnr)
+  if item.end_lnum == item.lnum then
+    vim.api.nvim_buf_add_highlight(bufnr, EXTRACT_NS, "Visual", item.lnum, item.col, item.end_col)
+    return
+  end
+  vim.api.nvim_buf_add_highlight(bufnr, EXTRACT_NS, "Visual", item.lnum, item.col, -1)
+  for row = item.lnum + 1, item.end_lnum - 1 do
+    vim.api.nvim_buf_add_highlight(bufnr, EXTRACT_NS, "Visual", row, 0, -1)
+  end
+  vim.api.nvim_buf_add_highlight(bufnr, EXTRACT_NS, "Visual", item.end_lnum, 0, item.end_col)
+end
+
+---@param bufnr integer
+---@return I18nStatusExtractWindowState
+local function capture_window_state(bufnr)
+  local winid = window_for_buf(bufnr)
+  if not winid then
+    return { winid = nil, cursor = nil, view = nil }
+  end
+  local cursor = vim.api.nvim_win_get_cursor(winid)
+  local view = vim.api.nvim_win_call(winid, function()
+    return vim.fn.winsaveview()
+  end)
+  return { winid = winid, cursor = cursor, view = view }
+end
+
+---@param state I18nStatusExtractWindowState
+local function restore_window_state(state)
+  if not state or not state.winid or not vim.api.nvim_win_is_valid(state.winid) then
+    return
+  end
+  if state.view then
+    pcall(vim.api.nvim_win_call, state.winid, function()
+      vim.fn.winrestview(state.view)
+    end)
+  end
+  if state.cursor then
+    pcall(vim.api.nvim_win_set_cursor, state.winid, state.cursor)
+  end
+end
+
+---@param state I18nStatusExtractWindowState
+---@param item I18nStatusHardcodedItem
+local function focus_item(state, item)
+  if not state or not state.winid or not vim.api.nvim_win_is_valid(state.winid) then
+    return
+  end
+  local row = item.lnum + 1
+  pcall(vim.api.nvim_win_set_cursor, state.winid, { row, item.col })
+  pcall(vim.api.nvim_win_call, state.winid, function()
+    local win_h = vim.api.nvim_win_get_height(state.winid)
+    local view = vim.fn.winsaveview()
+    view.topline = math.max(1, row - math.floor(win_h / 2))
+    view.lnum = row
+    view.col = item.col
+    vim.fn.winrestview(view)
+  end)
+end
+
+---@class I18nStatusExtractTrackedItem
+---@field mark_id integer
+---@field text string
+
+---@param bufnr integer
+---@param items I18nStatusHardcodedItem[]
+---@return I18nStatusExtractTrackedItem[]
+local function create_tracked_items(bufnr, items)
+  local tracked = {}
+  for _, item in ipairs(items) do
+    local mark_id = vim.api.nvim_buf_set_extmark(bufnr, EXTRACT_TRACK_NS, item.lnum, item.col, {
+      end_row = item.end_lnum,
+      end_col = item.end_col,
+    })
+    table.insert(tracked, {
+      mark_id = mark_id,
+      text = item.text,
+    })
+  end
+  return tracked
+end
+
+---@param bufnr integer
+---@param mark_id integer
+---@return I18nStatusHardcodedItem|nil
+local function item_from_mark(bufnr, mark_id)
+  local mark = vim.api.nvim_buf_get_extmark_by_id(bufnr, EXTRACT_TRACK_NS, mark_id, { details = true })
+  if #mark < 3 then
+    return nil
+  end
+  local details = mark[3]
+  if type(details) ~= "table" or type(details.end_row) ~= "number" or type(details.end_col) ~= "number" then
+    return nil
+  end
+  return {
+    lnum = mark[1],
+    col = mark[2],
+    end_lnum = details.end_row,
+    end_col = details.end_col,
+    text = "",
+    kind = "jsx_text",
+  }
+end
+
 ---@param key string
 ---@return string|nil namespace
 ---@return string|nil key_path
@@ -57,39 +224,32 @@ local function normalize_key_input(key, default_ns)
 end
 
 ---@param value string
+---@param separator string
 ---@return string|nil
-local function ascii_slug(value)
-  for i = 1, #value do
-    if value:byte(i) > 127 then
+local function ascii_slug(value, separator)
+  local normalized = (value or ""):gsub("%$", "")
+  for i = 1, #normalized do
+    if normalized:byte(i) > 127 then
       return nil
     end
   end
   local parts = {}
-  local lowered = value:lower()
+  local lowered = normalized:lower()
   for token in lowered:gmatch("[a-z0-9]+") do
     table.insert(parts, token)
   end
   if #parts == 0 then
     return nil
   end
-  return table.concat(parts, ".")
-end
-
----@param path string
----@return string
-local function file_stem(path)
-  local name = path:match("([^/\\]+)$") or "text"
-  local stem = name:gsub("%.[^%.]+$", "")
-  if stem == "" then
-    return "text"
-  end
-  return stem
+  return table.concat(parts, separator)
 end
 
 ---@param full_key string
 ---@param used table<string, boolean>
+---@param separator string
 ---@return string
-local function ensure_unique_key(full_key, used)
+local function ensure_unique_key(full_key, used, separator)
+  local resolved_separator = separator ~= "" and separator or "-"
   if not used[full_key] then
     return full_key
   end
@@ -97,9 +257,9 @@ local function ensure_unique_key(full_key, used)
   if not namespace or not key_path then
     return full_key
   end
-  local n = 2
+  local n = 0
   while true do
-    local candidate = string.format("%s:%s.%d", namespace, key_path, n)
+    local candidate = string.format("%s:%s%s%d", namespace, key_path, resolved_separator, n)
     if not used[candidate] then
       return candidate
     end
@@ -127,27 +287,19 @@ end
 ---@param bufnr integer
 ---@param item I18nStatusHardcodedItem
 ---@param fallback_ns string
----@param fallback_counter table<string, integer>
 ---@param used_keys table<string, boolean>
+---@param extract_cfg I18nStatusExtractConfig|nil
 ---@return string
-local function suggest_key(bufnr, item, fallback_ns, fallback_counter, used_keys)
+local function suggest_key(bufnr, item, fallback_ns, used_keys, extract_cfg)
+  local separator = ((extract_cfg and extract_cfg.key_separator) or "-")
   local ctx = scan.translation_context_at(bufnr, item.lnum, { fallback_namespace = fallback_ns })
   local namespace = ctx.namespace or fallback_ns or "common"
-  local base = file_stem(vim.api.nvim_buf_get_name(bufnr))
-  local segment = ascii_slug(item.text)
+  local segment = ascii_slug(item.text, separator)
   if not segment then
-    local current = fallback_counter[base] or 0
-    while true do
-      current = current + 1
-      local candidate = string.format("%s:%s.text_%d", namespace, base, current)
-      if not used_keys[candidate] then
-        fallback_counter[base] = current
-        return candidate
-      end
-    end
+    segment = "key"
   end
-  local full_key = string.format("%s:%s.%s", namespace, base, segment)
-  return ensure_unique_key(full_key, used_keys)
+  local full_key = string.format("%s:%s", namespace, segment)
+  return ensure_unique_key(full_key, used_keys, separator)
 end
 
 ---@param bufnr integer
@@ -205,33 +357,52 @@ function M.run(bufnr, cfg, opts)
     failed = 0,
   }
   local used_keys = collect_existing_keys(cache)
-  local fallback_counter = {}
   local ordered = {}
   for _, item in ipairs(items) do
     table.insert(ordered, item)
   end
   table.sort(ordered, function(a, b)
     if a.lnum == b.lnum then
-      return a.col > b.col
+      return a.col < b.col
     end
-    return a.lnum > b.lnum
+    return a.lnum < b.lnum
   end)
+  local tracked = create_tracked_items(bufnr, ordered)
+  local win_state = capture_window_state(bufnr)
+
+  local function cleanup_visual_state()
+    clear_extract_highlight(bufnr)
+    clear_extract_tracking(bufnr)
+    restore_window_state(win_state)
+  end
 
   local function run_loop(index)
-    if index > #ordered then
+    if index > #tracked then
+      cleanup_visual_state()
       finish(bufnr, summary, cfg)
       return
     end
 
-    local item = ordered[index]
+    local tracked_item = tracked[index]
+    local item = item_from_mark(bufnr, tracked_item.mark_id)
+    if not item then
+      summary.failed = summary.failed + 1
+      run_loop(index + 1)
+      return
+    end
+    item.text = tracked_item.text
+
     local context = scan.translation_context_at(bufnr, item.lnum, { fallback_namespace = fallback_ns })
     local namespace = context.namespace or fallback_ns or "common"
     local t_func = context.t_func or "t"
-    local suggested = suggest_key(bufnr, item, fallback_ns, fallback_counter, used_keys)
-    local prompt = string.format("Extract text (%d:%d): ", item.lnum + 1, item.col + 1)
+    local suggested = suggest_key(bufnr, item, fallback_ns, used_keys, extract_cfg)
+    focus_item(win_state, item)
+    highlight_item(bufnr, item)
+    local prompt = prompt_for_item(item)
 
     vim.ui.input({ prompt = prompt, default = suggested }, function(input)
       if input == nil or vim.trim(input) == "" then
+        pcall(vim.api.nvim_buf_del_extmark, bufnr, EXTRACT_TRACK_NS, tracked_item.mark_id)
         summary.skipped = summary.skipped + 1
         run_loop(index + 1)
         return
@@ -239,14 +410,17 @@ function M.run(bufnr, cfg, opts)
 
       local full_key, err = normalize_key_input(input, namespace)
       if not full_key then
+        pcall(vim.api.nvim_buf_del_extmark, bufnr, EXTRACT_TRACK_NS, tracked_item.mark_id)
         summary.skipped = summary.skipped + 1
         vim.notify("i18n-status extract: " .. err, vim.log.levels.WARN)
         run_loop(index + 1)
         return
       end
-      full_key = ensure_unique_key(full_key, used_keys)
+      local separator = ((extract_cfg and extract_cfg.key_separator) or "-")
+      full_key = ensure_unique_key(full_key, used_keys, separator)
       local key_ns, key_path = split_key(full_key)
       if not key_ns or not key_path then
+        pcall(vim.api.nvim_buf_del_extmark, bufnr, EXTRACT_TRACK_NS, tracked_item.mark_id)
         summary.failed = summary.failed + 1
         run_loop(index + 1)
         return
@@ -260,6 +434,7 @@ function M.run(bufnr, cfg, opts)
       local success_count, failed_langs =
         key_write.write_translations(key_ns, key_path, translations, start_dir, languages)
       if success_count == 0 then
+        pcall(vim.api.nvim_buf_del_extmark, bufnr, EXTRACT_TRACK_NS, tracked_item.mark_id)
         summary.failed = summary.failed + 1
         run_loop(index + 1)
         return
@@ -273,6 +448,7 @@ function M.run(bufnr, cfg, opts)
         end
       end
       if primary_failed then
+        pcall(vim.api.nvim_buf_del_extmark, bufnr, EXTRACT_TRACK_NS, tracked_item.mark_id)
         summary.failed = summary.failed + 1
         run_loop(index + 1)
         return
@@ -280,6 +456,7 @@ function M.run(bufnr, cfg, opts)
 
       local replacement = string.format('{%s("%s")}', t_func, full_key)
       vim.api.nvim_buf_set_text(bufnr, item.lnum, item.col, item.end_lnum, item.end_col, { replacement })
+      pcall(vim.api.nvim_buf_del_extmark, bufnr, EXTRACT_TRACK_NS, tracked_item.mark_id)
       used_keys[full_key] = true
       if #failed_langs > 0 then
         summary.failed = summary.failed + 1
@@ -297,6 +474,7 @@ function M.run(bufnr, cfg, opts)
 
   vim.ui.input({ prompt = "No translation hook found in this file. Continue? (y/N): " }, function(answer)
     if not answer or answer:lower() ~= "y" then
+      cleanup_visual_state()
       vim.notify("i18n-status extract: cancelled", vim.log.levels.INFO)
       return
     end

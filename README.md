@@ -40,8 +40,8 @@ Examples:
 
 <table>
   <tr>
-    <th>Inline Status + Hover</th>
-    <th>Inline Key Translation + <code>:I18nLang</code></th>
+    <th>Inline Status and Hover</th>
+    <th>Inline Translation Preview and Language Switch (<code>:I18nLang</code>)</th>
   </tr>
   <tr>
     <td>
@@ -52,8 +52,8 @@ Examples:
     </td>
   </tr>
   <tr>
-    <th><code>blink.cmp</code> Integration</th>
-    <th>Review / Doctor</th>
+    <th>blink.cmp Completion for i18n Keys</th>
+    <th>Project Review and Diagnostics (<code>:I18nDoctor</code>)</th>
   </tr>
   <tr>
     <td>
@@ -61,6 +61,18 @@ Examples:
     </td>
     <td>
       <img src="./assets/review_doctor.gif" alt="Review and Doctor UI" />
+    </td>
+  </tr>
+  <tr>
+    <th>Extract Translations from JSX/Text (<code>:I18nExtract</code>)</th>
+    <th>Add New Keys Across Locales (<code>:I18nAddKey</code>)</th>
+  </tr>
+  <tr>
+    <td>
+      <img src="./assets/i18n_extract.gif" alt="I18nExtract: detect hardcoded JSX text and replace it with translation keys" />
+    </td>
+    <td>
+      <img src="./assets/i18n_add_key.gif" alt="I18nAddKey: add a new key across all locale files interactively" />
     </td>
   </tr>
 </table>
@@ -73,6 +85,7 @@ Examples:
 - 🔁 **Language cycling**: yankround-style next/prev + "back to previous".
 - 🎯 **Inline goto definition (opt-in)**: Map any keys (e.g. `gd`) to jump straight to the translation file under the cursor.
 - 🩺 **Doctor + Review**: Diagnose project-wide issues and review/fix them in a two-pane floating UI where the left list drives every action and the right side stays as a live preview.
+- ✂️ **Interactive JSX extraction**: Detect hardcoded JSX text, then extract it with per-item prompts that show text preview, jump to the target, and highlight the exact replacement range.
 - ⚡ **Completion**: blink.cmp source (first argument only), missing-first sorting.
 - 🔄 **Auto reload**: Translation file changes update inline quickly (watcher + cache).
 
@@ -140,6 +153,7 @@ vim.api.nvim_create_autocmd("LspAttach", {
 - **`auto_hover.enabled`** *(boolean)*: Automatically show hover when cursor stops on i18n key. Default: `true`. Uses `vim.opt.updatetime` for delay (default 4000ms). Set to `false` to disable.
 - **`extract.min_length`** *(integer)*: Minimum text length to consider for `:I18nExtract`. Default: `2`.
 - **`extract.exclude_components`** *(string[])*: JSX component names to skip during extraction. Default: `{ "Trans", "Translation" }`.
+- **`extract.key_separator`** *("."|"_"|"-")*: Delimiter used for auto-generated extract keys. Default: `"-"`.
 
 Resource roots are auto-detected from the current buffer's directory.
 Namespace is inferred from `useTranslation(s)/getTranslations` or explicit `ns:key`.
@@ -162,7 +176,7 @@ Inline:
 - **`:I18nDoctor`**: Diagnose i18n issues across the entire project and open Review UI
 - **`:I18nDoctorCancel`**: Cancel a running doctor scan
 - **`:I18nAddKey`**: Add a new i18n key to all language files interactively
-- **`:I18nExtract`**: Detect and extract hardcoded JSX text in current buffer (supports `:'<,'>I18nExtract`)
+- **`:I18nExtract`**: Detect and extract hardcoded JSX text in current buffer (supports `:'<,'>I18nExtract`), with text preview + target focus/highlight while prompting
 - **`:I18nRefresh`**: Force refresh current buffer
 
 ### Language

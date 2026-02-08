@@ -135,6 +135,10 @@ extract.min_length (default: 2)
 extract.exclude_components (default: { "Trans", "Translation" })
     JSX component names to skip during extraction.
 
+extract.key_separator (default: "-")
+    Delimiter used for auto-generated extract keys.
+    Must be one of ".", "_" or "-".
+
 review.float.width (default: 0.8)
     Relative width of the Doctor/review floating window (0-1).
 
