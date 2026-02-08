@@ -21,6 +21,7 @@ describe("config validation", function()
       extract = {
         min_length = 3,
         exclude_components = { "Trans", "Translation" },
+        key_separator = "_",
       },
     })
 
@@ -35,6 +36,7 @@ describe("config validation", function()
     assert.are.same({ "^test:", "^dev:" }, cfg.doctor.ignore_keys)
     assert.are.equal(3, cfg.extract.min_length)
     assert.are.same({ "Trans", "Translation" }, cfg.extract.exclude_components)
+    assert.are.equal("_", cfg.extract.key_separator)
   end)
 
   it("validates inline.position", function()
@@ -267,6 +269,25 @@ describe("config validation", function()
 
     assert.are.same({ "Trans" }, cfg.extract.exclude_components)
     assert.are.equal(1, #notify_calls)
+    vim.notify = original_notify
+  end)
+
+  it("validates extract.key_separator", function()
+    local notify_calls = {}
+    local original_notify = vim.notify
+    vim.notify = function(msg, level)
+      table.insert(notify_calls, { msg = msg, level = level })
+    end
+
+    local cfg = config.setup({
+      extract = {
+        key_separator = "++",
+      },
+    })
+
+    assert.are.equal("-", cfg.extract.key_separator)
+    assert.are.equal(1, #notify_calls)
+    assert.is_true(notify_calls[1].msg:match("extract.key_separator") ~= nil)
     vim.notify = original_notify
   end)
 end)

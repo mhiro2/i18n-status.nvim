@@ -141,6 +141,7 @@ vim.api.nvim_create_autocmd("LspAttach", {
 - **`auto_hover.enabled`** *(boolean)*: Automatically show hover when cursor stops on i18n key. Default: `true`. Uses `vim.opt.updatetime` for delay (default 4000ms). Set to `false` to disable.
 - **`extract.min_length`** *(integer)*: Minimum text length to consider for `:I18nExtract`. Default: `2`.
 - **`extract.exclude_components`** *(string[])*: JSX component names to skip during extraction. Default: `{ "Trans", "Translation" }`.
+- **`extract.key_separator`** *("."|"_"|"-")*: Delimiter used for auto-generated extract keys. Default: `"-"`.
 
 Resource roots are auto-detected from the current buffer's directory.
 Namespace is inferred from `useTranslation(s)/getTranslations` or explicit `ns:key`.

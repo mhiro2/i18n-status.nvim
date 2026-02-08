@@ -113,7 +113,7 @@ describe("extract", function()
     local buf = make_buf({ "TEXT" }, "typescriptreact", "/tmp/project/src/file1.tsx")
     cache_data = {
       languages = { "ja", "en" },
-      index = { ja = { ["common:file1.text_1"] = {} }, en = {} },
+      index = { ja = { ["common:key"] = {} }, en = {} },
     }
     hardcoded_items = {
       {
@@ -132,10 +132,10 @@ describe("extract", function()
     extract.run(buf, cfg, {})
 
     local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
-    assert.are.equal('{t("common:file1.text_2")}', line)
+    assert.are.equal('{t("common:key-0")}', line)
     assert.are.equal(1, #write_calls)
     assert.are.equal("common", write_calls[1].namespace)
-    assert.are.equal("file1.text_2", write_calls[1].key_path)
+    assert.are.equal("key-0", write_calls[1].key_path)
     assert.are.equal("ログインしてください", write_calls[1].translations.ja)
     assert.are.equal("", write_calls[1].translations.en)
   end)
@@ -168,7 +168,7 @@ describe("extract", function()
     extract.run(buf, cfg, {})
 
     local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
-    assert.are.equal('{t("common:file2.aaaa")} {t("common:file2.bbbb")}', line)
+    assert.are.equal('{t("common:aaaa")} {t("common:bbbb")}', line)
     assert.are.equal(2, #write_calls)
   end)
 
@@ -238,7 +238,33 @@ describe("extract", function()
     extract.run(buf, cfg, {})
 
     local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
-    assert.are.equal('{tr("common:file4.hello")}', line)
+    assert.are.equal('{tr("common:hello")}', line)
+  end)
+
+  it("uses configured key separator for auto-generated keys", function()
+    local buf = make_buf({ "TEXT" }, "typescriptreact", "/tmp/project/src/file4_sep.tsx")
+    hardcoded_items = {
+      {
+        bufnr = buf,
+        lnum = 0,
+        col = 0,
+        end_lnum = 0,
+        end_col = 4,
+        text = "Hello world",
+        kind = "jsx_text",
+      },
+    }
+    input_queue = { "__DEFAULT__" }
+    local cfg = config_mod.setup({
+      primary_lang = "ja",
+      extract = { key_separator = "_" },
+    })
+
+    extract.run(buf, cfg, {})
+
+    local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
+    assert.are.equal('{t("common:hello_world")}', line)
+    assert.are.equal("hello_world", write_calls[1].key_path)
   end)
 
   it("includes text preview in extract prompt", function()

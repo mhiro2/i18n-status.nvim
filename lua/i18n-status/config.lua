@@ -36,6 +36,7 @@ local util = require("i18n-status.util")
 ---@class I18nStatusExtractConfig
 ---@field min_length integer
 ---@field exclude_components string[]
+---@field key_separator "."|"_"|"-"
 
 ---@type I18nStatusConfig
 local defaults = {
@@ -73,6 +74,7 @@ local defaults = {
   extract = {
     min_length = 2,
     exclude_components = { "Trans", "Translation" },
+    key_separator = "-",
   },
 }
 
@@ -243,6 +245,17 @@ local function validate(config)
       else
         config.extract.exclude_components = valid_components
       end
+    end
+  end
+
+  -- Validate extract.key_separator
+  if config.extract and config.extract.key_separator ~= nil then
+    if type(config.extract.key_separator) ~= "string" or not config.extract.key_separator:match("^[%._%-]$") then
+      table.insert(
+        warnings,
+        'extract.key_separator must be one of ".", "_" or "-", got ' .. tostring(config.extract.key_separator)
+      )
+      config.extract.key_separator = defaults.extract.key_separator
     end
   end
 

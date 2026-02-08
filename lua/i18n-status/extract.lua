@@ -224,39 +224,32 @@ local function normalize_key_input(key, default_ns)
 end
 
 ---@param value string
+---@param separator string
 ---@return string|nil
-local function ascii_slug(value)
-  for i = 1, #value do
-    if value:byte(i) > 127 then
+local function ascii_slug(value, separator)
+  local normalized = (value or ""):gsub("%$", "")
+  for i = 1, #normalized do
+    if normalized:byte(i) > 127 then
       return nil
     end
   end
   local parts = {}
-  local lowered = value:lower()
+  local lowered = normalized:lower()
   for token in lowered:gmatch("[a-z0-9]+") do
     table.insert(parts, token)
   end
   if #parts == 0 then
     return nil
   end
-  return table.concat(parts, ".")
-end
-
----@param path string
----@return string
-local function file_stem(path)
-  local name = path:match("([^/\\]+)$") or "text"
-  local stem = name:gsub("%.[^%.]+$", "")
-  if stem == "" then
-    return "text"
-  end
-  return stem
+  return table.concat(parts, separator)
 end
 
 ---@param full_key string
 ---@param used table<string, boolean>
+---@param separator string
 ---@return string
-local function ensure_unique_key(full_key, used)
+local function ensure_unique_key(full_key, used, separator)
+  local resolved_separator = separator ~= "" and separator or "-"
   if not used[full_key] then
     return full_key
   end
@@ -264,9 +257,9 @@ local function ensure_unique_key(full_key, used)
   if not namespace or not key_path then
     return full_key
   end
-  local n = 2
+  local n = 0
   while true do
-    local candidate = string.format("%s:%s.%d", namespace, key_path, n)
+    local candidate = string.format("%s:%s%s%d", namespace, key_path, resolved_separator, n)
     if not used[candidate] then
       return candidate
     end
@@ -294,27 +287,19 @@ end
 ---@param bufnr integer
 ---@param item I18nStatusHardcodedItem
 ---@param fallback_ns string
----@param fallback_counter table<string, integer>
 ---@param used_keys table<string, boolean>
+---@param extract_cfg I18nStatusExtractConfig|nil
 ---@return string
-local function suggest_key(bufnr, item, fallback_ns, fallback_counter, used_keys)
+local function suggest_key(bufnr, item, fallback_ns, used_keys, extract_cfg)
+  local separator = ((extract_cfg and extract_cfg.key_separator) or "-")
   local ctx = scan.translation_context_at(bufnr, item.lnum, { fallback_namespace = fallback_ns })
   local namespace = ctx.namespace or fallback_ns or "common"
-  local base = file_stem(vim.api.nvim_buf_get_name(bufnr))
-  local segment = ascii_slug(item.text)
+  local segment = ascii_slug(item.text, separator)
   if not segment then
-    local current = fallback_counter[base] or 0
-    while true do
-      current = current + 1
-      local candidate = string.format("%s:%s.text_%d", namespace, base, current)
-      if not used_keys[candidate] then
-        fallback_counter[base] = current
-        return candidate
-      end
-    end
+    segment = "key"
   end
-  local full_key = string.format("%s:%s.%s", namespace, base, segment)
-  return ensure_unique_key(full_key, used_keys)
+  local full_key = string.format("%s:%s", namespace, segment)
+  return ensure_unique_key(full_key, used_keys, separator)
 end
 
 ---@param bufnr integer
@@ -372,7 +357,6 @@ function M.run(bufnr, cfg, opts)
     failed = 0,
   }
   local used_keys = collect_existing_keys(cache)
-  local fallback_counter = {}
   local ordered = {}
   for _, item in ipairs(items) do
     table.insert(ordered, item)
@@ -411,7 +395,7 @@ function M.run(bufnr, cfg, opts)
     local context = scan.translation_context_at(bufnr, item.lnum, { fallback_namespace = fallback_ns })
     local namespace = context.namespace or fallback_ns or "common"
     local t_func = context.t_func or "t"
-    local suggested = suggest_key(bufnr, item, fallback_ns, fallback_counter, used_keys)
+    local suggested = suggest_key(bufnr, item, fallback_ns, used_keys, extract_cfg)
     focus_item(win_state, item)
     highlight_item(bufnr, item)
     local prompt = prompt_for_item(item)
@@ -432,7 +416,8 @@ function M.run(bufnr, cfg, opts)
         run_loop(index + 1)
         return
       end
-      full_key = ensure_unique_key(full_key, used_keys)
+      local separator = ((extract_cfg and extract_cfg.key_separator) or "-")
+      full_key = ensure_unique_key(full_key, used_keys, separator)
       local key_ns, key_path = split_key(full_key)
       if not key_ns or not key_path then
         pcall(vim.api.nvim_buf_del_extmark, bufnr, EXTRACT_TRACK_NS, tracked_item.mark_id)
