@@ -221,4 +221,31 @@ describe("scan", function()
     assert.is_true(keys["common:title"])
     assert.is_true(keys["auth:welcome"])
   end)
+
+  it("resolves translation function alias by row", function()
+    local buf = make_buf({
+      'const { t: tr } = useTranslation("auth")',
+      "const label = <p>Hello</p>",
+    }, "typescriptreact")
+    if skip_if_no_parser(buf, "tsx", "typescript") then
+      return
+    end
+    local ctx = scan.translation_context_at(buf, 1, { fallback_namespace = "common" })
+    assert.are.equal("tr", ctx.t_func)
+    assert.are.equal("auth", ctx.namespace)
+    assert.is_true(ctx.found_hook)
+  end)
+
+  it("returns has_any_hook=false when translation hook is missing", function()
+    local buf = make_buf({
+      "const label = <p>Hello</p>",
+    }, "typescriptreact")
+    if skip_if_no_parser(buf, "tsx", "typescript") then
+      return
+    end
+    local ctx = scan.translation_context_at(buf, 0, { fallback_namespace = "common" })
+    assert.are.equal("t", ctx.t_func)
+    assert.are.equal("common", ctx.namespace)
+    assert.is_false(ctx.has_any_hook)
+  end)
 end)

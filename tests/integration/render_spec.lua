@@ -206,6 +206,53 @@ describe("render", function()
     end)
   end)
 
+  it("refreshes visible range when viewport changes without edits", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"k1":"a","k2":"b","k3":"c","k4":"d"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"k1":"a","k2":"b","k3":"c","k4":"d"}')
+    helpers.with_cwd(root, function()
+      local buf = make_buf({
+        't("k1")',
+        't("k2")',
+        't("k3")',
+        't("k4")',
+      }, "typescript")
+      vim.api.nvim_set_current_buf(buf)
+      vim.api.nvim_win_set_cursor(0, { 1, 0 })
+      local ok = pcall(vim.api.nvim_win_set_height, 0, 2)
+      if not ok then
+        pending("window height change not supported in this environment")
+        return
+      end
+
+      local config = config_mod.setup({
+        primary_lang = "ja",
+        inline = {
+          position = "eol",
+          max_len = 40,
+          visible_only = true,
+        },
+      })
+
+      core.refresh_now(buf, config)
+      local ns = render.namespace()
+      local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+      assert.are.equal(2, #marks)
+
+      vim.api.nvim_win_set_cursor(0, { 4, 0 })
+      core.refresh(buf, config, 0)
+
+      marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+      assert.are.equal(2, #marks)
+      local rows = {}
+      for _, mark in ipairs(marks) do
+        table.insert(rows, mark[2])
+      end
+      table.sort(rows)
+      assert.are.same({ 2, 3 }, rows)
+    end)
+  end)
+
   it("truncates long text", function()
     local root = helpers.tmpdir()
     helpers.write_file(

@@ -1,0 +1,307 @@
+---@class I18nStatusExtract
+local M = {}
+
+local core = require("i18n-status.core")
+local hardcoded = require("i18n-status.hardcoded")
+local key_write = require("i18n-status.key_write")
+local resources = require("i18n-status.resources")
+local scan = require("i18n-status.scan")
+
+---@param key string
+---@return string|nil namespace
+---@return string|nil key_path
+local function split_key(key)
+  local namespace = key:match("^(.-):")
+  local key_path = key:match("^[^:]+:(.+)$")
+  if not namespace or namespace == "" or not key_path or key_path == "" then
+    return nil, nil
+  end
+  return namespace, key_path
+end
+
+---@param key string
+---@param default_ns string
+---@return string|nil
+---@return string|nil
+local function normalize_key_input(key, default_ns)
+  if not key or vim.trim(key) == "" then
+    return nil, "empty key"
+  end
+  local trimmed = vim.trim(key)
+  local colon_pos = trimmed:find(":")
+  local second_colon = colon_pos and trimmed:find(":", colon_pos + 1)
+  if second_colon then
+    return nil, "key can only contain one ':' separator"
+  end
+  local full_key = trimmed
+  if not colon_pos then
+    if not default_ns or default_ns == "" then
+      return nil, "namespace is required"
+    end
+    full_key = default_ns .. ":" .. trimmed
+  end
+  local namespace, key_path = split_key(full_key)
+  if not namespace or not key_path then
+    return nil, "invalid key format"
+  end
+  if key_path:match("^%.") or key_path:match("%.$") or key_path:match("%.%.") then
+    return nil, "invalid key path"
+  end
+  if not namespace:match("^[%w_%-%.]+$") then
+    return nil, "invalid namespace format"
+  end
+  if not key_path:match("^[%w_%-%.]+$") then
+    return nil, "invalid key path format"
+  end
+  return full_key, nil
+end
+
+---@param value string
+---@return string|nil
+local function ascii_slug(value)
+  for i = 1, #value do
+    if value:byte(i) > 127 then
+      return nil
+    end
+  end
+  local parts = {}
+  local lowered = value:lower()
+  for token in lowered:gmatch("[a-z0-9]+") do
+    table.insert(parts, token)
+  end
+  if #parts == 0 then
+    return nil
+  end
+  return table.concat(parts, ".")
+end
+
+---@param path string
+---@return string
+local function file_stem(path)
+  local name = path:match("([^/\\]+)$") or "text"
+  local stem = name:gsub("%.[^%.]+$", "")
+  if stem == "" then
+    return "text"
+  end
+  return stem
+end
+
+---@param full_key string
+---@param used table<string, boolean>
+---@return string
+local function ensure_unique_key(full_key, used)
+  if not used[full_key] then
+    return full_key
+  end
+  local namespace, key_path = split_key(full_key)
+  if not namespace or not key_path then
+    return full_key
+  end
+  local n = 2
+  while true do
+    local candidate = string.format("%s:%s.%d", namespace, key_path, n)
+    if not used[candidate] then
+      return candidate
+    end
+    n = n + 1
+  end
+end
+
+---@param cache table|nil
+---@return table<string, boolean>
+local function collect_existing_keys(cache)
+  local keys = {}
+  if not cache or not cache.index then
+    return keys
+  end
+  for _, entries in pairs(cache.index) do
+    for key, _ in pairs(entries or {}) do
+      if key ~= "__error__" then
+        keys[key] = true
+      end
+    end
+  end
+  return keys
+end
+
+---@param bufnr integer
+---@param item I18nStatusHardcodedItem
+---@param fallback_ns string
+---@param fallback_counter table<string, integer>
+---@param used_keys table<string, boolean>
+---@return string
+local function suggest_key(bufnr, item, fallback_ns, fallback_counter, used_keys)
+  local ctx = scan.translation_context_at(bufnr, item.lnum, { fallback_namespace = fallback_ns })
+  local namespace = ctx.namespace or fallback_ns or "common"
+  local base = file_stem(vim.api.nvim_buf_get_name(bufnr))
+  local segment = ascii_slug(item.text)
+  if not segment then
+    local current = fallback_counter[base] or 0
+    while true do
+      current = current + 1
+      local candidate = string.format("%s:%s.text_%d", namespace, base, current)
+      if not used_keys[candidate] then
+        fallback_counter[base] = current
+        return candidate
+      end
+    end
+  end
+  local full_key = string.format("%s:%s.%s", namespace, base, segment)
+  return ensure_unique_key(full_key, used_keys)
+end
+
+---@param bufnr integer
+---@param summary table
+---@param cfg I18nStatusConfig
+local function finish(bufnr, summary, cfg)
+  if summary.replaced > 0 then
+    core.refresh(bufnr, cfg, 0, { force = true })
+    core.refresh_all(cfg)
+  end
+  local message = string.format(
+    "i18n-status extract: detected=%d replaced=%d skipped=%d failed=%d",
+    summary.detected,
+    summary.replaced,
+    summary.skipped,
+    summary.failed
+  )
+  local level = summary.failed > 0 and vim.log.levels.WARN or vim.log.levels.INFO
+  vim.notify(message, level)
+end
+
+---@param bufnr integer
+---@param cfg I18nStatusConfig
+---@param opts? { range?: { start_line?: integer, end_line?: integer } }
+function M.run(bufnr, cfg, opts)
+  opts = opts or {}
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  local start_dir = resources.start_dir(bufnr)
+  local cache = resources.ensure_index(start_dir)
+  local fallback_ns = resources.fallback_namespace(start_dir)
+  local extract_cfg = (cfg and cfg.extract) or {}
+  local items = hardcoded.extract(bufnr, {
+    range = opts.range,
+    min_length = extract_cfg.min_length,
+    exclude_components = extract_cfg.exclude_components,
+  })
+  if #items == 0 then
+    vim.notify("i18n-status extract: no hardcoded text found", vim.log.levels.INFO)
+    return
+  end
+
+  local languages = cache and cache.languages or {}
+  if #languages == 0 then
+    vim.notify("i18n-status extract: no languages detected", vim.log.levels.WARN)
+    return
+  end
+
+  local primary_lang = (cfg and cfg.primary_lang) or languages[1]
+  local summary = {
+    detected = #items,
+    replaced = 0,
+    skipped = 0,
+    failed = 0,
+  }
+  local used_keys = collect_existing_keys(cache)
+  local fallback_counter = {}
+  local ordered = {}
+  for _, item in ipairs(items) do
+    table.insert(ordered, item)
+  end
+  table.sort(ordered, function(a, b)
+    if a.lnum == b.lnum then
+      return a.col > b.col
+    end
+    return a.lnum > b.lnum
+  end)
+
+  local function run_loop(index)
+    if index > #ordered then
+      finish(bufnr, summary, cfg)
+      return
+    end
+
+    local item = ordered[index]
+    local context = scan.translation_context_at(bufnr, item.lnum, { fallback_namespace = fallback_ns })
+    local namespace = context.namespace or fallback_ns or "common"
+    local t_func = context.t_func or "t"
+    local suggested = suggest_key(bufnr, item, fallback_ns, fallback_counter, used_keys)
+    local prompt = string.format("Extract text (%d:%d): ", item.lnum + 1, item.col + 1)
+
+    vim.ui.input({ prompt = prompt, default = suggested }, function(input)
+      if input == nil or vim.trim(input) == "" then
+        summary.skipped = summary.skipped + 1
+        run_loop(index + 1)
+        return
+      end
+
+      local full_key, err = normalize_key_input(input, namespace)
+      if not full_key then
+        summary.skipped = summary.skipped + 1
+        vim.notify("i18n-status extract: " .. err, vim.log.levels.WARN)
+        run_loop(index + 1)
+        return
+      end
+      full_key = ensure_unique_key(full_key, used_keys)
+      local key_ns, key_path = split_key(full_key)
+      if not key_ns or not key_path then
+        summary.failed = summary.failed + 1
+        run_loop(index + 1)
+        return
+      end
+
+      local translations = {}
+      for _, lang in ipairs(languages) do
+        translations[lang] = lang == primary_lang and item.text or ""
+      end
+
+      local success_count, failed_langs =
+        key_write.write_translations(key_ns, key_path, translations, start_dir, languages)
+      if success_count == 0 then
+        summary.failed = summary.failed + 1
+        run_loop(index + 1)
+        return
+      end
+
+      local primary_failed = false
+      for _, lang in ipairs(failed_langs) do
+        if lang == primary_lang then
+          primary_failed = true
+          break
+        end
+      end
+      if primary_failed then
+        summary.failed = summary.failed + 1
+        run_loop(index + 1)
+        return
+      end
+
+      local replacement = string.format('{%s("%s")}', t_func, full_key)
+      vim.api.nvim_buf_set_text(bufnr, item.lnum, item.col, item.end_lnum, item.end_col, { replacement })
+      used_keys[full_key] = true
+      if #failed_langs > 0 then
+        summary.failed = summary.failed + 1
+      end
+      summary.replaced = summary.replaced + 1
+      run_loop(index + 1)
+    end)
+  end
+
+  local initial_context = scan.translation_context_at(bufnr, 0, { fallback_namespace = fallback_ns })
+  if initial_context.has_any_hook then
+    run_loop(1)
+    return
+  end
+
+  vim.ui.input({ prompt = "No translation hook found in this file. Continue? (y/N): " }, function(answer)
+    if not answer or answer:lower() ~= "y" then
+      vim.notify("i18n-status extract: cancelled", vim.log.levels.INFO)
+      return
+    end
+    run_loop(1)
+  end)
+end
+
+return M

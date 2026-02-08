@@ -129,6 +129,12 @@ doctor.ignore_keys (default: {})
 auto_hover.enabled (default: true)
     Show the hover window automatically on CursorHold for JS/TS buffers.
 
+extract.min_length (default: 2)
+    Minimum text length to detect when running :I18nExtract.
+
+extract.exclude_components (default: { "Trans", "Translation" })
+    JSX component names to skip during extraction.
+
 review.float.width (default: 0.8)
     Relative width of the Doctor/review floating window (0-1).
 
@@ -155,6 +161,9 @@ The plugin creates the following user commands:
                       Prompts for key name and translations for all configured
                       languages.
 
+  :I18nExtract        Detect and extract hardcoded JSX text in current buffer.
+                      Supports ranges (e.g. :'<,'>I18nExtract).
+
   :I18nRefresh        Force refresh for current buffer.
 
   :I18nLangNext        Cycle current language (yankround-style).
@@ -172,6 +181,8 @@ Example keymaps:
     { desc = "i18n doctor" })
   vim.keymap.set("n", "<leader>ia", "<Cmd>I18nAddKey<CR>",
     { desc = "Add new i18n key" })
+  vim.keymap.set("n", "<leader>ix", "<Cmd>I18nExtract<CR>",
+    { desc = "Extract hardcoded text" })
 <
 
 Inline goto-definition is opt-in. Define your own mapping that calls

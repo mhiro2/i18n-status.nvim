@@ -7,6 +7,7 @@ local resources = require("i18n-status.resources")
 local state = require("i18n-status.state")
 local util = require("i18n-status.util")
 local resolve = require("i18n-status.resolve")
+local key_write = require("i18n-status.key_write")
 
 local ops = require("i18n-status.ops")
 
@@ -1251,34 +1252,6 @@ local function rename_item(ctx)
   end)
 end
 
----Write a single translation value to a language file
----@param namespace string Namespace
----@param key_path string Key path within namespace
----@param lang string Language code
----@param value string Translation value
----@param root string Project root directory
----@return boolean success
-local function write_single_translation(namespace, key_path, lang, value, root)
-  local path = resources.namespace_path(root, lang, namespace)
-  if not path then
-    return false
-  end
-
-  if not util.ensure_dir(util.dirname(path)) then
-    return false
-  end
-
-  local data, style = resources.read_json_table(path)
-  if not data then
-    return false
-  end
-
-  local path_in_file = resources.key_path_for_file(namespace, key_path, root, lang, path)
-  util.set_nested(data, path_in_file, value)
-  resources.write_json_table(path, data, style)
-  return true
-end
-
 ---Write translations to all language files and notify results
 ---@param namespace string Namespace
 ---@param key_path string Key path within namespace
@@ -1289,16 +1262,7 @@ end
 ---@return integer success_count
 ---@return string[] failed_langs
 local function write_translations_to_files(namespace, key_path, translations, root, languages, full_key)
-  local success_count = 0
-  local failed_langs = {}
-
-  for _, lang in ipairs(languages) do
-    if write_single_translation(namespace, key_path, lang, translations[lang], root) then
-      success_count = success_count + 1
-    else
-      table.insert(failed_langs, lang)
-    end
-  end
+  local success_count, failed_langs = key_write.write_translations(namespace, key_path, translations, root, languages)
 
   if success_count == #languages then
     vim.notify("Successfully added key: " .. full_key, vim.log.levels.INFO)
