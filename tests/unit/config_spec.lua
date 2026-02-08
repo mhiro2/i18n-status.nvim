@@ -18,6 +18,10 @@ describe("config validation", function()
       doctor = {
         ignore_keys = { "^test:", "^dev:" },
       },
+      extract = {
+        min_length = 3,
+        exclude_components = { "Trans", "Translation" },
+      },
     })
 
     assert.are.equal("en", cfg.primary_lang)
@@ -29,6 +33,8 @@ describe("config validation", function()
     assert.is_false(cfg.resource_watch.enabled)
     assert.are.equal(300, cfg.resource_watch.debounce_ms)
     assert.are.same({ "^test:", "^dev:" }, cfg.doctor.ignore_keys)
+    assert.are.equal(3, cfg.extract.min_length)
+    assert.are.same({ "Trans", "Translation" }, cfg.extract.exclude_components)
   end)
 
   it("validates inline.position", function()
@@ -225,5 +231,42 @@ describe("config validation", function()
     local cfg = config.setup({})
     assert.are.equal("en", cfg.primary_lang)
     assert.are.equal("eol", cfg.inline.position)
+  end)
+
+  it("validates extract.min_length", function()
+    local notify_calls = {}
+    local original_notify = vim.notify
+    vim.notify = function(msg, level)
+      table.insert(notify_calls, { msg = msg, level = level })
+    end
+
+    local cfg = config.setup({
+      extract = {
+        min_length = -1,
+      },
+    })
+
+    assert.are.equal(2, cfg.extract.min_length)
+    assert.are.equal(1, #notify_calls)
+    assert.is_true(notify_calls[1].msg:match("extract.min_length") ~= nil)
+    vim.notify = original_notify
+  end)
+
+  it("validates extract.exclude_components", function()
+    local notify_calls = {}
+    local original_notify = vim.notify
+    vim.notify = function(msg, level)
+      table.insert(notify_calls, { msg = msg, level = level })
+    end
+
+    local cfg = config.setup({
+      extract = {
+        exclude_components = { "Trans", 1, "" },
+      },
+    })
+
+    assert.are.same({ "Trans" }, cfg.extract.exclude_components)
+    assert.are.equal(1, #notify_calls)
+    vim.notify = original_notify
   end)
 end)

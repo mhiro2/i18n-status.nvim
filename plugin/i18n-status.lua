@@ -86,3 +86,16 @@ vim.api.nvim_create_user_command("I18nAddKey", function()
     mod.add_key()
   end)
 end, {})
+
+vim.api.nvim_create_user_command("I18nExtract", function(args)
+  with_module(function(mod)
+    local opts = nil
+    if args.range > 0 then
+      opts = {
+        start_line = args.line1 - 1,
+        end_line = args.line2 - 1,
+      }
+    end
+    mod.extract(opts)
+  end)
+end, { range = true })

@@ -4,6 +4,7 @@
 ---@field resource_watch I18nStatusResourceWatchConfig
 ---@field doctor I18nStatusDoctorConfig
 ---@field auto_hover I18nStatusAutoHoverConfig
+---@field extract I18nStatusExtractConfig
 local M = {}
 
 local util = require("i18n-status.util")
@@ -31,6 +32,10 @@ local util = require("i18n-status.util")
 
 ---@class I18nStatusAutoHoverConfig
 ---@field enabled boolean
+
+---@class I18nStatusExtractConfig
+---@field min_length integer
+---@field exclude_components string[]
 
 ---@type I18nStatusConfig
 local defaults = {
@@ -64,6 +69,10 @@ local defaults = {
   },
   auto_hover = {
     enabled = true,
+  },
+  extract = {
+    min_length = 2,
+    exclude_components = { "Trans", "Translation" },
   },
 }
 
@@ -192,6 +201,49 @@ local function validate(config)
   if config.auto_hover and config.auto_hover.enabled ~= nil and type(config.auto_hover.enabled) ~= "boolean" then
     table.insert(warnings, "auto_hover.enabled must be a boolean, got " .. type(config.auto_hover.enabled))
     config.auto_hover.enabled = defaults.auto_hover.enabled
+  end
+
+  -- Validate extract.min_length
+  if config.extract and config.extract.min_length ~= nil then
+    if
+      type(config.extract.min_length) ~= "number"
+      or config.extract.min_length < 0
+      or math.floor(config.extract.min_length) ~= config.extract.min_length
+    then
+      table.insert(
+        warnings,
+        "extract.min_length must be a non-negative integer, got " .. tostring(config.extract.min_length)
+      )
+      config.extract.min_length = defaults.extract.min_length
+    end
+  end
+
+  -- Validate extract.exclude_components
+  if config.extract and config.extract.exclude_components ~= nil then
+    if type(config.extract.exclude_components) ~= "table" then
+      table.insert(
+        warnings,
+        "extract.exclude_components must be a table (array), got " .. type(config.extract.exclude_components)
+      )
+      config.extract.exclude_components = defaults.extract.exclude_components
+    else
+      local valid_components = {}
+      for i, value in ipairs(config.extract.exclude_components) do
+        if type(value) == "string" and value ~= "" then
+          table.insert(valid_components, value)
+        else
+          table.insert(
+            warnings,
+            "extract.exclude_components[" .. i .. "] must be a non-empty string, got " .. type(value)
+          )
+        end
+      end
+      if #valid_components == 0 then
+        config.extract.exclude_components = defaults.extract.exclude_components
+      else
+        config.extract.exclude_components = valid_components
+      end
+    end
   end
 
   -- Validate doctor.float.width

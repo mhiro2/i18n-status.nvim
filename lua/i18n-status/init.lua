@@ -8,6 +8,7 @@ local actions = require("i18n-status.actions")
 local resources = require("i18n-status.resources")
 local doctor = require("i18n-status.doctor")
 local util = require("i18n-status.util")
+local extract = require("i18n-status.extract")
 
 local config = nil
 local setup_done = false
@@ -334,6 +335,24 @@ function M.add_key()
   M.ensure_setup()
   local review = require("i18n-status.review")
   review.add_key_command(config)
+end
+
+---@param opts? { start_line?: integer, end_line?: integer }
+function M.extract(opts)
+  M.ensure_setup()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if not core.should_refresh(bufnr) then
+    vim.notify("i18n-status: not a supported filetype", vim.log.levels.WARN)
+    return
+  end
+  local range = nil
+  if opts and (type(opts.start_line) == "number" or type(opts.end_line) == "number") then
+    range = {
+      start_line = opts.start_line,
+      end_line = opts.end_line,
+    }
+  end
+  extract.run(bufnr, config, { range = range })
 end
 
 return M

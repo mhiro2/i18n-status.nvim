@@ -30,6 +30,14 @@ local QUERY_MEMBER = [[
       arguments: (arguments (_) @arg))
 ]]
 
+local QUERY_TRANSLATION_BINDINGS = [[
+    (variable_declarator
+      name: (_) @name
+      value: (call_expression
+        function: (identifier) @func
+        arguments: (arguments) @args))
+]]
+
 ---@param lang string
 ---@param name string
 ---@param source string
@@ -246,6 +254,73 @@ local function collect_namespaces(root, source, lang)
         local scope = find_scope(func)
         local start_row, _, end_row, _ = scope:range()
         table.insert(scopes, { ns = ns, start_row = start_row, end_row = end_row })
+      end
+    end
+  end
+  table.sort(scopes, function(a, b)
+    return (a.end_row - a.start_row) < (b.end_row - b.start_row)
+  end)
+  return scopes
+end
+
+---@param name_node TSNode
+---@param source integer|string
+---@return string|nil
+local function detect_translation_func_name(name_node, source)
+  if not name_node then
+    return nil
+  end
+  local typ = name_node:type()
+  local text = node_text(name_node, source)
+  if typ == "identifier" then
+    return text
+  end
+  local alias = text:match("t%s*:%s*([%a_][%w_]*)")
+  if alias then
+    return alias
+  end
+  if text:match("^%s*{%s*t%s*}$") or text:match("[{,]%s*t%s*[,}]") then
+    return "t"
+  end
+  if typ == "array_pattern" then
+    local first = text:match("^%s*%[%s*([%a_][%w_]*)")
+    if first then
+      return first
+    end
+  end
+  return nil
+end
+
+---@param root TSNode
+---@param source integer|string
+---@param lang string
+---@param consts table<string, string>
+---@return table[]
+local function collect_translation_scopes(root, source, lang, consts)
+  local scopes = {}
+  local query = get_query(lang, "translation_bindings", QUERY_TRANSLATION_BINDINGS)
+  if not query then
+    return scopes
+  end
+  for _, match in query:iter_matches(root, source) do
+    local name_node = capture_node(match, 1)
+    local func_node = capture_node(match, 2)
+    local args_node = capture_node(match, 3)
+    if name_node and func_node and args_node then
+      local hook = node_text(func_node, source)
+      if hook == "useTranslation" or hook == "useTranslations" or hook == "getTranslations" then
+        local first_arg = args_node:named_child(0)
+        local ns = eval_string(first_arg, source, consts)
+        local t_func = detect_translation_func_name(name_node, source)
+        local scope = find_scope(name_node)
+        local start_row, _, end_row, _ = scope:range()
+        table.insert(scopes, {
+          ns = ns,
+          t_func = t_func,
+          hook = hook,
+          start_row = start_row,
+          end_row = end_row,
+        })
       end
     end
   end
@@ -622,6 +697,120 @@ function M.namespace_at(bufnr, row, opts)
   end
   local scopes = collect_namespaces(tree:root(), bufnr, lang)
   return namespace_for(scopes, row) or fallback_ns
+end
+
+---@param line string
+---@param state table
+local function update_translation_state_from_line(line, state)
+  if not line or line == "" then
+    return
+  end
+  local hook_patterns = { "useTranslation", "useTranslations", "getTranslations" }
+  for _, name in ipairs(hook_patterns) do
+    if line:find(name, 1, true) then
+      state.has_hook = true
+      local ns = line:match(name .. "%s*%(%s*['\"]([^'\"]+)['\"]%s*%)")
+      if ns then
+        state.namespace = ns
+      end
+    end
+  end
+  local alias = line:match("const%s*{%s*t%s*:%s*([%a_][%w_]*)%s*}%s*=%s*[%w_%.]*useTranslation%s*%(")
+    or line:match("const%s*{%s*t%s*:%s*([%a_][%w_]*)%s*}%s*=%s*[%w_%.]*useTranslations%s*%(")
+    or line:match("const%s*{%s*t%s*:%s*([%a_][%w_]*)%s*}%s*=%s*[%w_%.]*getTranslations%s*%(")
+  if alias then
+    state.has_hook = true
+    state.t_func = alias
+  end
+
+  local plain_t = line:match("const%s*{%s*t%s*}%s*=%s*[%w_%.]*useTranslation%s*%(")
+    or line:match("const%s*{%s*t%s*}%s*=%s*[%w_%.]*useTranslations%s*%(")
+    or line:match("const%s*{%s*t%s*}%s*=%s*[%w_%.]*getTranslations%s*%(")
+  if plain_t then
+    state.has_hook = true
+    state.t_func = "t"
+  end
+
+  local assigned = line:match("const%s+([%a_][%w_]*)%s*=%s*[%w_%.]*useTranslations%s*%(")
+    or line:match("const%s+([%a_][%w_]*)%s*=%s*[%w_%.]*getTranslations%s*%(")
+  if assigned then
+    state.has_hook = true
+    state.t_func = assigned
+  end
+end
+
+---@param bufnr integer
+---@param row integer
+---@param opts table|nil
+---@return { namespace: string|nil, t_func: string, found_hook: boolean, has_any_hook: boolean }
+function M.translation_context_at(bufnr, row, opts)
+  local fallback_ns = opts and opts.fallback_namespace or nil
+  local lang = get_lang(bufnr)
+  if lang == "" then
+    return {
+      namespace = fallback_ns,
+      t_func = "t",
+      found_hook = false,
+      has_any_hook = false,
+    }
+  end
+
+  local ok, parser = pcall(vim.treesitter.get_parser, bufnr, lang)
+  if not ok or not parser then
+    if lang == "tsx" then
+      ok, parser = pcall(vim.treesitter.get_parser, bufnr, "typescript")
+      lang = "typescript"
+    elseif lang == "jsx" then
+      ok, parser = pcall(vim.treesitter.get_parser, bufnr, "javascript")
+      lang = "javascript"
+    end
+  end
+
+  if not ok or not parser then
+    local state = {
+      namespace = fallback_ns,
+      t_func = "t",
+      has_hook = false,
+    }
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, row + 1, false)
+    for _, line in ipairs(lines) do
+      update_translation_state_from_line(line, state)
+    end
+    return {
+      namespace = state.namespace,
+      t_func = state.t_func,
+      found_hook = state.has_hook,
+      has_any_hook = state.has_hook,
+    }
+  end
+
+  local tree = parser:parse()[1]
+  if not tree then
+    return {
+      namespace = fallback_ns,
+      t_func = "t",
+      found_hook = false,
+      has_any_hook = false,
+    }
+  end
+
+  local root = tree:root()
+  local consts = collect_consts(root, bufnr, lang)
+  local scopes = collect_translation_scopes(root, bufnr, lang, consts)
+  local scope = nil
+  for _, entry in ipairs(scopes) do
+    if row >= entry.start_row and row <= entry.end_row then
+      scope = entry
+      break
+    end
+  end
+
+  return {
+    namespace = (scope and scope.ns) or fallback_ns,
+    t_func = (scope and scope.t_func) or "t",
+    found_hook = scope ~= nil,
+    has_any_hook = #scopes > 0,
+  }
 end
 
 return M
