@@ -7,6 +7,121 @@ local key_write = require("i18n-status.key_write")
 local resources = require("i18n-status.resources")
 local scan = require("i18n-status.scan")
 
+local EXTRACT_NS = vim.api.nvim_create_namespace("i18n-status-extract")
+local PREVIEW_MAX_LEN = 40
+
+---@class I18nStatusExtractWindowState
+---@field winid integer|nil
+---@field cursor integer[]|nil
+---@field view table|nil
+
+---@param bufnr integer
+---@return integer|nil
+local function window_for_buf(bufnr)
+  local current = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_get_buf(current) == bufnr then
+    return current
+  end
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(win) == bufnr then
+      return win
+    end
+  end
+  return nil
+end
+
+---@param text string
+---@return string
+local function prompt_preview(text)
+  local normalized = vim.trim((text or ""):gsub("%s+", " "))
+  if normalized == "" then
+    normalized = "<empty>"
+  end
+  if #normalized > PREVIEW_MAX_LEN then
+    normalized = normalized:sub(1, PREVIEW_MAX_LEN - 3) .. "..."
+  end
+  return normalized:gsub('"', '\\"')
+end
+
+---@param item I18nStatusHardcodedItem
+---@return string
+local function prompt_for_item(item)
+  local preview = prompt_preview(item.text)
+  return string.format('Extract "%s" (%d:%d): ', preview, item.lnum + 1, item.col + 1)
+end
+
+---@param bufnr integer
+local function clear_extract_highlight(bufnr)
+  if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+    vim.api.nvim_buf_clear_namespace(bufnr, EXTRACT_NS, 0, -1)
+  end
+end
+
+---@param bufnr integer
+---@param item I18nStatusHardcodedItem
+local function highlight_item(bufnr, item)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  clear_extract_highlight(bufnr)
+  if item.end_lnum == item.lnum then
+    vim.api.nvim_buf_add_highlight(bufnr, EXTRACT_NS, "Visual", item.lnum, item.col, item.end_col)
+    return
+  end
+  vim.api.nvim_buf_add_highlight(bufnr, EXTRACT_NS, "Visual", item.lnum, item.col, -1)
+  for row = item.lnum + 1, item.end_lnum - 1 do
+    vim.api.nvim_buf_add_highlight(bufnr, EXTRACT_NS, "Visual", row, 0, -1)
+  end
+  vim.api.nvim_buf_add_highlight(bufnr, EXTRACT_NS, "Visual", item.end_lnum, 0, item.end_col)
+end
+
+---@param bufnr integer
+---@return I18nStatusExtractWindowState
+local function capture_window_state(bufnr)
+  local winid = window_for_buf(bufnr)
+  if not winid then
+    return { winid = nil, cursor = nil, view = nil }
+  end
+  local cursor = vim.api.nvim_win_get_cursor(winid)
+  local view = vim.api.nvim_win_call(winid, function()
+    return vim.fn.winsaveview()
+  end)
+  return { winid = winid, cursor = cursor, view = view }
+end
+
+---@param state I18nStatusExtractWindowState
+local function restore_window_state(state)
+  if not state or not state.winid or not vim.api.nvim_win_is_valid(state.winid) then
+    return
+  end
+  if state.view then
+    pcall(vim.api.nvim_win_call, state.winid, function()
+      vim.fn.winrestview(state.view)
+    end)
+  end
+  if state.cursor then
+    pcall(vim.api.nvim_win_set_cursor, state.winid, state.cursor)
+  end
+end
+
+---@param state I18nStatusExtractWindowState
+---@param item I18nStatusHardcodedItem
+local function focus_item(state, item)
+  if not state or not state.winid or not vim.api.nvim_win_is_valid(state.winid) then
+    return
+  end
+  local row = item.lnum + 1
+  pcall(vim.api.nvim_win_set_cursor, state.winid, { row, item.col })
+  pcall(vim.api.nvim_win_call, state.winid, function()
+    local win_h = vim.api.nvim_win_get_height(state.winid)
+    local view = vim.fn.winsaveview()
+    view.topline = math.max(1, row - math.floor(win_h / 2))
+    view.lnum = row
+    view.col = item.col
+    vim.fn.winrestview(view)
+  end)
+end
+
 ---@param key string
 ---@return string|nil namespace
 ---@return string|nil key_path
@@ -216,9 +331,16 @@ function M.run(bufnr, cfg, opts)
     end
     return a.lnum > b.lnum
   end)
+  local win_state = capture_window_state(bufnr)
+
+  local function cleanup_visual_state()
+    clear_extract_highlight(bufnr)
+    restore_window_state(win_state)
+  end
 
   local function run_loop(index)
     if index > #ordered then
+      cleanup_visual_state()
       finish(bufnr, summary, cfg)
       return
     end
@@ -228,7 +350,9 @@ function M.run(bufnr, cfg, opts)
     local namespace = context.namespace or fallback_ns or "common"
     local t_func = context.t_func or "t"
     local suggested = suggest_key(bufnr, item, fallback_ns, fallback_counter, used_keys)
-    local prompt = string.format("Extract text (%d:%d): ", item.lnum + 1, item.col + 1)
+    focus_item(win_state, item)
+    highlight_item(bufnr, item)
+    local prompt = prompt_for_item(item)
 
     vim.ui.input({ prompt = prompt, default = suggested }, function(input)
       if input == nil or vim.trim(input) == "" then
@@ -297,6 +421,7 @@ function M.run(bufnr, cfg, opts)
 
   vim.ui.input({ prompt = "No translation hook found in this file. Continue? (y/N): " }, function(answer)
     if not answer or answer:lower() ~= "y" then
+      cleanup_visual_state()
       vim.notify("i18n-status extract: cancelled", vim.log.levels.INFO)
       return
     end

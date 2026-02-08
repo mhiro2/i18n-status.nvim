@@ -25,6 +25,7 @@ describe("extract", function()
   local write_calls
   local notify_calls
   local input_queue
+  local input_calls
   local hardcoded_items
   local context_fn
   local cache_data
@@ -39,6 +40,7 @@ describe("extract", function()
     write_calls = {}
     notify_calls = {}
     input_queue = {}
+    input_calls = {}
     hardcoded_items = {}
     cache_data = {
       languages = { "ja", "en" },
@@ -83,6 +85,7 @@ describe("extract", function()
 
     original_input = vim.ui.input
     vim.ui.input = function(opts, on_confirm)
+      table.insert(input_calls, opts)
       local next_value = table.remove(input_queue, 1)
       if next_value == "__DEFAULT__" then
         on_confirm(opts.default)
@@ -236,5 +239,139 @@ describe("extract", function()
 
     local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
     assert.are.equal('{tr("common:file4.hello")}', line)
+  end)
+
+  it("includes text preview in extract prompt", function()
+    local buf = make_buf({ "TEXT" }, "typescriptreact", "/tmp/project/src/file5.tsx")
+    hardcoded_items = {
+      {
+        bufnr = buf,
+        lnum = 0,
+        col = 0,
+        end_lnum = 0,
+        end_col = 4,
+        text = "Hello world",
+        kind = "jsx_text",
+      },
+    }
+    input_queue = { "__DEFAULT__" }
+    local cfg = config_mod.setup({ primary_lang = "ja" })
+
+    extract.run(buf, cfg, {})
+
+    assert.is_true(input_calls[1].prompt:find('Extract "Hello world" (1:1): ', 1, true) ~= nil)
+  end)
+
+  it("normalizes whitespace and truncates prompt preview", function()
+    local buf = make_buf({ "TEXT" }, "typescriptreact", "/tmp/project/src/file6.tsx")
+    hardcoded_items = {
+      {
+        bufnr = buf,
+        lnum = 0,
+        col = 0,
+        end_lnum = 0,
+        end_col = 4,
+        text = "Long\n\n   text value that should be truncated for prompt display",
+        kind = "jsx_text",
+      },
+    }
+    input_queue = { "__DEFAULT__" }
+    local cfg = config_mod.setup({ primary_lang = "ja" })
+
+    extract.run(buf, cfg, {})
+
+    local prompt = input_calls[1].prompt
+    assert.is_nil(prompt:find("\n", 1, true))
+    assert.is_true(prompt:find("...", 1, true) ~= nil)
+  end)
+
+  it("focuses target text and restores original cursor after extraction", function()
+    local buf = make_buf({ "AAAA", "BBBB" }, "typescriptreact", "/tmp/project/src/file7.tsx")
+    vim.api.nvim_set_current_buf(buf)
+    local win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_cursor(win, { 2, 0 })
+    hardcoded_items = {
+      {
+        bufnr = buf,
+        lnum = 0,
+        col = 0,
+        end_lnum = 0,
+        end_col = 4,
+        text = "AAAA",
+        kind = "jsx_text",
+      },
+    }
+    input_queue = { "__DEFAULT__" }
+    local cfg = config_mod.setup({ primary_lang = "ja" })
+    local cursor_calls = {}
+    local clear_calls = {}
+    local highlight_calls = {}
+
+    add_stub(vim.api, "nvim_win_set_cursor", function(winid, pos)
+      table.insert(cursor_calls, { winid = winid, pos = { pos[1], pos[2] } })
+    end)
+    add_stub(vim.api, "nvim_buf_clear_namespace", function(bufnr, ns_id, first, last)
+      table.insert(clear_calls, { bufnr = bufnr, ns_id = ns_id, first = first, last = last })
+    end)
+    add_stub(vim.api, "nvim_buf_add_highlight", function(bufnr, ns_id, group, line, col_start, col_end)
+      table.insert(highlight_calls, {
+        bufnr = bufnr,
+        ns_id = ns_id,
+        group = group,
+        line = line,
+        col_start = col_start,
+        col_end = col_end,
+      })
+    end)
+
+    extract.run(buf, cfg, {})
+
+    assert.is_true(#highlight_calls > 0)
+    assert.is_true(#clear_calls > 0)
+    assert.are.same({ 1, 0 }, cursor_calls[1].pos)
+    assert.are.same({ 2, 0 }, cursor_calls[#cursor_calls].pos)
+  end)
+
+  it("restores cursor and clears highlight when cancelled before extraction", function()
+    local buf = make_buf({ "TEXT" }, "typescriptreact", "/tmp/project/src/file8.tsx")
+    vim.api.nvim_set_current_buf(buf)
+    local win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_cursor(win, { 1, 2 })
+    hardcoded_items = {
+      {
+        bufnr = buf,
+        lnum = 0,
+        col = 0,
+        end_lnum = 0,
+        end_col = 4,
+        text = "TEXT",
+        kind = "jsx_text",
+      },
+    }
+    context_fn = function()
+      return {
+        namespace = "common",
+        t_func = "t",
+        found_hook = false,
+        has_any_hook = false,
+      }
+    end
+    input_queue = { "n" }
+    local cfg = config_mod.setup({ primary_lang = "ja" })
+    local cursor_calls = {}
+    local clear_calls = {}
+
+    add_stub(vim.api, "nvim_win_set_cursor", function(winid, pos)
+      table.insert(cursor_calls, { winid = winid, pos = { pos[1], pos[2] } })
+    end)
+    add_stub(vim.api, "nvim_buf_clear_namespace", function(bufnr, ns_id, first, last)
+      table.insert(clear_calls, { bufnr = bufnr, ns_id = ns_id, first = first, last = last })
+    end)
+
+    extract.run(buf, cfg, {})
+
+    assert.are.equal(0, #write_calls)
+    assert.is_true(#clear_calls > 0)
+    assert.are.same({ 1, 2 }, cursor_calls[#cursor_calls].pos)
   end)
 end)
