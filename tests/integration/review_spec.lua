@@ -1,6 +1,7 @@
 local review = require("i18n-status.review")
 local config_mod = require("i18n-status.config")
 local core = require("i18n-status.core")
+local review_ui = require("i18n-status.review_ui")
 local helpers = require("tests.helpers")
 local state = require("i18n-status.state")
 local resources = require("i18n-status.resources")
@@ -217,6 +218,14 @@ describe("doctor review", function()
       assert.is_false(detail_valid)
     end)
   end)
+
+  it("keeps review header highlight linked to title-like groups", function()
+    review_ui.ensure_review_highlights()
+    local hl = vim.api.nvim_get_hl(0, { name = "I18nStatusReviewHeader", link = true })
+    assert.is_not_nil(hl)
+    assert.is_not_nil(hl.link)
+    assert.is_true(hl.link == "TelescopeResultsTitle" or hl.link == "Title")
+  end)
 end)
 
 describe("doctor review edit", function()
@@ -328,6 +337,66 @@ describe("doctor review edit", function()
       local line2 = vim.api.nvim_buf_get_lines(buf2, 0, 1, false)[1]
       assert.is_true(line1:find("rename.heading", 1, true) ~= nil)
       assert.is_true(line2:find("rename.heading", 1, true) ~= nil)
+
+      pcall(vim.api.nvim_win_close, ctx.list_win, true)
+      pcall(vim.api.nvim_win_close, ctx.detail_win, true)
+    end)
+  end)
+
+  it("does not call config setup fallback when ctx.config is nil", function()
+    state.init("ja", { "ja", "en" })
+
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"Old"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+    helpers.with_cwd(root, function()
+      local src = make_buf({ 't("login.title")' }, "typescript")
+      local config = config_mod.setup({
+        primary_lang = "ja",
+        inline = { visible_only = false },
+      })
+
+      local issues = {
+        { kind = "drift_missing", key = "common:login.title", severity = vim.log.levels.WARN },
+      }
+      local cache = resources.ensure_index(root)
+      local ctx_mock = {
+        bufnr = src,
+        cache = cache,
+      }
+      local ctx = review.open_doctor_results(issues, ctx_mock, config)
+      vim.api.nvim_win_set_cursor(ctx.list_win, { 1, 0 })
+      vim.api.nvim_exec_autocmds("CursorMoved", { buffer = ctx.list_buf })
+
+      local original_setup = config_mod.setup
+      local setup_calls = 0
+      config_mod.setup = function(opts)
+        setup_calls = setup_calls + 1
+        return original_setup(opts)
+      end
+
+      local original_select = vim.ui.select
+      local original_input = vim.ui.input
+      ctx.config = nil
+      vim.ui.select = function(_items, _opts, on_choice)
+        on_choice("ja")
+      end
+      vim.ui.input = function(_opts, on_confirm)
+        on_confirm("New")
+      end
+
+      vim.api.nvim_set_current_win(ctx.list_win)
+      vim.api.nvim_feedkeys("E", "x", false)
+
+      vim.ui.select = original_select
+      vim.ui.input = original_input
+      config_mod.setup = original_setup
+
+      assert.are.equal(0, setup_calls)
+
+      local data = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      assert.are.equal("New", data.login.title)
 
       pcall(vim.api.nvim_win_close, ctx.list_win, true)
       pcall(vim.api.nvim_win_close, ctx.detail_win, true)
