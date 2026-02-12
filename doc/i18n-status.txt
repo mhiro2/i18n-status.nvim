@@ -334,5 +334,11 @@ next-intl root file priority:
   Actions like "Add missing" and "Extract" will write to the root file
   in this case.
 
+multiple root key conflict precedence (same lang + key):
+  1. i18next namespace file (locales/..., priority 30)
+  2. next-intl root file (messages/{lang}.json, priority 40)
+  3. next-intl namespace file (messages/{lang}/{namespace}.json,
+     priority 50)
+
 ==============================================================================
 vim:tw=78:ts=8:noet:ft=help

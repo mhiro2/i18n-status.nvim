@@ -300,7 +300,12 @@ require("i18n-status").setup({
 - `messages/{lang}/{namespace}.json` (namespace file)
 
 > [!NOTE]
-> When both `messages/{lang}.json` (root file) and `messages/{lang}/{namespace}.json` exist, the root file is prioritized. Actions like "Add missing" and "Extract" will write to the root file in this case.
+> Conflict precedence rules:
+> - In `next-intl`, when both `messages/{lang}.json` (root file) and `messages/{lang}/{namespace}.json` exist, the root file is prioritized. Actions like "Add missing" and "Extract" will write to the root file in this case.
+> - When multiple i18n roots coexist, key conflict precedence (`lang` + key) is:
+>   1. `i18next` namespace file (`locales/...`, priority 30)
+>   2. `next-intl` root file (`messages/{lang}.json`, priority 40)
+>   3. `next-intl` namespace file (`messages/{lang}/{namespace}.json`, priority 50)
 
 ## 🧩 Dynamic i18n key support (limited)
 
