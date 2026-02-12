@@ -455,7 +455,18 @@ function M.run(bufnr, cfg, opts)
       end
 
       local replacement = string.format('{%s("%s")}', t_func, full_key)
-      vim.api.nvim_buf_set_text(bufnr, item.lnum, item.col, item.end_lnum, item.end_col, { replacement })
+      local replaced, replace_err =
+        pcall(vim.api.nvim_buf_set_text, bufnr, item.lnum, item.col, item.end_lnum, item.end_col, { replacement })
+      if not replaced then
+        pcall(vim.api.nvim_buf_del_extmark, bufnr, EXTRACT_TRACK_NS, tracked_item.mark_id)
+        summary.failed = summary.failed + 1
+        vim.notify(
+          "i18n-status extract: failed to update buffer text (" .. tostring(replace_err) .. ")",
+          vim.log.levels.WARN
+        )
+        run_loop(index + 1)
+        return
+      end
       pcall(vim.api.nvim_buf_del_extmark, bufnr, EXTRACT_TRACK_NS, tracked_item.mark_id)
       used_keys[full_key] = true
       if #failed_langs > 0 then

@@ -431,4 +431,40 @@ describe("extract", function()
     assert.is_true(input_calls[1].prompt:find('Extract "Top" (1:1): ', 1, true) ~= nil)
     assert.is_true(input_calls[2].prompt:find('Extract "Bottom" (2:1): ', 1, true) ~= nil)
   end)
+
+  it("does not crash when buffer text update fails", function()
+    local buf = make_buf({ "TEXT" }, "typescriptreact", "/tmp/project/src/file10.tsx")
+    hardcoded_items = {
+      {
+        bufnr = buf,
+        lnum = 0,
+        col = 0,
+        end_lnum = 0,
+        end_col = 4,
+        text = "TEXT",
+        kind = "jsx_text",
+      },
+    }
+    input_queue = { "__DEFAULT__" }
+    local cfg = config_mod.setup({ primary_lang = "ja" })
+
+    add_stub(vim.api, "nvim_buf_set_text", function()
+      error("buffer is invalid")
+    end)
+
+    extract.run(buf, cfg, {})
+
+    local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
+    assert.are.equal("TEXT", line)
+    assert.are.equal(1, #write_calls)
+
+    local found_warning = false
+    for _, call in ipairs(notify_calls) do
+      if call.msg:find("failed to update buffer text", 1, true) then
+        found_warning = true
+        assert.are.equal(vim.log.levels.WARN, call.level)
+      end
+    end
+    assert.is_true(found_warning)
+  end)
 end)
