@@ -417,7 +417,6 @@ local function load_i18next(root, root_path)
         end
       else
         local message = err or "json error"
-        set_entry(tracked.index, lang, "__error__", message, path, 1)
         table.insert(errors, { lang = lang, file = path, error = message })
       end
     end
@@ -466,7 +465,6 @@ local function load_next_intl(root, root_path)
         end
       else
         local message = err or "json error"
-        set_entry(tracked.index, lang, "__error__", message, path, 1)
         table.insert(errors, { lang = lang, file = path, error = message })
       end
     end
@@ -494,7 +492,6 @@ local function load_next_intl(root, root_path)
         end
       else
         local message = err or "json error"
-        set_entry(tracked.index, lang, "__error__", message, root_file, 1)
         table.insert(errors, { lang = lang, file = root_file, error = message })
       end
     end
@@ -509,11 +506,9 @@ function M.collect_namespaces(index)
   local set = {}
   for _, items in pairs(index or {}) do
     for key, _ in pairs(items) do
-      if key ~= "__error__" then
-        local ns = key:match("^(.-):")
-        if ns then
-          set[ns] = true
-        end
+      local ns = key:match("^(.-):")
+      if ns then
+        set[ns] = true
       end
     end
   end
