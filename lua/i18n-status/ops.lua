@@ -125,13 +125,19 @@ local function rename_in_buffer(bufnr, old_key, new_key, new_ns, explicit_ns, fa
     return a.lnum > b.lnum
   end)
   for _, edit in ipairs(edits) do
-    local old_text = vim.api.nvim_buf_get_text(bufnr, edit.lnum, edit.col, edit.lnum, edit.end_col, {})[1] or ""
-    local quote = old_text:sub(1, 1)
-    if quote ~= '"' and quote ~= "'" and quote ~= "`" then
-      quote = '"'
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      local quote = '"'
+      local ok_old, old_chunks = pcall(vim.api.nvim_buf_get_text, bufnr, edit.lnum, edit.col, edit.lnum, edit.end_col, {})
+      if ok_old and type(old_chunks) == "table" then
+        local old_text = old_chunks[1] or ""
+        local old_quote = old_text:sub(1, 1)
+        if old_quote == '"' or old_quote == "'" or old_quote == "`" then
+          quote = old_quote
+        end
+      end
+      local new_text = quote .. edit.new_raw .. quote
+      pcall(vim.api.nvim_buf_set_text, bufnr, edit.lnum, edit.col, edit.lnum, edit.end_col, { new_text })
     end
-    local new_text = quote .. edit.new_raw .. quote
-    vim.api.nvim_buf_set_text(bufnr, edit.lnum, edit.col, edit.lnum, edit.end_col, { new_text })
   end
 end
 

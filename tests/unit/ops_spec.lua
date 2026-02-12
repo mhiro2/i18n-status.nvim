@@ -221,4 +221,69 @@ describe("ops.rename", function()
       assert.is_true(md_line:find("rename.heading", 1, true) == nil)
     end)
   end)
+
+  it("does not crash when buffer text APIs fail during rename", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
+    vim.fn.mkdir(root .. "/src", "p")
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf(root .. "/src/app.ts", 't("rename.title")')
+      local config = config_mod.setup({ primary_lang = "ja", inline = { visible_only = false } })
+      resources.ensure_index(root)
+
+      local col, end_col = literal_range(buf, "rename.title")
+      scan.extract = function()
+        return {
+          {
+            key = "common:rename.title",
+            raw = "rename.title",
+            namespace = "common",
+            lnum = 0,
+            col = col,
+            end_col = end_col,
+          },
+        }
+      end
+
+      local original_get_text = vim.api.nvim_buf_get_text
+      local original_set_text = vim.api.nvim_buf_set_text
+      vim.api.nvim_buf_get_text = function()
+        error("simulated get_text failure")
+      end
+      vim.api.nvim_buf_set_text = function()
+        error("simulated set_text failure")
+      end
+
+      local item = {
+        key = "common:rename.title",
+        namespace = "common",
+        hover = {
+          values = {
+            ja = { file = root .. "/locales/ja/common.json", value = "ログイン" },
+            en = { file = root .. "/locales/en/common.json", value = "Login" },
+          },
+        },
+      }
+
+      local ok, err = ops.rename({
+        item = item,
+        source_buf = buf,
+        new_key = "common:rename.heading",
+        config = config,
+      })
+
+      vim.api.nvim_buf_get_text = original_get_text
+      vim.api.nvim_buf_set_text = original_set_text
+
+      assert.is_true(ok, err)
+      local ja = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local en = vim.fn.json_decode(helpers.read_file(root .. "/locales/en/common.json"))
+      assert.is_nil(ja.rename.title)
+      assert.is_nil(en.rename.title)
+      assert.are.equal("ログイン", ja.rename.heading)
+      assert.are.equal("Login", en.rename.heading)
+    end)
+  end)
 end)
