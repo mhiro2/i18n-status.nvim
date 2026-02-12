@@ -46,7 +46,7 @@ local watcher = require("i18n-status.watcher")
 ---@field file_entries table<string, I18nStatusFileEntry[]> Map of file -> list of entries
 ---@field file_meta table<string, I18nStatusFileMeta> Map of file -> metadata
 ---@field file_errors table<string, {error: string, mtime: integer}> Map of file -> parse error info
-local uv = vim.uv or vim.loop
+local uv = vim.uv
 
 local CACHE_VALIDATE_INTERVAL_MS = 1000
 local WATCH_MAX_FILES = 200
@@ -124,10 +124,8 @@ local function maybe_yield_build()
     return
   end
   build_yield_counter = 0
-  -- Keep UI responsive during large index rebuilds.
-  vim.wait(0, function()
-    return false
-  end, 0)
+  -- Cooperative yield for chunked rebuilds when running inside a coroutine.
+  pcall(coroutine.yield)
 end
 
 ---@param bufnr integer|nil
@@ -1166,9 +1164,8 @@ function M.build_index(roots)
       end
     end
     for lang, items in pairs(index) do
-      merged_index[lang] = merged_index[lang] or {}
       for key, value in pairs(items) do
-        merged_index[lang][key] = value
+        set_entry(merged_index, lang, key, value.value, value.file, value.priority or math.huge)
       end
     end
     for _, entry in ipairs(root_errors) do
