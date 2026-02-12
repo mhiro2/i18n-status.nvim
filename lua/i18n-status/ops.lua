@@ -127,7 +127,8 @@ local function rename_in_buffer(bufnr, old_key, new_key, new_ns, explicit_ns, fa
   for _, edit in ipairs(edits) do
     if vim.api.nvim_buf_is_valid(bufnr) then
       local quote = '"'
-      local ok_old, old_chunks = pcall(vim.api.nvim_buf_get_text, bufnr, edit.lnum, edit.col, edit.lnum, edit.end_col, {})
+      local ok_old, old_chunks =
+        pcall(vim.api.nvim_buf_get_text, bufnr, edit.lnum, edit.col, edit.lnum, edit.end_col, {})
       if ok_old and type(old_chunks) == "table" then
         local old_text = old_chunks[1] or ""
         local old_quote = old_text:sub(1, 1)
