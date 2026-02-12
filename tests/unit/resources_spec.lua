@@ -24,6 +24,16 @@ describe("resources", function()
     assert.are.equal("Root", cache.index.en["common:title"].value)
   end)
 
+  it("merges multiple roots by entry priority", function()
+    local root = helpers.tmpdir()
+    write(root .. "/locales/en/common.json", '{"title":"i18next"}')
+    write(root .. "/messages/en.json", '{"common":{"title":"next-intl"}}')
+
+    local cache = resources.ensure_index(root)
+    assert.are.equal("i18next", cache.index.en["common:title"].value)
+    assert.are.equal(30, cache.index.en["common:title"].priority)
+  end)
+
   it("handles invalid json", function()
     local root = helpers.tmpdir()
     write(root .. "/locales/ja/common.json", "{")
@@ -106,24 +116,25 @@ describe("resources", function()
     assert.are.equal("value2", cache.index.ja["new:key2"].value)
   end)
 
-  it("yields during large index rebuilds", function()
+  it("supports cooperative yields during large index rebuilds", function()
     local root = helpers.tmpdir()
     for i = 1, 60 do
       write(root .. "/locales/ja/ns" .. i .. ".json", '{"k":"ja"}')
       write(root .. "/locales/en/ns" .. i .. ".json", '{"k":"en"}')
     end
 
-    local original_wait = vim.wait
-    local wait_calls = 0
-    vim.wait = function()
-      wait_calls = wait_calls + 1
-      return true
+    local resume_count = 0
+    local co = coroutine.create(function()
+      resources.ensure_index(root)
+    end)
+
+    while coroutine.status(co) ~= "dead" do
+      resume_count = resume_count + 1
+      local ok, err = coroutine.resume(co)
+      assert.is_true(ok, err)
     end
 
-    resources.ensure_index(root)
-
-    vim.wait = original_wait
-    assert.is_true(wait_calls > 0)
+    assert.is_true(resume_count > 1)
   end)
 
   it("computes project root from common ancestor when no git root", function()
