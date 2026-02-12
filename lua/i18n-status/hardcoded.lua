@@ -2,6 +2,7 @@
 local M = {}
 
 local query_cache = {}
+local ts_helpers = require("i18n-status.ts_helpers")
 
 local QUERY_JSX_TEXT = [[
   (jsx_text) @text
@@ -22,40 +23,14 @@ local QUERY_JSX_EXPR = [[
 
 ---@param bufnr integer
 ---@return string
-local function get_lang(bufnr)
-  local ft = vim.bo[bufnr].filetype
-  if ft == "javascriptreact" or ft == "typescriptreact" then
-    return ft:find("typescript") and "tsx" or "jsx"
-  end
-  if ft == "typescript" then
-    return "typescript"
-  end
-  if ft == "javascript" then
-    return "javascript"
-  end
-  return ft
-end
+local get_lang = ts_helpers.get_lang
 
 ---@param lang string
 ---@param name string
 ---@param source string
 ---@return any
 local function get_query(lang, name, source)
-  query_cache[lang] = query_cache[lang] or {}
-  local cached = query_cache[lang][name]
-  if cached == false then
-    return nil
-  end
-  if cached then
-    return cached
-  end
-  local ok, parsed = pcall(vim.treesitter.query.parse, lang, source)
-  if not ok then
-    query_cache[lang][name] = false
-    return nil
-  end
-  query_cache[lang][name] = parsed
-  return parsed
+  return ts_helpers.get_query(query_cache, lang, name, source)
 end
 
 ---@param node TSNode
@@ -67,14 +42,7 @@ end
 
 ---@param text string
 ---@return string
-local function strip_quotes(text)
-  local first = text:sub(1, 1)
-  local last = text:sub(-1)
-  if (first == '"' and last == '"') or (first == "'" and last == "'") or (first == "`" and last == "`") then
-    return text:sub(2, -2)
-  end
-  return text
-end
+local strip_quotes = ts_helpers.strip_quotes
 
 ---@param text string
 ---@return string
@@ -193,29 +161,7 @@ end
 
 ---@param range table|nil
 ---@return table|nil
-local function normalize_range(range)
-  if type(range) ~= "table" then
-    return nil
-  end
-  local start_line = type(range.start_line) == "number" and range.start_line or nil
-  local end_line = type(range.end_line) == "number" and range.end_line or nil
-  if start_line and start_line < 0 then
-    start_line = 0
-  end
-  if end_line and end_line < 0 then
-    end_line = 0
-  end
-  if start_line and end_line and end_line < start_line then
-    end_line = start_line
-  end
-  if not start_line and not end_line then
-    return nil
-  end
-  return {
-    start_line = start_line,
-    end_line = end_line,
-  }
-end
+local normalize_range = ts_helpers.normalize_range
 
 ---@param start_row integer
 ---@param end_row integer
