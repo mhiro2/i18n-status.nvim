@@ -153,4 +153,49 @@ describe("util", function()
       assert.are.same({}, placeholders)
     end)
   end)
+
+  describe("visible_range", function()
+    it("returns union range across all visible windows for the buffer", function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      local lines = {}
+      for i = 1, 200 do
+        lines[i] = ("line %03d"):format(i)
+      end
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+
+      local win1 = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_buf(win1, buf)
+      vim.api.nvim_win_call(win1, function()
+        vim.fn.winrestview({ topline = 5 })
+      end)
+
+      vim.api.nvim_cmd({ cmd = "split" }, {})
+      local win2 = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_buf(win2, buf)
+      vim.api.nvim_win_call(win2, function()
+        vim.fn.winrestview({ topline = 70 })
+      end)
+
+      local top, bottom = util.visible_range(buf)
+
+      vim.api.nvim_win_close(win2, true)
+      vim.api.nvim_set_current_win(win1)
+
+      assert.are.equal(5, top)
+      assert.is_true(bottom >= 70)
+    end)
+
+    it("falls back to full buffer range when the buffer is not visible", function()
+      local hidden = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(hidden, 0, -1, false, { "a", "b", "c", "d" })
+
+      local other = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(other, 0, -1, false, { "x" })
+      vim.api.nvim_set_current_buf(other)
+
+      local top, bottom = util.visible_range(hidden)
+      assert.are.equal(1, top)
+      assert.are.equal(4, bottom)
+    end)
+  end)
 end)
