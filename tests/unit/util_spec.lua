@@ -165,24 +165,36 @@ describe("util", function()
 
       local win1 = vim.api.nvim_get_current_win()
       vim.api.nvim_win_set_buf(win1, buf)
-      vim.api.nvim_win_call(win1, function()
-        vim.fn.winrestview({ topline = 5 })
-      end)
 
       vim.api.nvim_cmd({ cmd = "split" }, {})
       local win2 = vim.api.nvim_get_current_win()
       vim.api.nvim_win_set_buf(win2, buf)
-      vim.api.nvim_win_call(win2, function()
-        vim.fn.winrestview({ topline = 70 })
-      end)
+
+      vim.api.nvim_win_set_cursor(win1, { 1, 0 })
+      vim.api.nvim_win_set_cursor(win2, { 150, 0 })
+
+      local wins = vim.fn.win_findbuf(buf)
+      assert.is_true(#wins >= 2)
+      local expected_top = nil
+      local expected_bottom = nil
+      for _, win in ipairs(wins) do
+        local win_top = vim.fn.line("w0", win)
+        local win_bottom = vim.fn.line("w$", win)
+        if expected_top == nil or win_top < expected_top then
+          expected_top = win_top
+        end
+        if expected_bottom == nil or win_bottom > expected_bottom then
+          expected_bottom = win_bottom
+        end
+      end
 
       local top, bottom = util.visible_range(buf)
 
       vim.api.nvim_win_close(win2, true)
       vim.api.nvim_set_current_win(win1)
 
-      assert.are.equal(5, top)
-      assert.is_true(bottom >= 70)
+      assert.are.equal(expected_top, top)
+      assert.are.equal(expected_bottom, bottom)
     end)
 
     it("falls back to full buffer range when the buffer is not visible", function()
