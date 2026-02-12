@@ -164,6 +164,59 @@ describe("doctor review", function()
       assert.is_nil(ctx.help_win)
     end)
   end)
+
+  it("restores eventignore synchronously when closing review", function()
+    state.init("en", { "en", "ja" })
+
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/en/common.json", '{"alpha":"Alpha"}')
+    helpers.write_file(root .. "/locales/ja/common.json", '{"alpha":"アルファ"}')
+
+    helpers.with_cwd(root, function()
+      local src = make_buf({ 't("alpha")' }, "typescript")
+      local issues = {
+        { kind = "missing", key = "common:alpha", severity = vim.log.levels.ERROR },
+      }
+      local cache = resources.ensure_index(root)
+      local ctx_mock = {
+        bufnr = src,
+        cache = cache,
+      }
+
+      local config = config_mod.setup({ primary_lang = "en" })
+      local ctx = review.open_doctor_results(issues, ctx_mock, config)
+
+      local original_eventignore = vim.o.eventignore
+      local original_schedule = vim.schedule
+      local expected_eventignore = "BufEnter"
+      local close_ok, close_err
+
+      vim.schedule = function(_cb) end
+      vim.o.eventignore = expected_eventignore
+      close_ok, close_err = pcall(function()
+        vim.api.nvim_set_current_win(ctx.list_win)
+        vim.api.nvim_feedkeys("q", "x", false)
+      end)
+      vim.schedule = original_schedule
+
+      local observed_eventignore = vim.o.eventignore
+      vim.o.eventignore = original_eventignore
+
+      assert.is_true(close_ok, close_err)
+      assert.are.equal(expected_eventignore, observed_eventignore)
+
+      local list_valid = vim.api.nvim_win_is_valid(ctx.list_win)
+      local detail_valid = vim.api.nvim_win_is_valid(ctx.detail_win)
+      if list_valid then
+        pcall(vim.api.nvim_win_close, ctx.list_win, true)
+      end
+      if detail_valid then
+        pcall(vim.api.nvim_win_close, ctx.detail_win, true)
+      end
+      assert.is_false(list_valid)
+      assert.is_false(detail_valid)
+    end)
+  end)
 end)
 
 describe("doctor review edit", function()

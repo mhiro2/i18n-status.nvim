@@ -243,67 +243,72 @@ local function close_review(ctx)
   end
   ctx.closing = true
 
-  -- Disable all autocmds during cleanup to prevent performance overhead
   local save_eventignore = vim.o.eventignore
   vim.o.eventignore = "all"
+  local ok, err = pcall(function()
+    -- Disable all autocmds during cleanup to prevent performance overhead
+    close_keymap_help(ctx)
 
-  close_keymap_help(ctx)
+    local list_buf = ctx.list_buf
+    local detail_buf = ctx.detail_buf
 
-  local list_buf = ctx.list_buf
-  local detail_buf = ctx.detail_buf
-
-  -- Clean up review state first
-  for _, b in ipairs({ list_buf, detail_buf }) do
-    if b then
-      review_state[b] = nil
-    end
-  end
-
-  -- Delete augroup before hiding windows to prevent autocmds from firing
-  if ctx.augroup then
-    pcall(vim.api.nvim_del_augroup_by_id, ctx.augroup)
-    ctx.augroup = nil
-  end
-
-  -- Explicitly detach LSP clients to avoid slow cleanup
-  for _, b in ipairs({ list_buf, detail_buf }) do
-    if b and vim.api.nvim_buf_is_valid(b) then
-      local clients = vim.lsp.get_clients({ bufnr = b })
-      for _, client in ipairs(clients) do
-        pcall(vim.lsp.buf_detach_client, b, client.id)
+    -- Clean up review state first
+    for _, b in ipairs({ list_buf, detail_buf }) do
+      if b then
+        review_state[b] = nil
       end
     end
-  end
 
-  -- Decide whether we need to restore focus after closing
-  local current_win = vim.api.nvim_get_current_win()
-  local should_restore_focus = current_win == ctx.list_win or current_win == ctx.detail_win
-
-  -- CRITICAL: Close windows BEFORE returning focus to source window
-  -- This prevents race conditions where focus change interrupts window closing
-  -- Close detail first to reduce the chance of it lingering
-  for _, w in ipairs({ ctx.detail_win, ctx.list_win }) do
-    if w and vim.api.nvim_win_is_valid(w) then
-      pcall(vim.api.nvim_win_close, w, true)
+    -- Delete augroup before hiding windows to prevent autocmds from firing
+    if ctx.augroup then
+      pcall(vim.api.nvim_del_augroup_by_id, ctx.augroup)
+      ctx.augroup = nil
     end
-  end
 
-  -- Only after windows are closed, return focus to source window if needed
-  if should_restore_focus and ctx.source_win and vim.api.nvim_win_is_valid(ctx.source_win) then
-    pcall(vim.api.nvim_set_current_win, ctx.source_win)
-  end
-
-  -- Delete buffers synchronously (not deferred) for faster cleanup
-  for _, b in ipairs({ list_buf, detail_buf }) do
-    if b and vim.api.nvim_buf_is_valid(b) then
-      pcall(vim.api.nvim_buf_delete, b, { force = true, unload = false })
+    -- Explicitly detach LSP clients to avoid slow cleanup
+    for _, b in ipairs({ list_buf, detail_buf }) do
+      if b and vim.api.nvim_buf_is_valid(b) then
+        local clients = vim.lsp.get_clients({ bufnr = b })
+        for _, client in ipairs(clients) do
+          pcall(vim.lsp.buf_detach_client, b, client.id)
+        end
+      end
     end
-  end
 
-  -- Restore eventignore after a delay to avoid triggering heavy autocmds
-  vim.schedule(function()
-    vim.o.eventignore = save_eventignore
+    -- Decide whether we need to restore focus after closing
+    local current_win = vim.api.nvim_get_current_win()
+    local should_restore_focus = current_win == ctx.list_win or current_win == ctx.detail_win
+
+    -- CRITICAL: Close windows BEFORE returning focus to source window
+    -- This prevents race conditions where focus change interrupts window closing
+    -- Close detail first to reduce the chance of it lingering
+    for _, w in ipairs({ ctx.detail_win, ctx.list_win }) do
+      if w and vim.api.nvim_win_is_valid(w) then
+        pcall(vim.api.nvim_win_close, w, true)
+      end
+    end
+
+    -- Only after windows are closed, return focus to source window if needed
+    if should_restore_focus and ctx.source_win and vim.api.nvim_win_is_valid(ctx.source_win) then
+      pcall(vim.api.nvim_set_current_win, ctx.source_win)
+    end
+
+    -- Delete buffers synchronously (not deferred) for faster cleanup
+    for _, b in ipairs({ list_buf, detail_buf }) do
+      if b and vim.api.nvim_buf_is_valid(b) then
+        pcall(vim.api.nvim_buf_delete, b, { force = true, unload = false })
+      end
+    end
   end)
+
+  -- Always restore synchronously to avoid leaking "all" on failure paths.
+  vim.o.eventignore = save_eventignore
+  if not ok then
+    ctx.closing = false
+    vim.schedule(function()
+      vim.notify("i18n-status review: close failed: " .. tostring(err), vim.log.levels.WARN)
+    end)
+  end
 end
 
 ---@param buf integer
