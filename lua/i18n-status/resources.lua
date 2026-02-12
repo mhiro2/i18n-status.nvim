@@ -203,15 +203,6 @@ function M.project_root(start_dir, roots)
   return common
 end
 
----@class I18nStatusResourceItem
----@field value string
----@field file string
-
----@class I18nStatusResourceError
----@field lang string
----@field file string
----@field error string
-
 ---@param path string
 ---@return string|nil
 local function read_file(path)

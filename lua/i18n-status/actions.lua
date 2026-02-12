@@ -21,11 +21,7 @@ end
 
 ---@param path string
 local function edit_file(path)
-  if vim.api.nvim_cmd then
-    vim.api.nvim_cmd({ cmd = "edit", args = { path } }, {})
-  else
-    vim.cmd("edit " .. vim.fn.fnameescape(path))
-  end
+  vim.api.nvim_cmd({ cmd = "edit", args = { path } }, {})
 end
 
 ---@param bufnr integer
