@@ -1,7 +1,7 @@
 ---@class I18nStatusUtil
 local M = {}
 
-local uv = vim.uv or vim.loop
+local uv = vim.uv
 
 ---@param base table
 ---@param extra table

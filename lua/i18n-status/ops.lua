@@ -7,7 +7,7 @@ local state = require("i18n-status.state")
 local core = require("i18n-status.core")
 local scan = require("i18n-status.scan")
 
-local uv = vim.uv or vim.loop
+local uv = vim.uv
 
 ---@param bufnr integer
 ---@return boolean

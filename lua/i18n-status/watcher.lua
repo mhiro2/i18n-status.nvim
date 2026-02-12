@@ -8,7 +8,7 @@ local M = {
 
 local util = require("i18n-status.util")
 
-local uv = vim.uv or vim.loop
+local uv = vim.uv
 
 local WATCHER_ERROR_THROTTLE_MS = 60000
 ---@type table<string, integer>

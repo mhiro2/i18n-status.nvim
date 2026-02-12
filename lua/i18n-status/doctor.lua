@@ -6,7 +6,7 @@ local resources = require("i18n-status.resources")
 local resolve = require("i18n-status.resolve")
 local state = require("i18n-status.state")
 local util = require("i18n-status.util")
-local uv = vim.uv or vim.loop
+local uv = vim.uv
 local INVALID_PATTERN_WARNED = {}
 
 local ASYNC_BATCH_SIZE = 20

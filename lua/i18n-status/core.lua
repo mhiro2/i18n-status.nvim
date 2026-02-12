@@ -7,7 +7,7 @@ local resolve = require("i18n-status.resolve")
 local render = require("i18n-status.render")
 local state = require("i18n-status.state")
 local util = require("i18n-status.util")
-local uv = vim.uv or vim.loop
+local uv = vim.uv
 
 ---@param bufnr integer
 ---@return boolean
