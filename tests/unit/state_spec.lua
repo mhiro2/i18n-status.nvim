@@ -43,3 +43,28 @@ describe("state lang cycle", function()
     assert.are.equal("ja", current_lang())
   end)
 end)
+
+describe("state project lookup", function()
+  before_each(function()
+    state.init("ja", {})
+  end)
+
+  it("returns default project when no buffer key is assigned", function()
+    local buf = vim.api.nvim_create_buf(false, true)
+    local project, key = state.project_for_buf(buf)
+    assert.is_nil(key)
+    assert.are.equal("ja", project.current_lang)
+    assert.are.same({}, project.languages)
+  end)
+
+  it("binds project key and languages from cache", function()
+    local buf = vim.api.nvim_create_buf(false, true)
+    local project, key = state.project_for_buf(buf, {
+      key = "__cache__",
+      languages = { "ja", "en" },
+    })
+    assert.are.equal("__cache__", key)
+    assert.are.same({ "ja", "en" }, project.languages)
+    assert.are.equal("__cache__", state.buf_project[buf])
+  end)
+end)

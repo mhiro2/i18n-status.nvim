@@ -102,6 +102,14 @@ local function guard_doctor_open()
 end
 
 ---@param bufnr integer
+---@return I18nStatusProjectState, string|nil
+local function project_for_buf(bufnr)
+  local start_dir = resources.start_dir(bufnr)
+  local cache = resources.ensure_index(start_dir)
+  return state.project_for_buf(bufnr, cache)
+end
+
+---@param bufnr integer
 local function goto_definition(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return false
@@ -226,7 +234,7 @@ function M.lang_next()
     return
   end
   local bufnr = vim.api.nvim_get_current_buf()
-  local _, key = state.project_for_buf(bufnr)
+  local _, key = project_for_buf(bufnr)
   state.cycle_next(key)
   core.refresh(bufnr, config, 0, { force = true })
 end
@@ -237,7 +245,7 @@ function M.lang_prev()
     return
   end
   local bufnr = vim.api.nvim_get_current_buf()
-  local _, key = state.project_for_buf(bufnr)
+  local _, key = project_for_buf(bufnr)
   state.cycle_prev(key)
   core.refresh(bufnr, config, 0, { force = true })
 end
@@ -252,7 +260,7 @@ function M.lang_set(lang)
     return
   end
   local bufnr = vim.api.nvim_get_current_buf()
-  local project, key = state.project_for_buf(bufnr)
+  local project, key = project_for_buf(bufnr)
   if not state.has_language(key, lang) then
     local available = project and project.languages or {}
     local msg = string.format("i18n-status: unknown language '%s'", lang)
@@ -273,7 +281,7 @@ end
 function M.lang_complete(arg_lead, _cmdline, _cursor_pos)
   M.ensure_setup()
   local bufnr = vim.api.nvim_get_current_buf()
-  local project = select(1, state.project_for_buf(bufnr))
+  local project = select(1, project_for_buf(bufnr))
   local languages = project.languages or {}
   if not arg_lead or arg_lead == "" then
     return languages

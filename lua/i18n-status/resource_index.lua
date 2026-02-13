@@ -366,14 +366,14 @@ end
 ---@param lang string
 ---@param namespace string
 ---@param data table
----@param index table
+---@param cache table
 ---@param file string
 ---@param priority integer
-local function merge_namespace(lang, namespace, data, index, file, priority)
+local function merge_namespace(lang, namespace, data, cache, file, priority)
   local flat = util.flatten_table(data)
   for key, value in pairs(flat) do
     local canonical = namespace .. ":" .. key
-    set_entry(index, lang, canonical, value, file, priority)
+    set_entry_tracked(cache, lang, canonical, value, file, priority)
   end
 end
 
@@ -381,12 +381,14 @@ end
 ---@param root_path string
 ---@return table, table, table, I18nStatusResourceError[], table, table, table
 local function load_i18next(root, root_path)
-  local index = {}
+  local tracked = {
+    index = {},
+    entries_by_key = {},
+    file_entries = {},
+  }
   local files = {}
   local languages = {}
   local errors = {}
-  local entries_by_key = {}
-  local file_entries = {}
   local file_meta = {}
 
   for _, lang in ipairs(discovery.list_dirs(root)) do
@@ -411,36 +413,30 @@ local function load_i18next(root, root_path)
         local flat = util.flatten_table(data)
         for key, value in pairs(flat) do
           local canonical = namespace .. ":" .. key
-          set_entry(index, lang, canonical, value, path, 30)
-
-          entries_by_key[lang] = entries_by_key[lang] or {}
-          entries_by_key[lang][canonical] = entries_by_key[lang][canonical] or {}
-          table.insert(entries_by_key[lang][canonical], { value = value, file = path, priority = 30 })
-
-          file_entries[path] = file_entries[path] or {}
-          table.insert(file_entries[path], { lang = lang, key = canonical, priority = 30 })
+          set_entry_tracked(tracked, lang, canonical, value, path, 30)
         end
       else
         local message = err or "json error"
-        set_entry(index, lang, "__error__", message, path, 1)
         table.insert(errors, { lang = lang, file = path, error = message })
       end
     end
   end
 
-  return index, files, languages, errors, entries_by_key, file_entries, file_meta
+  return tracked.index, files, languages, errors, tracked.entries_by_key, tracked.file_entries, file_meta
 end
 
 ---@param root string
 ---@param root_path string
 ---@return table, table, table, I18nStatusResourceError[], table, table, table
 local function load_next_intl(root, root_path)
-  local index = {}
+  local tracked = {
+    index = {},
+    entries_by_key = {},
+    file_entries = {},
+  }
   local files = {}
   local languages = {}
   local errors = {}
-  local entries_by_key = {}
-  local file_entries = {}
   local file_meta = {}
 
   for _, lang in ipairs(discovery.list_dirs(root)) do
@@ -465,18 +461,10 @@ local function load_next_intl(root, root_path)
         local flat = util.flatten_table(data)
         for key, value in pairs(flat) do
           local canonical = namespace .. ":" .. key
-          set_entry(index, lang, canonical, value, path, 50)
-
-          entries_by_key[lang] = entries_by_key[lang] or {}
-          entries_by_key[lang][canonical] = entries_by_key[lang][canonical] or {}
-          table.insert(entries_by_key[lang][canonical], { value = value, file = path, priority = 50 })
-
-          file_entries[path] = file_entries[path] or {}
-          table.insert(file_entries[path], { lang = lang, key = canonical, priority = 50 })
+          set_entry_tracked(tracked, lang, canonical, value, path, 50)
         end
       else
         local message = err or "json error"
-        set_entry(index, lang, "__error__", message, path, 1)
         table.insert(errors, { lang = lang, file = path, error = message })
       end
     end
@@ -499,29 +487,17 @@ local function load_next_intl(root, root_path)
       if data then
         for ns, ns_data in pairs(data) do
           if type(ns_data) == "table" then
-            merge_namespace(lang, ns, ns_data, index, root_file, 40)
-
-            local flat = util.flatten_table(ns_data)
-            for key, value in pairs(flat) do
-              local canonical = ns .. ":" .. key
-              entries_by_key[lang] = entries_by_key[lang] or {}
-              entries_by_key[lang][canonical] = entries_by_key[lang][canonical] or {}
-              table.insert(entries_by_key[lang][canonical], { value = value, file = root_file, priority = 40 })
-
-              file_entries[root_file] = file_entries[root_file] or {}
-              table.insert(file_entries[root_file], { lang = lang, key = canonical, priority = 40 })
-            end
+            merge_namespace(lang, ns, ns_data, tracked, root_file, 40)
           end
         end
       else
         local message = err or "json error"
-        set_entry(index, lang, "__error__", message, root_file, 1)
         table.insert(errors, { lang = lang, file = root_file, error = message })
       end
     end
   end
 
-  return index, files, languages, errors, entries_by_key, file_entries, file_meta
+  return tracked.index, files, languages, errors, tracked.entries_by_key, tracked.file_entries, file_meta
 end
 
 ---@param index table
@@ -530,11 +506,9 @@ function M.collect_namespaces(index)
   local set = {}
   for _, items in pairs(index or {}) do
     for key, _ in pairs(items) do
-      if key ~= "__error__" then
-        local ns = key:match("^(.-):")
-        if ns then
-          set[ns] = true
-        end
+      local ns = key:match("^(.-):")
+      if ns then
+        set[ns] = true
       end
     end
   end

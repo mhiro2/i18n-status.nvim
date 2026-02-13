@@ -1,5 +1,3 @@
-local resources = require("i18n-status.resources")
-
 ---@class I18nStatusProjectState
 ---@field key string
 ---@field primary_lang string|nil
@@ -174,18 +172,20 @@ function M.project_for_key(key)
 end
 
 ---@param bufnr integer
+---@param cache { key: string, languages: string[] }|nil
 ---@return I18nStatusProjectState, string|nil
-function M.project_for_buf(bufnr)
+function M.project_for_buf(bufnr, cache)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   local key = M.buf_project[bufnr]
+  if cache and cache.key and cache.key ~= "" then
+    key = cache.key
+    M.set_buf_project(bufnr, key)
+    return M.set_languages(key, cache.languages or {}), key
+  end
   if key then
     return ensure_project(key), key
   end
-  local start_dir = resources.start_dir(bufnr)
-  local cache = resources.ensure_index(start_dir)
-  key = cache.key
-  M.set_buf_project(bufnr, key)
-  return M.set_languages(key, cache.languages), key
+  return ensure_project(DEFAULT_KEY), nil
 end
 
 ---@param bufnr integer

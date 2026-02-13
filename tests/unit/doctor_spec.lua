@@ -2,6 +2,8 @@ local doctor = require("i18n-status.doctor")
 local config_mod = require("i18n-status.config")
 local helpers = require("tests.helpers")
 local state = require("i18n-status.state")
+local discovery = require("i18n-status.resource_discovery")
+local stub = require("luassert.stub")
 
 local function diagnose(bufnr, config)
   local done = false
@@ -82,6 +84,40 @@ describe("doctor", function()
         end
       end
       assert.is_true(found)
+    end)
+  end)
+
+  it("delegates project root resolution to discovery.project_root", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+    helpers.write_file(root .. "/src/app.ts", 't("login.title")')
+
+    helpers.with_cwd(root, function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_name(buf, root .. "/src/app.ts")
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("login.title")' })
+      vim.bo[buf].filetype = "typescript"
+
+      local config = config_mod.setup({ primary_lang = "ja" })
+      local called = nil
+      local project_root_stub = stub(discovery, "project_root", function(start_dir, roots)
+        called = { start_dir = start_dir, roots = roots }
+        return start_dir
+      end)
+
+      local ok, issues_or_err = pcall(function()
+        return diagnose(buf, config)
+      end)
+
+      project_root_stub:revert()
+
+      assert.is_true(ok, issues_or_err)
+      assert.is_true(type(issues_or_err) == "table")
+      assert.is_not_nil(called)
+      local expected_start_dir = vim.uv.fs_realpath(root .. "/src") or (root .. "/src")
+      assert.are.equal(expected_start_dir, called.start_dir)
+      assert.is_true(type(called.roots) == "table")
     end)
   end)
 

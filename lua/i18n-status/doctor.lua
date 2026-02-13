@@ -3,6 +3,7 @@ local M = {}
 
 local scan = require("i18n-status.scan")
 local resources = require("i18n-status.resources")
+local discovery = require("i18n-status.resource_discovery")
 local resolve = require("i18n-status.resolve")
 local state = require("i18n-status.state")
 local util = require("i18n-status.util")
@@ -183,41 +184,7 @@ end
 ---@param start_dir string
 ---@return string
 local function determine_project_root(roots, start_dir)
-  local git_root = util.find_git_root(start_dir)
-  if git_root then
-    return git_root
-  end
-  if not roots or #roots == 0 then
-    return start_dir
-  end
-  -- Find common ancestor of all root paths
-  local paths = {}
-  for _, root in ipairs(roots) do
-    table.insert(paths, root.path)
-  end
-  if #paths == 1 then
-    return util.dirname(paths[1])
-  end
-  -- Find common prefix
-  local common = paths[1]
-  for i = 2, #paths do
-    local parts1 = vim.split(common, "/", { plain = true })
-    local parts2 = vim.split(paths[i], "/", { plain = true })
-    local min_len = math.min(#parts1, #parts2)
-    local new_common = {}
-    for j = 1, min_len do
-      if parts1[j] == parts2[j] then
-        table.insert(new_common, parts1[j])
-      else
-        break
-      end
-    end
-    common = table.concat(new_common, "/")
-    if common == "" then
-      return start_dir
-    end
-  end
-  return util.dirname(common) or common
+  return discovery.project_root(start_dir, roots)
 end
 
 ---@param file_path string
