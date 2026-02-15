@@ -21,6 +21,7 @@ local PROBLEMS_SUMMARY_LABELS = review_ui.PROBLEMS_SUMMARY_LABELS
 ---@field count integer|nil
 
 ---@class I18nStatusReviewView
+---@field all_items I18nStatusResolved[]|nil
 ---@field items I18nStatusResolved[]|nil
 ---@field section_items table<string, I18nStatusResolved[]>|nil
 ---@field section_state table<string, I18nStatusReviewSectionState>|nil
@@ -40,7 +41,7 @@ local PROBLEMS_SUMMARY_LABELS = review_ui.PROBLEMS_SUMMARY_LABELS
 ---@field view_items I18nStatusResolved[]|nil Items currently displayed
 ---@field detail_item I18nStatusResolved|nil Item shown in detail view
 ---@field selected_index integer|nil Currently selected index
----@field filter_state string|nil Filter state ("missing", "all", etc.)
+---@field filter_query string|nil Current slash filter query
 ---@field sort_state string|nil Sort state
 ---@field config I18nStatusConfig|nil Plugin configuration snapshot
 ---@field cache I18nStatusCache|nil Resource cache
@@ -92,7 +93,8 @@ local function is_doctor_open()
 end
 
 local KEYMAP_HELP = {
-  { keys = "q / <Esc>", desc = "Close review UI" },
+  { keys = "q, <Esc>", desc = "Close review UI" },
+  { keys = "/", desc = "Filter keys" },
   { keys = "Space / Enter", desc = "Toggle section" },
   { keys = "e", desc = "Edit display locale" },
   { keys = "E", desc = "Edit selected locale" },
@@ -108,7 +110,7 @@ local close_keymap_help
 ---@param ctx table
 local function update_winbar(ctx)
   if ctx.list_win and vim.api.nvim_win_is_valid(ctx.list_win) then
-    vim.wo[ctx.list_win].winbar = review_ui.build_review_winbar(ctx.list_width or 0, ctx.mode)
+    vim.wo[ctx.list_win].winbar = review_ui.build_review_winbar(ctx.list_width or 0, ctx.mode, ctx.filter_query)
   end
 end
 
@@ -395,6 +397,39 @@ local function calculate_summary(section_items, section_order, summary_labels)
   end
 
   return string.format("Total: %d keys  (%s)", total, table.concat(parts, "  "))
+end
+
+---@param query string|nil
+---@return string|nil
+local function normalize_filter_query(query)
+  if not query then
+    return nil
+  end
+  local normalized = vim.trim(query)
+  if normalized == "" then
+    return nil
+  end
+  return normalized
+end
+
+---@param items I18nStatusResolved[]|nil
+---@param query string|nil
+---@return I18nStatusResolved[]
+local function filter_items_by_key(items, query)
+  local source = items or {}
+  local normalized = normalize_filter_query(query)
+  if not normalized then
+    return source
+  end
+  local query_lower = string.lower(normalized)
+  local filtered = {}
+  for _, item in ipairs(source) do
+    local key = string.lower(item.key or "")
+    if key:find(query_lower, 1, true) then
+      table.insert(filtered, item)
+    end
+  end
+  return filtered
 end
 
 ---@param buf integer
@@ -750,9 +785,10 @@ local function refresh_doctor_async(ctx, opts)
   end)
 end
 
----@param issues I18nStatusDoctorIssue[]
+---@param keys string[]
 ---@param cache table
 ---@param primary_lang string
+---@param display_lang string
 ---@return I18nStatusResolved[]
 local function build_resolved_items(keys, cache, primary_lang, display_lang)
   if not keys or #keys == 0 then
@@ -860,7 +896,7 @@ function M.add_key_command(cfg)
   review_actions_mod.add_key_command(cfg)
 end
 
----@param ctx table
+---@param view I18nStatusReviewView|nil
 local function update_section_counts(view)
   if not view or not view.section_state or not view.section_items then
     return
@@ -885,19 +921,35 @@ local function apply_view(ctx, view)
   ctx.summary_labels = view.summary_labels
 end
 
+---@param view I18nStatusReviewView|nil
+---@param mode "problems"|"overview"
+---@param filter_query string|nil
+local function rebuild_view_sections(view, mode, filter_query)
+  if not view then
+    return
+  end
+  local filtered = filter_items_by_key(view.all_items, filter_query)
+  view.items = filtered
+  if mode == MODE_OVERVIEW then
+    view.section_items = group_items_by_status(filtered)
+  else
+    view.section_items = group_items_for_problems(filtered)
+  end
+  update_section_counts(view)
+end
+
 ---@param ctx table
 local function refresh_problems(ctx)
   local view = ctx.views and ctx.views[MODE_PROBLEMS]
   if not view then
     return
   end
-  view.items = aggregate_issues_by_key(ctx.issues or {}, ctx.cache, ctx.primary_lang, ctx.display_lang)
-  view.section_items = group_items_for_problems(view.items)
+  view.all_items = aggregate_issues_by_key(ctx.issues or {}, ctx.cache, ctx.primary_lang, ctx.display_lang)
   view.section_order = PROBLEMS_SECTION_ORDER
   view.section_labels = PROBLEMS_SECTION_LABELS
   view.summary_labels = PROBLEMS_SUMMARY_LABELS
   view.dirty = false
-  update_section_counts(view)
+  rebuild_view_sections(view, MODE_PROBLEMS, ctx.filter_query)
 end
 
 ---@param ctx table
@@ -906,17 +958,16 @@ local function refresh_overview(ctx)
   if not view then
     return
   end
-  if not view.dirty and view.items then
+  if not view.dirty and view.all_items then
     return
   end
   local keys = collect_all_keys(ctx)
-  view.items = build_resolved_items(keys, ctx.cache, ctx.primary_lang, ctx.display_lang)
-  view.section_items = group_items_by_status(view.items)
+  view.all_items = build_resolved_items(keys, ctx.cache, ctx.primary_lang, ctx.display_lang)
   view.section_order = STATUS_SECTION_ORDER
   view.section_labels = STATUS_SECTION_LABELS
   view.summary_labels = STATUS_SUMMARY_LABELS
   view.dirty = false
-  update_section_counts(view)
+  rebuild_view_sections(view, MODE_OVERVIEW, ctx.filter_query)
 end
 
 ---@param ctx table
@@ -968,6 +1019,32 @@ local function toggle_mode(ctx)
   apply_view(ctx, view)
   render_list(ctx.list_buf, ctx)
   update_detail(ctx)
+end
+
+---@param ctx I18nStatusReviewCtx
+local function prompt_filter(ctx)
+  vim.ui.input({ prompt = "Filter keys (/): ", default = ctx.filter_query or "" }, function(input)
+    if input == nil or ctx.closing then
+      return
+    end
+
+    ctx.filter_query = normalize_filter_query(input)
+
+    local problems = ctx.views and ctx.views[MODE_PROBLEMS]
+    if problems and problems.all_items then
+      rebuild_view_sections(problems, MODE_PROBLEMS, ctx.filter_query)
+    end
+
+    local overview = ctx.views and ctx.views[MODE_OVERVIEW]
+    if overview and overview.all_items then
+      rebuild_view_sections(overview, MODE_OVERVIEW, ctx.filter_query)
+    end
+
+    local view = current_view(ctx)
+    apply_view(ctx, view)
+    render_list(ctx.list_buf, ctx)
+    update_detail(ctx)
+  end)
 end
 
 ---Toggles section expansion/collapse
@@ -1035,6 +1112,7 @@ local function set_list_keymaps(buf)
   map("a", actions.add_key)
   map("gd", actions.jump_to_definition)
   map("<Tab>", toggle_mode, { update = false })
+  map("/", prompt_filter, { update = false })
   map("<Space>", toggle_section, { update = true })
   map("<CR>", toggle_section, { update = true })
   map("?", toggle_keymap_help, { update = false, close_help = false })
@@ -1113,7 +1191,7 @@ function M.open_doctor_results(issues, ctx, config)
     "CursorLine:I18nStatusReviewListCursorLine",
   }, ",")
   vim.wo[list_win].cursorline = true
-  vim.wo[list_win].winbar = review_ui.build_review_winbar(list_width, MODE_PROBLEMS)
+  vim.wo[list_win].winbar = review_ui.build_review_winbar(list_width, MODE_PROBLEMS, nil)
 
   vim.wo[detail_win].winhighlight = table.concat({
     "Normal:I18nStatusReviewDetailNormal",
@@ -1129,12 +1207,14 @@ function M.open_doctor_results(issues, ctx, config)
     or (config and config.primary_lang)
     or (ctx.cache.languages[1] or "")
   local display_lang = (project and project.current_lang) or primary
-  local problems_items = aggregate_issues_by_key(issues, ctx.cache, primary, display_lang)
+  local problems_all_items = aggregate_issues_by_key(issues, ctx.cache, primary, display_lang)
+  local problems_items = filter_items_by_key(problems_all_items, nil)
   local problems_section_items = group_items_for_problems(problems_items)
   local problems_section_state = new_section_state(PROBLEMS_SECTION_ORDER)
   local overview_section_state = new_section_state(STATUS_SECTION_ORDER)
   local views = {
     [MODE_PROBLEMS] = {
+      all_items = problems_all_items,
       items = problems_items,
       section_items = problems_section_items,
       section_state = problems_section_state,
@@ -1144,6 +1224,7 @@ function M.open_doctor_results(issues, ctx, config)
       dirty = false,
     },
     [MODE_OVERVIEW] = {
+      all_items = nil,
       items = nil,
       section_items = nil,
       section_state = overview_section_state,
@@ -1164,6 +1245,7 @@ function M.open_doctor_results(issues, ctx, config)
     items = problems_items,
     view_items = problems_items,
     detail_item = problems_items[1],
+    filter_query = nil,
     list_buf = list_buf,
     detail_buf = detail_buf,
     list_win = list_win,
@@ -1229,7 +1311,8 @@ function M.open_doctor_results(issues, ctx, config)
         local current_width = vim.api.nvim_win_get_width(list_win)
         local current = review_state[list_buf]
         local mode = current and current.mode or MODE_PROBLEMS
-        vim.wo[list_win].winbar = review_ui.build_review_winbar(current_width, mode)
+        local query = current and current.filter_query or nil
+        vim.wo[list_win].winbar = review_ui.build_review_winbar(current_width, mode, query)
       end
     end,
   })
