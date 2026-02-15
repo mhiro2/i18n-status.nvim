@@ -310,13 +310,18 @@ local function finish(bufnr, summary, cfg)
     core.refresh(bufnr, cfg, 0, { force = true })
     core.refresh_all(cfg)
   end
-  local message = string.format(
-    "i18n-status extract: detected=%d replaced=%d skipped=%d failed=%d",
-    summary.detected,
-    summary.replaced,
-    summary.skipped,
-    summary.failed
-  )
+  local message
+  if summary.replaced == 0 and summary.failed == 0 and summary.skipped > 0 then
+    message = string.format("i18n-status extract: cancelled (all %d items skipped)", summary.skipped)
+  else
+    message = string.format(
+      "i18n-status extract: detected=%d replaced=%d skipped=%d failed=%d",
+      summary.detected,
+      summary.replaced,
+      summary.skipped,
+      summary.failed
+    )
+  end
   local level = summary.failed > 0 and vim.log.levels.WARN or vim.log.levels.INFO
   vim.notify(message, level)
 end

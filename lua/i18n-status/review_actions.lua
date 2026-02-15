@@ -74,6 +74,7 @@ local function collect_translations(full_key, languages, on_complete)
 
     vim.ui.input({ prompt = prompt, default = "" }, function(input)
       if input == nil then
+        vim.notify("i18n-status: add key cancelled", vim.log.levels.INFO)
         return
       end
       translations[lang] = input
@@ -570,6 +571,7 @@ function M.add_key_command(cfg)
 
   vim.ui.input({ prompt = prompt_msg }, function(key_input)
     if not key_input then
+      vim.notify("i18n-status: add key cancelled", vim.log.levels.INFO)
       return
     end
 
@@ -597,9 +599,11 @@ function M.add_key_command(cfg)
     if key_exists_in_cache(cache, full_key) then
       local confirm_msg = string.format("Key already exists: %s\nOverwrite in all languages? (y/N)", full_key)
       vim.ui.input({ prompt = confirm_msg }, function(confirm)
-        if confirm and confirm:lower() == "y" then
-          do_add_key()
+        if not confirm or confirm:lower() ~= "y" then
+          vim.notify("i18n-status: add key cancelled", vim.log.levels.INFO)
+          return
         end
+        do_add_key()
       end)
     else
       do_add_key()
