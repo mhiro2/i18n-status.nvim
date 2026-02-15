@@ -13,8 +13,22 @@ local function make_buf(lines, ft)
   return buf
 end
 
+---@param buf integer
+---@return string[], string[]
+local function list_item_keys(buf)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local keys = {}
+  for _, line in ipairs(lines) do
+    local key = line:match("^%s+([^%s]+)%s+%[[^%]]+%]$")
+    if key then
+      table.insert(keys, key)
+    end
+  end
+  return keys, lines
+end
+
 describe("doctor review", function()
-  it("shows list, detail, and filter in floating window", function()
+  it("shows list and detail in floating window", function()
     state.init("en", { "en", "ja" })
 
     local root = helpers.tmpdir()
@@ -123,6 +137,80 @@ describe("doctor review", function()
       assert.is_false(vim.bo[detail_buf].modifiable)
 
       -- Clean up
+      pcall(vim.api.nvim_win_close, ctx.list_win, true)
+      pcall(vim.api.nvim_win_close, ctx.detail_win, true)
+    end)
+  end)
+
+  it("filters items with slash key and preserves state across mode switch", function()
+    state.init("en", { "en", "ja" })
+
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/en/common.json", '{"alpha":"Alpha","beta":"Beta","gamma":"Gamma"}')
+    helpers.write_file(
+      root .. "/locales/ja/common.json",
+      '{"alpha":"アルファ","beta":"ベータ","gamma":"ガンマ"}'
+    )
+
+    helpers.with_cwd(root, function()
+      local src = make_buf({ 't("alpha")', 't("beta")', 't("gamma")' }, "typescript")
+      local issues = {
+        { kind = "missing", key = "common:beta", severity = vim.log.levels.ERROR },
+        { kind = "drift_missing", key = "common:beta", severity = vim.log.levels.WARN },
+        { kind = "drift_extra", key = "common:gamma", severity = vim.log.levels.WARN },
+      }
+      local cache = resources.ensure_index(root)
+      local ctx_mock = {
+        bufnr = src,
+        cache = cache,
+      }
+
+      local config = config_mod.setup({ primary_lang = "en" })
+      local ctx = review.open_doctor_results(issues, ctx_mock, config)
+      vim.api.nvim_set_current_win(ctx.list_win)
+
+      local original_input = vim.ui.input
+      local next_input = "beta"
+      vim.ui.input = function(_opts, on_confirm)
+        on_confirm(next_input)
+      end
+
+      vim.api.nvim_feedkeys("/", "x", false)
+
+      local filtered_keys = list_item_keys(ctx.list_buf)
+      assert.same({ "common:beta" }, filtered_keys)
+      assert.are.equal("beta", ctx.filter_query)
+
+      local filtered_winbar = review_ui.build_review_winbar(120, ctx.mode, ctx.filter_query)
+      assert.is_not_nil(filtered_winbar:find("[/beta]", 1, true))
+
+      next_input = nil
+      vim.api.nvim_feedkeys("/", "x", false)
+
+      local keys_after_cancel = list_item_keys(ctx.list_buf)
+      assert.same({ "common:beta" }, keys_after_cancel)
+      assert.are.equal("beta", ctx.filter_query)
+
+      local tab = vim.api.nvim_replace_termcodes("<Tab>", true, false, true)
+      vim.api.nvim_feedkeys(tab, "x", false)
+
+      local overview_keys = list_item_keys(ctx.list_buf)
+      assert.same({ "common:beta" }, overview_keys)
+
+      next_input = ""
+      vim.api.nvim_feedkeys("/", "x", false)
+
+      local keys_after_clear = list_item_keys(ctx.list_buf)
+      assert.is_true(vim.tbl_contains(keys_after_clear, "common:alpha"))
+      assert.is_true(vim.tbl_contains(keys_after_clear, "common:beta"))
+      assert.is_true(vim.tbl_contains(keys_after_clear, "common:gamma"))
+      assert.is_nil(ctx.filter_query)
+
+      local cleared_winbar = review_ui.build_review_winbar(120, ctx.mode, ctx.filter_query)
+      assert.is_nil(cleared_winbar:find("[/", 1, true))
+
+      vim.ui.input = original_input
+
       pcall(vim.api.nvim_win_close, ctx.list_win, true)
       pcall(vim.api.nvim_win_close, ctx.detail_win, true)
     end)
