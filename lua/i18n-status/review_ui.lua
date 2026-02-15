@@ -130,20 +130,27 @@ end
 
 ---@param list_width integer
 ---@param mode string|nil
+---@param filter_query string|nil
 ---@return string
-function M.build_review_winbar(list_width, mode)
+function M.build_review_winbar(list_width, mode, filter_query)
+  local available_width = math.max(list_width - 4, 20)
   local header = " I18nDoctor [" .. mode_label(mode) .. "] "
+  local normalized_query = filter_query and vim.trim(filter_query) or nil
+  if normalized_query and normalized_query ~= "" then
+    local with_filter = header .. "[/" .. normalized_query .. "] "
+    if vim.fn.strdisplaywidth(with_filter) <= available_width then
+      header = with_filter
+    end
+  end
 
   local full_keymaps =
-    " q:quit │ e:edit │ E:locale │ r:rename │ a:add │ Tab:mode │ gd:goto │ Space:toggle │ ?:help "
-  local medium_keymaps = " q:quit │ e:edit │ E:locale │ a:add │ Tab:mode │ ?:help "
+    " q:quit │ /:filter │ e:edit │ E:locale │ r:rename │ a:add │ Tab:mode │ gd:goto │ Space:toggle │ ?:help "
+  local medium_keymaps = " q:quit │ /:filter │ e:edit │ E:locale │ a:add │ Tab:mode │ ?:help "
   local short_keymaps = " q:quit │ Tab:mode │ ?:help "
 
   local header_width = vim.fn.strdisplaywidth(header)
   local full_width = vim.fn.strdisplaywidth(full_keymaps)
   local medium_width = vim.fn.strdisplaywidth(medium_keymaps)
-
-  local available_width = math.max(list_width - 4, 20)
 
   local keymaps
   if header_width + full_width + 2 <= available_width then

@@ -239,6 +239,7 @@ Review UI:
   Keymaps:
     q / <Esc> Close review UI
     Tab       Toggle Problems/Overview
+    /         Filter key list by key name (empty input clears)
     e         Edit display locale value (prompt shows key + locale above input)
     E         Select locale to edit (same multi-line prompt)
     r         Rename key (updates resources + open buffers)
