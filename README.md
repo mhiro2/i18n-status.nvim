@@ -211,6 +211,7 @@ In **Overview**, `=` means the value matches the primary language, and `≠` mea
 
 - **`q`** / **`<Esc>`**: Close
 - **`Tab`**: Toggle Problems/Overview
+- **`/`**: Filter key list by key name (empty input clears)
 - **`e`**: Edit display locale value
 - **`E`**: Select locale to edit
 - **`r`**: Rename key (updates resources + open buffers)
