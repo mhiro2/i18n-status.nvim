@@ -134,6 +134,8 @@ end
 ---@field project_keys I18nStatusDoctorKeySet|nil
 ---@field cancelled boolean|nil
 ---@field git_job uv_process_t|nil
+---@field file_total integer|nil
+---@field file_processed integer|nil
 ---@param bufnr integer
 ---@return boolean
 local function is_target_buf(bufnr)
@@ -577,6 +579,9 @@ local function fs_walk_async(ctx, cb)
     if #queue == 0 then
       cb(files)
     else
+      echo_progress(
+        string.format("i18n-status doctor: collecting files (%d found)... (:I18nDoctorCancel to cancel)", #files)
+      )
       vim.defer_fn(step, 0)
     end
   end
@@ -642,9 +647,17 @@ local function process_files_async(ctx, files, cb)
         end
       end
     end
+    ctx.file_processed = math.min(progress.idx - 1, total)
     if progress.idx > total then
       cb(progress.used)
     else
+      echo_progress(
+        string.format(
+          "i18n-status doctor: analyzing %d/%d files... (:I18nDoctorCancel to cancel)",
+          progress.idx - 1,
+          total
+        )
+      )
       vim.defer_fn(step, 0)
     end
   end
@@ -671,7 +684,9 @@ local function collect_project_keys_async(ctx, cb)
       cb({})
       return
     end
-    echo_progress(string.format("i18n-status doctor: analyzing %d files... (:I18nDoctorCancel to cancel)", #files))
+    ctx.file_total = #files
+    ctx.file_processed = 0
+    echo_progress(string.format("i18n-status doctor: analyzing 0/%d files... (:I18nDoctorCancel to cancel)", #files))
 
     process_files_async(ctx, files, function(keys)
       if ctx.cancelled then
@@ -858,9 +873,18 @@ end
 
 ---@return boolean
 function M.cancel()
+  local job = active_job
   local cancelled = cancel_active_job()
   if cancelled then
-    vim.notify("i18n-status doctor: cancel requested", vim.log.levels.INFO)
+    local msg = "i18n-status doctor: cancelled"
+    if job and job.ctx and job.ctx.file_total then
+      msg = string.format(
+        "i18n-status doctor: cancelled (%d/%d files analyzed)",
+        job.ctx.file_processed or 0,
+        job.ctx.file_total
+      )
+    end
+    vim.notify(msg, vim.log.levels.INFO)
   else
     vim.notify("i18n-status doctor: no running job", vim.log.levels.INFO)
   end
