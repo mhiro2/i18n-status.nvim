@@ -77,6 +77,8 @@ end
 ---@param data table
 ---@param style table|nil
 ---@param opts I18nStatusResourceWriteOpts|nil
+---@return boolean ok
+---@return string|nil err
 function M.write_json_table(path, data, style, opts)
   local indent = (style and style.indent) or "  "
   local newline = style and style.newline
@@ -89,7 +91,7 @@ function M.write_json_table(path, data, style, opts)
   local fd, open_err = uv.fs_open(tmp_path, "w", FILE_PERMISSION_RW)
   if not fd then
     notify_write_failure(path, "fs_open", open_err)
-    return
+    return false, open_err
   end
 
   local function cleanup_tmp()
@@ -104,23 +106,25 @@ function M.write_json_table(path, data, style, opts)
   if type(written) ~= "number" or written ~= #encoded then
     local _, close_err = close_fd()
     cleanup_tmp()
-    notify_write_failure(path, "fs_write", write_err or close_err or "short write")
-    return
+    local msg = write_err or close_err or "short write"
+    notify_write_failure(path, "fs_write", msg)
+    return false, msg
   end
 
   local fsync_ok, fsync_err = uv.fs_fsync(fd)
   if not fsync_ok then
     local _, close_err = close_fd()
     cleanup_tmp()
-    notify_write_failure(path, "fs_fsync", fsync_err or close_err)
-    return
+    local msg = fsync_err or close_err
+    notify_write_failure(path, "fs_fsync", msg)
+    return false, msg
   end
 
   local close_ok, close_err = close_fd()
   if not close_ok then
     cleanup_tmp()
     notify_write_failure(path, "fs_close", close_err)
-    return
+    return false, close_err
   end
 
   local ok, err = uv.fs_rename(tmp_path, path)
@@ -128,7 +132,7 @@ function M.write_json_table(path, data, style, opts)
     if opts and opts.mark_dirty then
       opts.mark_dirty(path)
     end
-    return
+    return true
   end
 
   local err_msg = tostring(err or "")
@@ -140,12 +144,13 @@ function M.write_json_table(path, data, style, opts)
       if opts and opts.mark_dirty then
         opts.mark_dirty(path)
       end
-      return
+      return true
     end
   end
 
   cleanup_tmp()
   notify_write_failure(path, "fs_rename", err)
+  return false, err
 end
 
 ---@param reader fun(path: string): string|nil

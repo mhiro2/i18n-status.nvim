@@ -491,9 +491,11 @@ end
 ---@param data table
 ---@param style table|nil
 ---@param opts table|nil
+---@return boolean ok
+---@return string|nil err
 function M.write_json_table(path, data, style, opts)
   local io_opts = vim.tbl_extend("force", opts or {}, { mark_dirty = M.mark_dirty })
-  resource_io.write_json_table(path, data, style, io_opts)
+  return resource_io.write_json_table(path, data, style, io_opts)
 end
 
 ---@param result table

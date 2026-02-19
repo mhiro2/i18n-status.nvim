@@ -28,8 +28,8 @@ function M.write_single_translation(namespace, key_path, lang, value, start_dir)
 
   local path_in_file = resources.key_path_for_file(namespace, key_path, start_dir, lang, path)
   util.set_nested(data, path_in_file, value)
-  resources.write_json_table(path, data, style)
-  return true
+  local ok = resources.write_json_table(path, data, style)
+  return ok == true
 end
 
 ---Write translation values to all language files.

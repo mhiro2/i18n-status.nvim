@@ -291,7 +291,10 @@ function M.rename(opts)
   for path, entry in pairs(file_cache) do
     if entry.dirty then
       util.ensure_dir(util.dirname(path))
-      resources.write_json_table(path, entry.data, entry.style, { start_dir = root })
+      local write_ok, write_err = resources.write_json_table(path, entry.data, entry.style, { start_dir = root })
+      if not write_ok then
+        return false, string.format("failed to write %s: %s", path, write_err or "unknown")
+      end
     end
   end
 
