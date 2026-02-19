@@ -8,6 +8,13 @@ local ns_id = vim.api.nvim_create_namespace("i18n-status")
 
 local highlights_set = false
 
+vim.api.nvim_create_autocmd("ColorScheme", {
+  group = vim.api.nvim_create_augroup("I18nStatusHighlights", { clear = true }),
+  callback = function()
+    highlights_set = false
+  end,
+})
+
 local function ensure_highlights()
   if highlights_set then
     return
