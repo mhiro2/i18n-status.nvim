@@ -6,8 +6,6 @@ local resources = require("i18n-status.resources")
 local util = require("i18n-status.util")
 local uv = vim.uv
 
-local INVALID_PATTERN_WARNED = {}
-
 ---@class I18nStatusDoctorIssue
 ---@field kind string
 ---@field message string
@@ -45,20 +43,39 @@ local INVALID_PATTERN_WARNED = {}
 local function sanitize_ignore_patterns(patterns)
   local valid_patterns = {}
   for _, pattern in ipairs(patterns or {}) do
-    local ok, err = pcall(string.match, "", pattern)
-    if ok then
+    if type(pattern) == "string" and pattern ~= "" then
       table.insert(valid_patterns, pattern)
-    elseif not INVALID_PATTERN_WARNED[pattern] then
-      INVALID_PATTERN_WARNED[pattern] = true
-      vim.schedule(function()
-        vim.notify(
-          string.format("i18n-status doctor: invalid ignore pattern '%s' (%s)", pattern, err or "pattern error"),
-          vim.log.levels.WARN
-        )
-      end)
     end
   end
   return valid_patterns
+end
+
+---@param key string
+---@param pattern string
+---@return boolean
+local function ignore_pattern_matches(key, pattern)
+  if pattern == "" then
+    return false
+  end
+  local anchored_start = pattern:sub(1, 1) == "^"
+  local anchored_end = pattern:sub(-1) == "$"
+  local start_idx = anchored_start and 2 or 1
+  local end_idx = anchored_end and (#pattern - 1) or #pattern
+  local needle = pattern:sub(start_idx, end_idx)
+
+  if anchored_start and anchored_end then
+    return key == needle
+  end
+  if anchored_start then
+    return key:sub(1, #needle) == needle
+  end
+  if anchored_end then
+    if needle == "" then
+      return true
+    end
+    return key:sub(-#needle) == needle
+  end
+  return key:find(needle, 1, true) ~= nil
 end
 
 ---@param patterns string[]|nil
@@ -71,8 +88,7 @@ local function make_ignore_fn(patterns)
   end
   return function(key)
     for _, pattern in ipairs(patterns) do
-      local ok, matched = pcall(string.match, key, pattern)
-      if ok and matched then
+      if ignore_pattern_matches(key, pattern) then
         return true
       end
     end
