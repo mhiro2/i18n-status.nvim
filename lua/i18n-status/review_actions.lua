@@ -215,7 +215,11 @@ local function edit_lang(deps, ctx, lang)
 
     local path_in_file = resources.key_path_for_file(namespace, key_path, root, lang, sanitized_path)
     util.set_nested(data, path_in_file, input)
-    resources.write_json_table(sanitized_path, data, style)
+    local write_ok, write_err = resources.write_json_table(sanitized_path, data, style)
+    if not write_ok then
+      vim.notify("i18n-status review: failed to write (" .. (write_err or "unknown") .. ")", vim.log.levels.WARN)
+      return
+    end
 
     -- Keep user config snapshot from doctor invocation; never rebuild defaults here.
     if ctx.config then

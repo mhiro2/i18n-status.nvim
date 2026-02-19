@@ -8,6 +8,13 @@ local ns_id = vim.api.nvim_create_namespace("i18n-status")
 
 local highlights_set = false
 
+vim.api.nvim_create_autocmd("ColorScheme", {
+  group = vim.api.nvim_create_augroup("I18nStatusHighlights", { clear = true }),
+  callback = function()
+    highlights_set = false
+  end,
+})
+
 local function ensure_highlights()
   if highlights_set then
     return
@@ -104,32 +111,34 @@ function M.apply(bufnr, items, resolved, config)
     local row = item.lnum
     if row + 1 >= top and row + 1 <= bottom then
       local res = resolved[i]
-      local text = truncate(res.text, config.inline.max_len)
-      local marker = "[" .. res.status .. "]"
-      local after_key_prefix = position == "after_key" and " : " or ""
-      local virt_text = {}
-      if config.inline.status_only or text == "" then
-        table.insert(virt_text, { after_key_prefix .. marker, status_hl(config, res.status) })
-      else
-        table.insert(virt_text, { after_key_prefix .. text, text_hl(config) })
-        table.insert(virt_text, { " " .. marker, status_hl(config, res.status) })
+      if res then
+        local text = truncate(res.text, config.inline.max_len)
+        local marker = "[" .. res.status .. "]"
+        local after_key_prefix = position == "after_key" and " : " or ""
+        local virt_text = {}
+        if config.inline.status_only or text == "" then
+          table.insert(virt_text, { after_key_prefix .. marker, status_hl(config, res.status) })
+        else
+          table.insert(virt_text, { after_key_prefix .. text, text_hl(config) })
+          table.insert(virt_text, { " " .. marker, status_hl(config, res.status) })
+        end
+        local opts = {
+          virt_text = virt_text,
+          virt_text_pos = position == "after_key" and "inline" or "eol",
+        }
+        local col = 0
+        if position == "after_key" then
+          col = item.end_col
+          opts.virt_text_pos = "inline"
+        end
+        vim.api.nvim_buf_set_extmark(bufnr, ns_id, row, col, opts)
+        state.inline_by_buf[bufnr][row] = state.inline_by_buf[bufnr][row] or {}
+        table.insert(state.inline_by_buf[bufnr][row], {
+          col = item.col,
+          end_col = item.end_col,
+          resolved = res,
+        })
       end
-      local opts = {
-        virt_text = virt_text,
-        virt_text_pos = position == "after_key" and "inline" or "eol",
-      }
-      local col = 0
-      if position == "after_key" then
-        col = item.end_col
-        opts.virt_text_pos = "inline"
-      end
-      vim.api.nvim_buf_set_extmark(bufnr, ns_id, row, col, opts)
-      state.inline_by_buf[bufnr][row] = state.inline_by_buf[bufnr][row] or {}
-      table.insert(state.inline_by_buf[bufnr][row], {
-        col = item.col,
-        end_col = item.end_col,
-        resolved = res,
-      })
     end
   end
 end
