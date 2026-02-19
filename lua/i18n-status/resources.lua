@@ -1094,23 +1094,28 @@ end
 
 ---@param start_dir string
 ---@param on_change fun(event: table|nil)
----@param opts table|nil
+---@param opts? { debounce_ms?: integer, _skip_refcount?: boolean, roots?: I18nStatusRootInfo[], cache_key?: string }
 ---@return string|nil
 function M.start_watch(start_dir, on_change, opts)
+  opts = opts or {}
   if not start_dir or start_dir == "" then
     return
   end
 
-  local roots_result, roots_err = rpc.request_sync("resource/resolveRoots", {
-    start_dir = start_dir,
-  })
-  local roots = {}
-  if not roots_err and roots_result and roots_result.roots then
-    roots = normalize_roots(roots_result.roots)
+  local roots = opts.roots
+  local key = opts.cache_key
+  if roots then
+    roots = normalize_roots(roots)
+    if not key and #roots > 0 then
+      key = compute_cache_key(roots, start_dir)
+    end
+  else
+    key, roots = M.resolve_watch_target(start_dir)
   end
-  local key = compute_cache_key(roots, start_dir)
-  if #roots == 0 then
-    watcher.stop(key)
+  if not key or not roots or #roots == 0 then
+    if key then
+      watcher.stop(key)
+    end
     return
   end
 
@@ -1131,17 +1136,32 @@ function M.start_watch(start_dir, on_change, opts)
     paths = paths,
     rescan_paths = rescan_paths,
     on_change = on_change,
-    debounce_ms = (opts and opts.debounce_ms) or 200,
-    skip_refcount = opts and opts._skip_refcount,
+    debounce_ms = opts.debounce_ms or 200,
+    skip_refcount = opts._skip_refcount,
     restart_fn = function()
       M.start_watch(start_dir, on_change, {
-        debounce_ms = opts and opts.debounce_ms,
+        debounce_ms = opts.debounce_ms,
         _skip_refcount = true,
       })
     end,
   })
 
   return key
+end
+
+---@param start_dir string
+---@return string|nil
+---@return I18nStatusRootInfo[]
+function M.resolve_watch_target(start_dir)
+  if not start_dir or start_dir == "" then
+    return nil, {}
+  end
+  local normalized_start = util.normalize_path(start_dir) or start_dir
+  local roots = resolve_roots_sync(normalized_start)
+  if #roots == 0 then
+    return nil, roots
+  end
+  return compute_cache_key(roots, normalized_start), roots
 end
 
 ---@param key string|nil
@@ -1193,20 +1213,8 @@ end
 ---@param start_dir string
 ---@return string|nil
 function M.get_watcher_key(start_dir)
-  if not start_dir or start_dir == "" then
-    return nil
-  end
-  local roots_result, roots_err = rpc.request_sync("resource/resolveRoots", {
-    start_dir = start_dir,
-  })
-  local roots = {}
-  if not roots_err and roots_result and roots_result.roots then
-    roots = normalize_roots(roots_result.roots)
-  end
-  if #roots == 0 then
-    return nil
-  end
-  return compute_cache_key(roots, start_dir)
+  local key = M.resolve_watch_target(start_dir)
+  return key
 end
 
 return M

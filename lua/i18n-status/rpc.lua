@@ -29,6 +29,31 @@ local exit_hook_registered = false
 ---@type uv_timer_t|nil
 local stop_kill_timer = nil
 
+---@param timer uv_timer_t|nil
+local function stop_and_close_timer(timer)
+  if not timer then
+    return
+  end
+  pcall(function()
+    if not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
+  end)
+end
+
+---@param id integer
+---@return { cb: fun(err: string|nil, result: any), timer: uv_timer_t|nil }|nil
+local function take_pending(id)
+  local entry = pending[id]
+  if not entry then
+    return nil
+  end
+  pending[id] = nil
+  stop_and_close_timer(entry.timer)
+  return entry
+end
+
 local function clear_stop_kill_timer()
   if stop_kill_timer then
     pcall(function()
@@ -90,17 +115,8 @@ local function on_stdout(data)
           -- Response
           local id = msg.id
           if type(id) == "number" then
-            local entry = pending[id]
+            local entry = take_pending(id)
             if entry then
-              pending[id] = nil
-              if entry.timer then
-                pcall(function()
-                  if not entry.timer:is_closing() then
-                    entry.timer:stop()
-                    entry.timer:close()
-                  end
-                end)
-              end
               vim.schedule(function()
                 if msg.error then
                   entry.cb(msg.error.message or "rpc error", nil)
@@ -191,14 +207,7 @@ function M.start()
       -- Fail all pending requests
       for id, entry in pairs(pending) do
         pending[id] = nil
-        if entry.timer then
-          pcall(function()
-            if not entry.timer:is_closing() then
-              entry.timer:stop()
-              entry.timer:close()
-            end
-          end)
-        end
+        stop_and_close_timer(entry.timer)
         entry.cb("process exited (code=" .. tostring(code) .. ")", nil)
       end
       read_buffer = ""
@@ -322,11 +331,12 @@ end
 ---@param params table
 ---@param cb fun(err: string|nil, result: any)
 ---@param opts? { timeout_ms?: integer }
+---@return integer|nil request_id
 function M.request(method, params, cb, opts)
   if not process then
     if not M.start() then
       cb("process not running", nil)
-      return
+      return nil
     end
   end
 
@@ -343,13 +353,8 @@ function M.request(method, params, cb, opts)
     timer:unref()
   end)
   timer:start(timeout_ms, 0, function()
-    local entry = pending[id]
+    local entry = take_pending(id)
     if entry then
-      pending[id] = nil
-      if entry.timer and not entry.timer:is_closing() then
-        entry.timer:stop()
-        entry.timer:close()
-      end
       vim.schedule(function()
         entry.cb("timeout after " .. timeout_ms .. "ms", nil)
       end)
@@ -368,13 +373,11 @@ function M.request(method, params, cb, opts)
   if stdin_pipe then
     stdin_pipe:write(msg)
   else
-    pending[id] = nil
-    if timer and not timer:is_closing() then
-      timer:stop()
-      timer:close()
-    end
+    take_pending(id)
     cb("stdin not available", nil)
+    return nil
   end
+  return id
 end
 
 ---@param method string
@@ -386,8 +389,7 @@ function M.request_sync(method, params, timeout_ms)
   timeout_ms = timeout_ms or DEFAULT_TIMEOUT_MS
   local result, err
   local done = false
-
-  M.request(method, params, function(e, r)
+  local request_id = M.request(method, params, function(e, r)
     err = e
     result = r
     done = true
@@ -397,6 +399,9 @@ function M.request_sync(method, params, timeout_ms)
     return done
   end, 10)
   if not ok then
+    if request_id then
+      take_pending(request_id)
+    end
     return nil, "sync request timeout"
   end
   return result, err

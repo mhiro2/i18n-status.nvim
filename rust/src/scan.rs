@@ -1,7 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 use swc_common::{FileName, SourceMap, Spanned, input::SourceFileInput, sync::Lrc};
 use swc_ecma_ast::*;
 use swc_ecma_parser::{EsSyntax, Parser, Syntax, TsSyntax, lexer::Lexer};
@@ -122,276 +121,57 @@ fn span_to_loc(cm: &SourceMap, span: swc_common::Span) -> (u32, u32, u32) {
     )
 }
 
-/// Collect const declarations: `const KEY = "value"`
-fn collect_consts(module: &Module) -> HashMap<String, String> {
-    struct ConstCollector {
-        consts: HashMap<String, String>,
-    }
-
-    impl ConstCollector {
-        fn new() -> Self {
-            Self {
-                consts: HashMap::new(),
-            }
-        }
-
-        fn visit_module(&mut self, module: &Module) {
-            for item in &module.body {
-                self.visit_module_item(item);
-            }
-        }
-
-        fn visit_module_item(&mut self, item: &ModuleItem) {
-            match item {
-                ModuleItem::Stmt(stmt) => self.visit_stmt(stmt),
-                ModuleItem::ModuleDecl(decl) => self.visit_module_decl(decl),
-            }
-        }
-
-        fn visit_module_decl(&mut self, decl: &ModuleDecl) {
-            match decl {
-                ModuleDecl::ExportDecl(export) => self.visit_decl(&export.decl),
-                ModuleDecl::ExportDefaultExpr(export) => self.visit_expr(&export.expr),
-                ModuleDecl::ExportDefaultDecl(export) => {
-                    if let DefaultDecl::Fn(fn_expr) = &export.decl {
-                        if let Some(body) = &fn_expr.function.body {
-                            for stmt in &body.stmts {
-                                self.visit_stmt(stmt);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        fn visit_stmt(&mut self, stmt: &Stmt) {
-            match stmt {
-                Stmt::Decl(decl) => self.visit_decl(decl),
-                Stmt::Expr(expr_stmt) => self.visit_expr(&expr_stmt.expr),
-                Stmt::Return(ret) => {
-                    if let Some(arg) = &ret.arg {
-                        self.visit_expr(arg);
-                    }
-                }
-                Stmt::Block(block) => {
-                    for s in &block.stmts {
-                        self.visit_stmt(s);
-                    }
-                }
-                Stmt::If(if_stmt) => {
-                    self.visit_expr(&if_stmt.test);
-                    self.visit_stmt(&if_stmt.cons);
-                    if let Some(alt) = &if_stmt.alt {
-                        self.visit_stmt(alt);
-                    }
-                }
-                Stmt::Switch(switch) => {
-                    self.visit_expr(&switch.discriminant);
-                    for case in &switch.cases {
-                        if let Some(test) = &case.test {
-                            self.visit_expr(test);
-                        }
-                        for s in &case.cons {
-                            self.visit_stmt(s);
-                        }
-                    }
-                }
-                Stmt::For(for_stmt) => {
-                    if let Some(init) = &for_stmt.init {
-                        match init {
-                            VarDeclOrExpr::VarDecl(var_decl) => self.collect_var_decl(var_decl),
-                            VarDeclOrExpr::Expr(expr) => self.visit_expr(expr),
-                        }
-                    }
-                    if let Some(test) = &for_stmt.test {
-                        self.visit_expr(test);
-                    }
-                    if let Some(update) = &for_stmt.update {
-                        self.visit_expr(update);
-                    }
-                    self.visit_stmt(&for_stmt.body);
-                }
-                Stmt::ForIn(for_in) => {
-                    if let ForHead::VarDecl(var_decl) = &for_in.left {
-                        self.collect_var_decl(var_decl);
-                    }
-                    self.visit_expr(&for_in.right);
-                    self.visit_stmt(&for_in.body);
-                }
-                Stmt::ForOf(for_of) => {
-                    if let ForHead::VarDecl(var_decl) = &for_of.left {
-                        self.collect_var_decl(var_decl);
-                    }
-                    self.visit_expr(&for_of.right);
-                    self.visit_stmt(&for_of.body);
-                }
-                Stmt::While(while_stmt) => {
-                    self.visit_expr(&while_stmt.test);
-                    self.visit_stmt(&while_stmt.body);
-                }
-                Stmt::DoWhile(do_while) => {
-                    self.visit_stmt(&do_while.body);
-                    self.visit_expr(&do_while.test);
-                }
-                Stmt::Try(try_stmt) => {
-                    for s in &try_stmt.block.stmts {
-                        self.visit_stmt(s);
-                    }
-                    if let Some(handler) = &try_stmt.handler {
-                        for s in &handler.body.stmts {
-                            self.visit_stmt(s);
-                        }
-                    }
-                    if let Some(finalizer) = &try_stmt.finalizer {
-                        for s in &finalizer.stmts {
-                            self.visit_stmt(s);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        fn visit_decl(&mut self, decl: &Decl) {
-            match decl {
-                Decl::Var(var_decl) => self.collect_var_decl(var_decl),
-                Decl::Fn(fn_decl) => {
-                    if let Some(body) = &fn_decl.function.body {
-                        for s in &body.stmts {
-                            self.visit_stmt(s);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        fn collect_var_decl(&mut self, var_decl: &VarDecl) {
-            if var_decl.kind == VarDeclKind::Const {
-                for decl in &var_decl.decls {
-                    if let Pat::Ident(ident) = &decl.name {
-                        if let Some(init) = &decl.init {
-                            if let Some(val) = eval_string_expr(init, &self.consts) {
-                                self.consts.insert(ident.sym.to_string(), val);
-                            }
-                        }
-                    }
-                }
-            }
-
-            for decl in &var_decl.decls {
-                if let Some(init) = &decl.init {
-                    self.visit_expr(init);
-                }
-            }
-        }
-
-        fn visit_expr(&mut self, expr: &Expr) {
-            match expr {
-                Expr::Call(call) => {
-                    for arg in &call.args {
-                        self.visit_expr(&arg.expr);
-                    }
-                    if let Callee::Expr(callee) = &call.callee {
-                        self.visit_expr(callee);
-                    }
-                }
-                Expr::Arrow(arrow) => match &*arrow.body {
-                    BlockStmtOrExpr::BlockStmt(block) => {
-                        for s in &block.stmts {
-                            self.visit_stmt(s);
-                        }
-                    }
-                    BlockStmtOrExpr::Expr(e) => self.visit_expr(e),
-                },
-                Expr::Fn(fn_expr) => {
-                    if let Some(body) = &fn_expr.function.body {
-                        for s in &body.stmts {
-                            self.visit_stmt(s);
-                        }
-                    }
-                }
-                Expr::Paren(paren) => self.visit_expr(&paren.expr),
-                Expr::Bin(bin) => {
-                    self.visit_expr(&bin.left);
-                    self.visit_expr(&bin.right);
-                }
-                Expr::Cond(cond) => {
-                    self.visit_expr(&cond.test);
-                    self.visit_expr(&cond.cons);
-                    self.visit_expr(&cond.alt);
-                }
-                Expr::Assign(assign) => {
-                    self.visit_expr(&assign.right);
-                }
-                Expr::Array(arr) => {
-                    for elem in arr.elems.iter().flatten() {
-                        self.visit_expr(&elem.expr);
-                    }
-                }
-                Expr::Object(obj) => {
-                    for prop in &obj.props {
-                        match prop {
-                            PropOrSpread::Prop(prop) => {
-                                if let Prop::KeyValue(kv) = prop.as_ref() {
-                                    self.visit_expr(&kv.value);
-                                }
-                            }
-                            PropOrSpread::Spread(spread) => {
-                                self.visit_expr(&spread.expr);
-                            }
-                        }
-                    }
-                }
-                Expr::Tpl(tpl) => {
-                    for expr in &tpl.exprs {
-                        self.visit_expr(expr);
-                    }
-                }
-                Expr::TaggedTpl(tagged) => {
-                    self.visit_expr(&tagged.tag);
-                    for expr in &tagged.tpl.exprs {
-                        self.visit_expr(expr);
-                    }
-                }
-                Expr::Seq(seq) => {
-                    for expr in &seq.exprs {
-                        self.visit_expr(expr);
-                    }
-                }
-                Expr::Member(member) => {
-                    self.visit_expr(&member.obj);
-                    if let MemberProp::Computed(computed) = &member.prop {
-                        self.visit_expr(&computed.expr);
-                    }
-                }
-                Expr::Await(await_expr) => self.visit_expr(&await_expr.arg),
-                Expr::Yield(yield_expr) => {
-                    if let Some(arg) = &yield_expr.arg {
-                        self.visit_expr(arg);
-                    }
-                }
-                Expr::Unary(unary) => self.visit_expr(&unary.arg),
-                Expr::TsAs(ts_as) => self.visit_expr(&ts_as.expr),
-                Expr::TsSatisfies(ts_sat) => self.visit_expr(&ts_sat.expr),
-                Expr::TsNonNull(ts_nn) => self.visit_expr(&ts_nn.expr),
-                _ => {}
-            }
-        }
-    }
-
-    let mut collector = ConstCollector::new();
-    collector.visit_module(module);
-    collector.consts
+#[derive(Debug, Clone)]
+struct ConstBinding {
+    name: String,
+    value: String,
+    scope_start: u32,
+    scope_end: u32,
+    decl_line: u32,
+    order: usize,
 }
 
-/// Evaluate a string expression (string literal, template literal, binary concat, const ref)
-fn eval_string_expr(expr: &Expr, consts: &HashMap<String, String>) -> Option<String> {
+fn resolve_const_at_line(name: &str, line: u32, const_bindings: &[ConstBinding]) -> Option<String> {
+    let mut best: Option<&ConstBinding> = None;
+
+    for binding in const_bindings {
+        if binding.name != name {
+            continue;
+        }
+        if line < binding.scope_start || line > binding.scope_end {
+            continue;
+        }
+        if binding.decl_line > line {
+            continue;
+        }
+
+        let Some(current) = best else {
+            best = Some(binding);
+            continue;
+        };
+
+        let binding_scope_len = binding.scope_end.saturating_sub(binding.scope_start);
+        let current_scope_len = current.scope_end.saturating_sub(current.scope_start);
+        let better_scope = binding_scope_len < current_scope_len;
+        let same_scope = binding_scope_len == current_scope_len;
+        let better_line = binding.decl_line > current.decl_line;
+        let same_line = binding.decl_line == current.decl_line;
+        let better_order = binding.order > current.order;
+        if better_scope || (same_scope && (better_line || (same_line && better_order))) {
+            best = Some(binding);
+        }
+    }
+
+    best.map(|binding| binding.value.clone())
+}
+
+fn eval_string_expr_with_resolver<F>(expr: &Expr, resolve_ident: &F) -> Option<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
     match expr {
         Expr::Lit(Lit::Str(s)) => Some(wtf8_to_string(&s.value)),
         Expr::Tpl(tpl) => {
-            // Only static templates (no expressions)
             if !tpl.exprs.is_empty() {
                 return None;
             }
@@ -403,17 +183,341 @@ fn eval_string_expr(expr: &Expr, consts: &HashMap<String, String>) -> Option<Str
         }
         Expr::Bin(bin) => {
             if bin.op == BinaryOp::Add {
-                let left = eval_string_expr(&bin.left, consts)?;
-                let right = eval_string_expr(&bin.right, consts)?;
+                let left = eval_string_expr_with_resolver(&bin.left, resolve_ident)?;
+                let right = eval_string_expr_with_resolver(&bin.right, resolve_ident)?;
                 Some(format!("{}{}", left, right))
             } else {
                 None
             }
         }
-        Expr::Ident(ident) => consts.get(&ident.sym.to_string()).cloned(),
-        Expr::Paren(paren) => eval_string_expr(&paren.expr, consts),
+        Expr::Ident(ident) => resolve_ident(ident.sym.as_ref()),
+        Expr::Paren(paren) => eval_string_expr_with_resolver(&paren.expr, resolve_ident),
         _ => None,
     }
+}
+
+/// Evaluate a string expression (string literal, template literal, binary concat, const ref)
+fn eval_string_expr(expr: &Expr, line: u32, const_bindings: &[ConstBinding]) -> Option<String> {
+    eval_string_expr_with_resolver(expr, &|name| {
+        resolve_const_at_line(name, line, const_bindings)
+    })
+}
+
+/// Collect const declarations with lexical scope and declaration order.
+fn collect_consts(module: &Module, cm: &SourceMap) -> Vec<ConstBinding> {
+    struct ConstCollector<'a> {
+        cm: &'a SourceMap,
+        const_bindings: Vec<ConstBinding>,
+        next_order: usize,
+    }
+
+    impl<'a> ConstCollector<'a> {
+        fn new(cm: &'a SourceMap) -> Self {
+            Self {
+                cm,
+                const_bindings: Vec::new(),
+                next_order: 0,
+            }
+        }
+
+        fn span_lines(&self, span: swc_common::Span) -> (u32, u32) {
+            let (start, _, _) = span_to_loc(self.cm, span);
+            let hi = self.cm.lookup_char_pos(span.hi);
+            (start, hi.line as u32 - 1)
+        }
+
+        fn visit_module(&mut self, module: &Module) {
+            let (module_start, module_end) = self.span_lines(module.span);
+            for item in &module.body {
+                self.visit_module_item(item, module_start, module_end);
+            }
+        }
+
+        fn visit_module_item(&mut self, item: &ModuleItem, scope_start: u32, scope_end: u32) {
+            match item {
+                ModuleItem::Stmt(stmt) => self.visit_stmt(stmt, scope_start, scope_end),
+                ModuleItem::ModuleDecl(decl) => {
+                    self.visit_module_decl(decl, scope_start, scope_end)
+                }
+            }
+        }
+
+        fn visit_module_decl(&mut self, decl: &ModuleDecl, scope_start: u32, scope_end: u32) {
+            match decl {
+                ModuleDecl::ExportDecl(export) => {
+                    self.visit_decl(&export.decl, scope_start, scope_end)
+                }
+                ModuleDecl::ExportDefaultExpr(export) => {
+                    self.visit_expr(&export.expr, scope_start, scope_end)
+                }
+                ModuleDecl::ExportDefaultDecl(export) => {
+                    if let DefaultDecl::Fn(fn_expr) = &export.decl {
+                        if let Some(body) = &fn_expr.function.body {
+                            let (body_start, body_end) = self.span_lines(body.span);
+                            for stmt in &body.stmts {
+                                self.visit_stmt(stmt, body_start, body_end);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn visit_stmt(&mut self, stmt: &Stmt, scope_start: u32, scope_end: u32) {
+            match stmt {
+                Stmt::Decl(decl) => self.visit_decl(decl, scope_start, scope_end),
+                Stmt::Expr(expr_stmt) => self.visit_expr(&expr_stmt.expr, scope_start, scope_end),
+                Stmt::Return(ret) => {
+                    if let Some(arg) = &ret.arg {
+                        self.visit_expr(arg, scope_start, scope_end);
+                    }
+                }
+                Stmt::Block(block) => {
+                    let (block_start, block_end) = self.span_lines(block.span);
+                    for s in &block.stmts {
+                        self.visit_stmt(s, block_start, block_end);
+                    }
+                }
+                Stmt::If(if_stmt) => {
+                    self.visit_expr(&if_stmt.test, scope_start, scope_end);
+                    self.visit_stmt(&if_stmt.cons, scope_start, scope_end);
+                    if let Some(alt) = &if_stmt.alt {
+                        self.visit_stmt(alt, scope_start, scope_end);
+                    }
+                }
+                Stmt::Switch(switch) => {
+                    self.visit_expr(&switch.discriminant, scope_start, scope_end);
+                    for case in &switch.cases {
+                        if let Some(test) = &case.test {
+                            self.visit_expr(test, scope_start, scope_end);
+                        }
+                        for s in &case.cons {
+                            self.visit_stmt(s, scope_start, scope_end);
+                        }
+                    }
+                }
+                Stmt::For(for_stmt) => {
+                    let (loop_start, loop_end) = self.span_lines(for_stmt.span);
+                    if let Some(init) = &for_stmt.init {
+                        match init {
+                            VarDeclOrExpr::VarDecl(var_decl) => {
+                                self.collect_var_decl(var_decl, loop_start, loop_end)
+                            }
+                            VarDeclOrExpr::Expr(expr) => {
+                                self.visit_expr(expr, loop_start, loop_end)
+                            }
+                        }
+                    }
+                    if let Some(test) = &for_stmt.test {
+                        self.visit_expr(test, loop_start, loop_end);
+                    }
+                    if let Some(update) = &for_stmt.update {
+                        self.visit_expr(update, loop_start, loop_end);
+                    }
+                    self.visit_stmt(&for_stmt.body, loop_start, loop_end);
+                }
+                Stmt::ForIn(for_in) => {
+                    let (loop_start, loop_end) = self.span_lines(for_in.span);
+                    if let ForHead::VarDecl(var_decl) = &for_in.left {
+                        self.collect_var_decl(var_decl, loop_start, loop_end);
+                    }
+                    self.visit_expr(&for_in.right, loop_start, loop_end);
+                    self.visit_stmt(&for_in.body, loop_start, loop_end);
+                }
+                Stmt::ForOf(for_of) => {
+                    let (loop_start, loop_end) = self.span_lines(for_of.span);
+                    if let ForHead::VarDecl(var_decl) = &for_of.left {
+                        self.collect_var_decl(var_decl, loop_start, loop_end);
+                    }
+                    self.visit_expr(&for_of.right, loop_start, loop_end);
+                    self.visit_stmt(&for_of.body, loop_start, loop_end);
+                }
+                Stmt::While(while_stmt) => {
+                    self.visit_expr(&while_stmt.test, scope_start, scope_end);
+                    self.visit_stmt(&while_stmt.body, scope_start, scope_end);
+                }
+                Stmt::DoWhile(do_while) => {
+                    self.visit_stmt(&do_while.body, scope_start, scope_end);
+                    self.visit_expr(&do_while.test, scope_start, scope_end);
+                }
+                Stmt::Try(try_stmt) => {
+                    for s in &try_stmt.block.stmts {
+                        self.visit_stmt(s, scope_start, scope_end);
+                    }
+                    if let Some(handler) = &try_stmt.handler {
+                        let (handler_start, handler_end) = self.span_lines(handler.body.span);
+                        for s in &handler.body.stmts {
+                            self.visit_stmt(s, handler_start, handler_end);
+                        }
+                    }
+                    if let Some(finalizer) = &try_stmt.finalizer {
+                        let (finalizer_start, finalizer_end) = self.span_lines(finalizer.span);
+                        for s in &finalizer.stmts {
+                            self.visit_stmt(s, finalizer_start, finalizer_end);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn visit_decl(&mut self, decl: &Decl, scope_start: u32, scope_end: u32) {
+            match decl {
+                Decl::Var(var_decl) => self.collect_var_decl(var_decl, scope_start, scope_end),
+                Decl::Fn(fn_decl) => {
+                    if let Some(body) = &fn_decl.function.body {
+                        let (body_start, body_end) = self.span_lines(body.span);
+                        for s in &body.stmts {
+                            self.visit_stmt(s, body_start, body_end);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn collect_var_decl(&mut self, var_decl: &VarDecl, scope_start: u32, scope_end: u32) {
+            if var_decl.kind == VarDeclKind::Const {
+                for decl in &var_decl.decls {
+                    if let Pat::Ident(ident) = &decl.name {
+                        if let Some(init) = &decl.init {
+                            let (decl_line, _, _) = span_to_loc(self.cm, decl.span());
+                            if let Some(value) = eval_string_expr_with_resolver(init, &|name| {
+                                resolve_const_at_line(name, decl_line, &self.const_bindings)
+                            }) {
+                                self.const_bindings.push(ConstBinding {
+                                    name: ident.sym.to_string(),
+                                    value,
+                                    scope_start,
+                                    scope_end,
+                                    decl_line,
+                                    order: self.next_order,
+                                });
+                                self.next_order += 1;
+                            }
+                        }
+                    }
+                    if let Some(init) = &decl.init {
+                        self.visit_expr(init, scope_start, scope_end);
+                    }
+                }
+                return;
+            }
+
+            for decl in &var_decl.decls {
+                if let Some(init) = &decl.init {
+                    self.visit_expr(init, scope_start, scope_end);
+                }
+            }
+        }
+
+        fn visit_expr(&mut self, expr: &Expr, _scope_start: u32, _scope_end: u32) {
+            match expr {
+                Expr::Call(call) => {
+                    for arg in &call.args {
+                        self.visit_expr(&arg.expr, _scope_start, _scope_end);
+                    }
+                    if let Callee::Expr(callee) = &call.callee {
+                        self.visit_expr(callee, _scope_start, _scope_end);
+                    }
+                }
+                Expr::Arrow(arrow) => match &*arrow.body {
+                    BlockStmtOrExpr::BlockStmt(block) => {
+                        let (block_start, block_end) = self.span_lines(block.span);
+                        for s in &block.stmts {
+                            self.visit_stmt(s, block_start, block_end);
+                        }
+                    }
+                    BlockStmtOrExpr::Expr(e) => {
+                        let (arrow_start, arrow_end) = self.span_lines(arrow.span);
+                        self.visit_expr(e, arrow_start, arrow_end);
+                    }
+                },
+                Expr::Fn(fn_expr) => {
+                    if let Some(body) = &fn_expr.function.body {
+                        let (body_start, body_end) = self.span_lines(body.span);
+                        for s in &body.stmts {
+                            self.visit_stmt(s, body_start, body_end);
+                        }
+                    }
+                }
+                Expr::Paren(paren) => self.visit_expr(&paren.expr, _scope_start, _scope_end),
+                Expr::Bin(bin) => {
+                    self.visit_expr(&bin.left, _scope_start, _scope_end);
+                    self.visit_expr(&bin.right, _scope_start, _scope_end);
+                }
+                Expr::Cond(cond) => {
+                    self.visit_expr(&cond.test, _scope_start, _scope_end);
+                    self.visit_expr(&cond.cons, _scope_start, _scope_end);
+                    self.visit_expr(&cond.alt, _scope_start, _scope_end);
+                }
+                Expr::Assign(assign) => {
+                    self.visit_expr(&assign.right, _scope_start, _scope_end);
+                }
+                Expr::Array(arr) => {
+                    for elem in arr.elems.iter().flatten() {
+                        self.visit_expr(&elem.expr, _scope_start, _scope_end);
+                    }
+                }
+                Expr::Object(obj) => {
+                    for prop in &obj.props {
+                        match prop {
+                            PropOrSpread::Prop(prop) => {
+                                if let Prop::KeyValue(kv) = prop.as_ref() {
+                                    self.visit_expr(&kv.value, _scope_start, _scope_end);
+                                }
+                            }
+                            PropOrSpread::Spread(spread) => {
+                                self.visit_expr(&spread.expr, _scope_start, _scope_end);
+                            }
+                        }
+                    }
+                }
+                Expr::Tpl(tpl) => {
+                    for expr in &tpl.exprs {
+                        self.visit_expr(expr, _scope_start, _scope_end);
+                    }
+                }
+                Expr::TaggedTpl(tagged) => {
+                    self.visit_expr(&tagged.tag, _scope_start, _scope_end);
+                    for expr in &tagged.tpl.exprs {
+                        self.visit_expr(expr, _scope_start, _scope_end);
+                    }
+                }
+                Expr::Seq(seq) => {
+                    for expr in &seq.exprs {
+                        self.visit_expr(expr, _scope_start, _scope_end);
+                    }
+                }
+                Expr::Member(member) => {
+                    self.visit_expr(&member.obj, _scope_start, _scope_end);
+                    if let MemberProp::Computed(computed) = &member.prop {
+                        self.visit_expr(&computed.expr, _scope_start, _scope_end);
+                    }
+                }
+                Expr::Await(await_expr) => {
+                    self.visit_expr(&await_expr.arg, _scope_start, _scope_end)
+                }
+                Expr::Yield(yield_expr) => {
+                    if let Some(arg) = &yield_expr.arg {
+                        self.visit_expr(arg, _scope_start, _scope_end);
+                    }
+                }
+                Expr::Unary(unary) => self.visit_expr(&unary.arg, _scope_start, _scope_end),
+                Expr::TsAs(ts_as) => self.visit_expr(&ts_as.expr, _scope_start, _scope_end),
+                Expr::TsSatisfies(ts_sat) => {
+                    self.visit_expr(&ts_sat.expr, _scope_start, _scope_end)
+                }
+                Expr::TsNonNull(ts_nn) => self.visit_expr(&ts_nn.expr, _scope_start, _scope_end),
+                _ => {}
+            }
+        }
+    }
+
+    let mut collector = ConstCollector::new(cm);
+    collector.visit_module(module);
+    collector.const_bindings
 }
 
 /// Check if a function name is one of the translation hooks
@@ -436,9 +540,13 @@ fn get_callee_name(callee: &Callee) -> Option<String> {
 }
 
 /// Get the first string argument from a call expression
-fn get_first_string_arg(args: &[ExprOrSpread], consts: &HashMap<String, String>) -> Option<String> {
+fn get_first_string_arg(
+    args: &[ExprOrSpread],
+    line: u32,
+    const_bindings: &[ConstBinding],
+) -> Option<String> {
     args.first()
-        .and_then(|arg| eval_string_expr(&arg.expr, consts))
+        .and_then(|arg| eval_string_expr(&arg.expr, line, const_bindings))
 }
 
 /// Unwrap wrappers around a hook call (e.g. await/paren/ts casts) and return the call expression.
@@ -510,7 +618,7 @@ fn detect_t_func_name(name: &Pat) -> Option<String> {
 fn extract_calls(
     module: &Module,
     cm: &SourceMap,
-    consts: &HashMap<String, String>,
+    const_bindings: &[ConstBinding],
     scopes: &[NamespaceScope],
     fallback_namespace: &str,
     range: &Option<Range>,
@@ -518,7 +626,7 @@ fn extract_calls(
     let mut items = Vec::new();
     let mut visitor = CallVisitor {
         cm,
-        consts,
+        const_bindings,
         scopes,
         fallback_namespace,
         range,
@@ -532,7 +640,7 @@ fn extract_calls(
 
 struct CallVisitor<'a> {
     cm: &'a SourceMap,
-    consts: &'a HashMap<String, String>,
+    const_bindings: &'a [ConstBinding],
     scopes: &'a [NamespaceScope],
     fallback_namespace: &'a str,
     range: &'a Option<Range>,
@@ -823,12 +931,12 @@ impl<'a> CallVisitor<'a> {
             None => return,
         };
 
-        let value = match eval_string_expr(&first_arg.expr, self.consts) {
+        let (lnum, col, end_col) = span_to_loc(self.cm, first_arg.expr.span());
+
+        let value = match eval_string_expr(&first_arg.expr, lnum, self.const_bindings) {
             Some(v) => v,
             None => return,
         };
-
-        let (lnum, col, end_col) = span_to_loc(self.cm, first_arg.expr.span());
 
         // Check range
         if let Some(range) = self.range {
@@ -898,11 +1006,11 @@ impl<'a> CallVisitor<'a> {
 fn collect_scopes_precise(
     module: &Module,
     cm: &SourceMap,
-    consts: &HashMap<String, String>,
+    const_bindings: &[ConstBinding],
 ) -> Vec<NamespaceScope> {
     let mut collector = ScopeCollector {
         cm,
-        consts,
+        const_bindings,
         scopes: Vec::new(),
     };
     for item in &module.body {
@@ -915,7 +1023,7 @@ fn collect_scopes_precise(
 
 struct ScopeCollector<'a> {
     cm: &'a SourceMap,
-    consts: &'a HashMap<String, String>,
+    const_bindings: &'a [ConstBinding],
     scopes: Vec<NamespaceScope>,
 }
 
@@ -954,7 +1062,9 @@ impl<'a> ScopeCollector<'a> {
                 if let Some(call) = extract_hook_call(expr_stmt.expr.as_ref()) {
                     if let Some(name) = get_callee_name(&call.callee) {
                         if is_translation_hook(&name) {
-                            let ns = get_first_string_arg(&call.args, self.consts);
+                            let (call_line, _, _) = span_to_loc(self.cm, call.span);
+                            let ns =
+                                get_first_string_arg(&call.args, call_line, self.const_bindings);
                             self.scopes.push(NamespaceScope {
                                 ns,
                                 // Bare useTranslation("ns") implies default `t()` in this scope.
@@ -996,7 +1106,12 @@ impl<'a> ScopeCollector<'a> {
                         if let Some(call) = extract_hook_call(init.as_ref()) {
                             if let Some(name) = get_callee_name(&call.callee) {
                                 if is_translation_hook(&name) {
-                                    let ns = get_first_string_arg(&call.args, self.consts);
+                                    let (call_line, _, _) = span_to_loc(self.cm, call.span);
+                                    let ns = get_first_string_arg(
+                                        &call.args,
+                                        call_line,
+                                        self.const_bindings,
+                                    );
                                     let t_func = detect_t_func_name(&declarator.name);
                                     self.scopes.push(NamespaceScope {
                                         ns,
@@ -1067,12 +1182,12 @@ impl<'a> ScopeCollector<'a> {
 
 pub fn extract(params: ExtractParams) -> Result<Value> {
     let (module, cm) = parse_module(&params.source, &params.lang)?;
-    let consts = collect_consts(&module);
-    let scopes = collect_scopes_precise(&module, &cm, &consts);
+    let const_bindings = collect_consts(&module, &cm);
+    let scopes = collect_scopes_precise(&module, &cm, &const_bindings);
     let items = extract_calls(
         &module,
         &cm,
-        &consts,
+        &const_bindings,
         &scopes,
         &params.fallback_namespace,
         &params.range,
@@ -1476,8 +1591,8 @@ pub fn extract_resource(params: ExtractResourceParams) -> Result<Value> {
 
 pub fn translation_context_at(params: TranslationContextParams) -> Result<Value> {
     let (module, cm) = parse_module(&params.source, &params.lang)?;
-    let consts = collect_consts(&module);
-    let scopes = collect_scopes_precise(&module, &cm, &consts);
+    let const_bindings = collect_consts(&module, &cm);
+    let scopes = collect_scopes_precise(&module, &cm, &const_bindings);
 
     let row = params.row;
     let mut found_scope: Option<&NamespaceScope> = None;

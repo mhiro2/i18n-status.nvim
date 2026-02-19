@@ -32,13 +32,16 @@ local function setup_watch(cfg, bufnr, should_refresh)
     local start_dir = resources.start_dir(bufnr)
     local debounce_ms = cfg.resource_watch.debounce_ms
     local prev_key = state.buf_watcher_keys[bufnr]
-    local next_key = resources.get_watcher_key(start_dir)
+    local next_key, roots = resources.resolve_watch_target(start_dir)
 
     -- Keep one reference per buffer. Only re-register when watcher key changes.
     if prev_key and prev_key ~= next_key then
       resources.stop_watch_for_buffer(prev_key)
       state.buf_watcher_keys[bufnr] = nil
     elseif prev_key and prev_key == next_key then
+      return
+    end
+    if not next_key then
       return
     end
 
@@ -61,7 +64,11 @@ local function setup_watch(cfg, bufnr, should_refresh)
         resources.mark_dirty()
       end
       core.refresh_all(cfg)
-    end, { debounce_ms = debounce_ms })
+    end, {
+      debounce_ms = debounce_ms,
+      roots = roots,
+      cache_key = next_key,
+    })
 
     if watcher_key then
       state.buf_watcher_keys[bufnr] = watcher_key

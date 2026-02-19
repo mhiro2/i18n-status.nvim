@@ -9,7 +9,9 @@ describe("setup reconfiguration", function()
   local stubs
   local fake_cache
   local watcher_key
+  local watcher_roots
   local start_watch_calls
+  local last_start_watch_opts
   local stop_watch_for_buffer_calls
   local should_refresh
   local refresh_calls
@@ -33,7 +35,11 @@ describe("setup reconfiguration", function()
       index = {},
     }
     watcher_key = "__project__"
+    watcher_roots = {
+      { kind = "i18next", path = "/tmp/project/locales" },
+    }
     start_watch_calls = 0
+    last_start_watch_opts = nil
     stop_watch_for_buffer_calls = 0
     should_refresh = false
     refresh_calls = 0
@@ -44,11 +50,12 @@ describe("setup reconfiguration", function()
     add_stub(resources, "ensure_index", function()
       return fake_cache
     end)
-    add_stub(resources, "get_watcher_key", function()
-      return watcher_key
+    add_stub(resources, "resolve_watch_target", function()
+      return watcher_key, watcher_roots
     end)
-    add_stub(resources, "start_watch", function()
+    add_stub(resources, "start_watch", function(_start_dir, _on_change, opts)
       start_watch_calls = start_watch_calls + 1
+      last_start_watch_opts = opts
       return watcher_key
     end)
     add_stub(resources, "stop_watch_for_buffer", function()
@@ -118,6 +125,8 @@ describe("setup reconfiguration", function()
 
     assert.are.equal(1, start_watch_calls)
     assert.are.equal(0, stop_watch_for_buffer_calls)
+    assert.are.equal("__project__", last_start_watch_opts.cache_key)
+    assert.are.same(watcher_roots, last_start_watch_opts.roots)
   end)
 
   it("switches watcher references only when watcher key changes", function()

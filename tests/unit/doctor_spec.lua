@@ -169,6 +169,35 @@ describe("doctor", function()
     end)
   end)
 
+  it("uses literal substring ignore semantics with ^/$ anchors", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"a.b":"A"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"a.b":"A","axb":"B"}')
+    helpers.with_cwd(root, function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("a.b")' })
+      vim.bo[buf].filetype = "typescript"
+      local config = config_mod.setup({
+        primary_lang = "ja",
+        doctor = { ignore_keys = { "a.b" } },
+      })
+
+      local issues = diagnose(buf, config)
+      local saw_ignored = false
+      local saw_axb = false
+      for _, issue in ipairs(issues) do
+        if issue.key == "common:a.b" then
+          saw_ignored = true
+        end
+        if issue.kind == "drift_extra" and issue.key == "common:axb" then
+          saw_axb = true
+        end
+      end
+      assert.is_false(saw_ignored)
+      assert.is_true(saw_axb)
+    end)
+  end)
+
   it("scans project files, not just open buffers", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"used":"使用中","unused":"未使用"}')

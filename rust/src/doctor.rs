@@ -95,6 +95,7 @@ fn should_ignore_key(key: &str, ignore_patterns: &[String]) -> bool {
 struct FileResult {
     keys: Vec<String>,
     issues: Vec<DoctorIssue>,
+    scan_failed: bool,
 }
 
 fn is_cancelled(token_path: Option<&str>) -> bool {
@@ -124,6 +125,7 @@ fn process_file(
         return FileResult {
             keys: Vec::new(),
             issues: Vec::new(),
+            scan_failed: false,
         };
     }
     let source = match std::fs::read_to_string(file_path) {
@@ -132,6 +134,7 @@ fn process_file(
             return FileResult {
                 keys: Vec::new(),
                 issues: Vec::new(),
+                scan_failed: false,
             };
         }
     };
@@ -148,14 +151,31 @@ fn process_source(
 ) -> FileResult {
     let mut keys = Vec::new();
     let mut issues = Vec::new();
-    let result = scan::extract(scan::ExtractParams {
+    let extracted = scan::extract(scan::ExtractParams {
         source: source.to_string(),
         lang: lang.to_string(),
         fallback_namespace: params.fallback_namespace.clone(),
         range: None,
     });
 
-    if let Ok(result) = result {
+    if let Err(err) = &extracted {
+        issues.push(DoctorIssue {
+            kind: "scan_error".to_string(),
+            message: format!("Failed to analyze source: {}", err),
+            severity: 2,
+            file: file.map(|p| p.to_string()),
+            key: None,
+            lnum: None,
+            col: None,
+        });
+        return FileResult {
+            keys,
+            issues,
+            scan_failed: true,
+        };
+    }
+
+    if let Ok(result) = extracted {
         if let Some(items) = result.get("items").and_then(|v| v.as_array()) {
             for item in items {
                 if let Some(key) = item.get("key").and_then(|v| v.as_str()) {
@@ -234,7 +254,11 @@ fn process_source(
         }
     }
 
-    FileResult { keys, issues }
+    FileResult {
+        keys,
+        issues,
+        scan_failed: false,
+    }
 }
 
 pub fn diagnose(params: DiagnoseParams, notify: &dyn Fn(&str, Value)) -> Result<Value> {
@@ -243,6 +267,7 @@ pub fn diagnose(params: DiagnoseParams, notify: &dyn Fn(&str, Value)) -> Result<
 
     let mut issues: Vec<DoctorIssue> = Vec::new();
     let mut used_keys_set: HashSet<String> = HashSet::new();
+    let mut has_scan_failures = false;
 
     if is_cancelled_now() {
         return Ok(make_result(issues, used_keys_set, true));
@@ -308,6 +333,9 @@ pub fn diagnose(params: DiagnoseParams, notify: &dyn Fn(&str, Value)) -> Result<
             &params,
             &index_data,
         );
+        if result.scan_failed {
+            has_scan_failures = true;
+        }
         for key in result.keys {
             used_keys_set.insert(key);
         }
@@ -318,8 +346,37 @@ pub fn diagnose(params: DiagnoseParams, notify: &dyn Fn(&str, Value)) -> Result<
     let project_root = PathBuf::from(&params.project_root);
     let mut source_files: Vec<PathBuf> = Vec::new();
 
+    notify(
+        "doctor/progress",
+        serde_json::json!({
+            "message": "collecting source files..."
+        }),
+    );
+
     let builder = ignore::WalkBuilder::new(&project_root);
-    for entry in builder.build().flatten() {
+    for (discovered_entries, entry) in builder.build().enumerate() {
+        if is_cancelled_now() {
+            notify(
+                "doctor/progress",
+                serde_json::json!({
+                    "message": format!("cancelled while collecting files ({} entries checked)", discovered_entries),
+                    "file_processed": 0,
+                    "file_total": 0
+                }),
+            );
+            return Ok(make_result(issues, used_keys_set, true));
+        }
+        if discovered_entries > 0 && discovered_entries % 500 == 0 {
+            notify(
+                "doctor/progress",
+                serde_json::json!({
+                    "message": format!("collecting source files... {} entries", discovered_entries)
+                }),
+            );
+        }
+        let Ok(entry) = entry else {
+            continue;
+        };
         let path = entry.path();
         if path.is_file() && is_js_ts_file(path) {
             source_files.push(path.to_path_buf());
@@ -360,6 +417,9 @@ pub fn diagnose(params: DiagnoseParams, notify: &dyn Fn(&str, Value)) -> Result<
             .collect();
 
         for result in results {
+            if result.scan_failed {
+                has_scan_failures = true;
+            }
             for key in result.keys {
                 used_keys_set.insert(key);
             }
@@ -378,7 +438,19 @@ pub fn diagnose(params: DiagnoseParams, notify: &dyn Fn(&str, Value)) -> Result<
     }
 
     // Check for unused keys
-    if let Some(primary_index) = index_data.index.get(&params.primary_lang) {
+    if has_scan_failures {
+        issues.push(DoctorIssue {
+            kind: "unused_skipped".to_string(),
+            message:
+                "Skipped unused key detection because one or more source files failed to analyze."
+                    .to_string(),
+            severity: 1,
+            file: None,
+            key: None,
+            lnum: None,
+            col: None,
+        });
+    } else if let Some(primary_index) = index_data.index.get(&params.primary_lang) {
         for (key, entry) in primary_index {
             if is_cancelled_now() {
                 return Ok(make_result(issues, used_keys_set, true));
