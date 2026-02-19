@@ -85,6 +85,33 @@ pub struct Transport {
     reader: BufReader<io::Stdin>,
 }
 
+fn parse_message_line(line: &str) -> Result<Option<Request>> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let request: Request =
+        serde_json::from_str(trimmed).context("failed to parse JSON-RPC request")?;
+    Ok(Some(request))
+}
+
+fn read_message_from_reader<R: BufRead>(reader: &mut R) -> Result<Option<Request>> {
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader
+            .read_line(&mut line)
+            .context("failed to read from stdin")?;
+
+        if bytes_read == 0 {
+            return Ok(None); // EOF
+        }
+
+        if let Some(request) = parse_message_line(&line)? {
+            return Ok(Some(request));
+        }
+    }
+}
+
 impl Transport {
     pub fn new() -> Self {
         Self {
@@ -93,24 +120,7 @@ impl Transport {
     }
 
     pub fn read_message(&mut self) -> Result<Option<Request>> {
-        let mut line = String::new();
-        let bytes_read = self
-            .reader
-            .read_line(&mut line)
-            .context("failed to read from stdin")?;
-
-        if bytes_read == 0 {
-            return Ok(None); // EOF
-        }
-
-        let line = line.trim();
-        if line.is_empty() {
-            return Ok(None);
-        }
-
-        let request: Request =
-            serde_json::from_str(line).context("failed to parse JSON-RPC request")?;
-        Ok(Some(request))
+        read_message_from_reader(&mut self.reader)
     }
 
     pub fn send_response(&self, response: &Response) -> Result<()> {
@@ -135,5 +145,36 @@ impl Transport {
 impl Default for Transport {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_message_from_reader;
+    use std::io::{BufReader, Cursor};
+
+    #[test]
+    fn read_message_skips_blank_lines() {
+        let input =
+            "\n  \n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n";
+        let mut reader = BufReader::new(Cursor::new(input.as_bytes()));
+
+        let request = read_message_from_reader(&mut reader)
+            .expect("read_message should succeed")
+            .expect("request should exist");
+        assert_eq!(request.jsonrpc, "2.0");
+        assert_eq!(request.method, "initialize");
+    }
+
+    #[test]
+    fn read_message_returns_eof_after_messages() {
+        let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n";
+        let mut reader = BufReader::new(Cursor::new(input.as_bytes()));
+
+        let first = read_message_from_reader(&mut reader).expect("first read should succeed");
+        assert!(first.is_some());
+
+        let second = read_message_from_reader(&mut reader).expect("second read should succeed");
+        assert!(second.is_none());
     }
 }
