@@ -87,7 +87,7 @@ function M.write_json_table(path, data, style, opts)
     encoded = encoded .. "\n"
   end
 
-  local tmp_path = path .. ".tmp." .. uv.getpid()
+  local tmp_path = path .. ".tmp." .. uv.getpid() .. "." .. uv.hrtime()
   local fd, open_err = uv.fs_open(tmp_path, "w", FILE_PERMISSION_RW)
   if not fd then
     notify_write_failure(path, "fs_open", open_err)
