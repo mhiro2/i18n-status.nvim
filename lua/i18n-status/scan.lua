@@ -1,785 +1,224 @@
 ---@class I18nStatusScan
 local M = {}
 
-local query_cache = {}
-local ts_helpers = require("i18n-status.ts_helpers")
+local rpc = require("i18n-status.rpc")
+local util = require("i18n-status.util")
 
-local QUERY_CONSTS = [[
-    (lexical_declaration
-      (variable_declarator
-        name: (identifier) @id
-        value: (_) @val))
-]]
-
-local QUERY_NAMESPACES = [[
-    (call_expression
-      function: (identifier) @func
-      arguments: (arguments (string) @arg))
-]]
-
-local QUERY_CALL = [[
-    (call_expression
-      function: (identifier) @func
-      arguments: (arguments (_) @arg))
-]]
-
-local QUERY_MEMBER = [[
-    (call_expression
-      function: (member_expression
-        object: (identifier) @obj
-        property: (property_identifier) @prop)
-      arguments: (arguments (_) @arg))
-]]
-
-local QUERY_TRANSLATION_BINDINGS = [[
-    (variable_declarator
-      name: (_) @name
-      value: (call_expression
-        function: (identifier) @func
-        arguments: (arguments) @args))
-]]
-
----@param lang string
----@param name string
----@param source string
----@return any
-local function get_query(lang, name, source)
-  return ts_helpers.get_query(query_cache, lang, name, source)
-end
-
-local get_lang = ts_helpers.get_lang
-local strip_quotes = ts_helpers.strip_quotes
-local normalize_range = ts_helpers.normalize_range
-
----@class I18nStatusScanItem
----@field key string
----@field raw string
----@field namespace string
----@field lnum integer
----@field col integer
----@field end_col integer
----@field bufnr integer
----@field fallback boolean|nil
-
----@param node TSNode
----@param source integer|string
+---@param bufnr integer
 ---@return string
-local function node_text(node, source)
-  return vim.treesitter.get_node_text(node, source)
-end
-
----@param match table
----@param idx integer
----@return TSNode|nil
-local function capture_node(match, idx)
-  local node = match[idx]
-  if type(node) == "table" then
-    return node[1]
-  end
-  return node
-end
-
----@param row integer
----@param range I18nStatusLineRange|nil
----@return boolean
-local function row_in_range(row, range)
-  if not range then
-    return true
-  end
-  if range.start_line and row < range.start_line then
-    return false
-  end
-  if range.end_line and row > range.end_line then
-    return false
-  end
-  return true
-end
-
----@param node TSNode
----@param source integer|string
----@param consts table<string, string>
----@return string|nil
-local function eval_string(node, source, consts)
-  if not node then
-    return nil
-  end
-  local typ = node:type()
-  if typ == "string" then
-    return strip_quotes(node_text(node, source))
-  end
-  if typ == "template_string" then
-    for child in node:iter_children() do
-      if child:type() == "template_substitution" then
-        return nil
-      end
-    end
-    return strip_quotes(node_text(node, source))
-  end
-  if typ == "binary_expression" then
-    local left = node:child(0)
-    local op = node:child(1)
-    local right = node:child(2)
-    if not left or not op or not right or op:type() ~= "+" then
-      return nil
-    end
-    local l = eval_string(left, source, consts)
-    local r = eval_string(right, source, consts)
-    if l and r then
-      return l .. r
-    end
-    return nil
-  end
-  if typ == "identifier" then
-    return consts[node_text(node, source)]
-  end
-  return nil
-end
-
----@param node TSNode
----@return TSNode
-local function find_scope(node)
-  local scope = node
-  while scope do
-    local t = scope:type()
-    if t == "program" or t:find("function") or t == "method_definition" or t == "arrow_function" then
-      return scope
-    end
-    scope = scope:parent()
-  end
-  return node
-end
-
----@param root TSNode
----@param source integer|string
----@param lang string
----@return table<string, string>
-local function collect_consts(root, source, lang)
-  local consts = {}
-  local query = get_query(lang, "consts", QUERY_CONSTS)
-  if not query then
-    return consts
-  end
-  for _, match in query:iter_matches(root, source) do
-    local id = capture_node(match, 1)
-    local val = capture_node(match, 2)
-    if id and val then
-      local value = eval_string(val, source, consts)
-      if value then
-        consts[node_text(id, source)] = value
-      end
-    end
-  end
-  return consts
-end
-
----@param root TSNode
----@param source integer|string
----@param lang string
----@return table
-local function collect_namespaces(root, source, lang)
-  local scopes = {}
-  local query = get_query(lang, "namespaces", QUERY_NAMESPACES)
-  if not query then
-    return scopes
-  end
-  for _, match in query:iter_matches(root, source) do
-    local func = capture_node(match, 1)
-    local arg = capture_node(match, 2)
-    if func and arg then
-      local name = node_text(func, source)
-      if name == "useTranslation" or name == "useTranslations" or name == "getTranslations" then
-        local ns = strip_quotes(node_text(arg, source))
-        local scope = find_scope(func)
-        local start_row, _, end_row, _ = scope:range()
-        table.insert(scopes, { ns = ns, start_row = start_row, end_row = end_row })
-      end
-    end
-  end
-  table.sort(scopes, function(a, b)
-    return (a.end_row - a.start_row) < (b.end_row - b.start_row)
-  end)
-  return scopes
-end
-
----@param name_node TSNode
----@param source integer|string
----@return string|nil
-local function detect_translation_func_name(name_node, source)
-  if not name_node then
-    return nil
-  end
-  local typ = name_node:type()
-  local text = node_text(name_node, source)
-  if typ == "identifier" then
-    return text
-  end
-  local alias = text:match("t%s*:%s*([%a_][%w_]*)")
-  if alias then
-    return alias
-  end
-  if text:match("^%s*{%s*t%s*}$") or text:match("[{,]%s*t%s*[,}]") then
-    return "t"
-  end
-  if typ == "array_pattern" then
-    local first = text:match("^%s*%[%s*([%a_][%w_]*)")
-    if first then
-      return first
-    end
-  end
-  return nil
-end
-
----@param root TSNode
----@param source integer|string
----@param lang string
----@param consts table<string, string>
----@return table[]
-local function collect_translation_scopes(root, source, lang, consts)
-  local scopes = {}
-  local query = get_query(lang, "translation_bindings", QUERY_TRANSLATION_BINDINGS)
-  if not query then
-    return scopes
-  end
-  for _, match in query:iter_matches(root, source) do
-    local name_node = capture_node(match, 1)
-    local func_node = capture_node(match, 2)
-    local args_node = capture_node(match, 3)
-    if name_node and func_node and args_node then
-      local hook = node_text(func_node, source)
-      if hook == "useTranslation" or hook == "useTranslations" or hook == "getTranslations" then
-        local first_arg = args_node:named_child(0)
-        local ns = eval_string(first_arg, source, consts)
-        local t_func = detect_translation_func_name(name_node, source)
-        local scope = find_scope(name_node)
-        local start_row, _, end_row, _ = scope:range()
-        table.insert(scopes, {
-          ns = ns,
-          t_func = t_func,
-          hook = hook,
-          start_row = start_row,
-          end_row = end_row,
-        })
-      end
-    end
-  end
-  table.sort(scopes, function(a, b)
-    return (a.end_row - a.start_row) < (b.end_row - b.start_row)
-  end)
-  return scopes
-end
-
----@param scopes table
----@param row integer
----@return string|nil
-local function namespace_for(scopes, row)
-  for _, scope in ipairs(scopes) do
-    if row >= scope.start_row and row <= scope.end_row then
-      return scope.ns
-    end
-  end
-  return nil
-end
-
----@param scopes table[]
----@param row integer
----@return table|nil
-local function translation_scope_for(scopes, row)
-  for _, scope in ipairs(scopes) do
-    if row >= scope.start_row and row <= scope.end_row then
-      return scope
-    end
-  end
-  return nil
-end
-
----@param func_name string
----@param row integer
----@param translation_scopes table[]
----@return boolean
-local function is_translation_call(func_name, row, translation_scopes)
-  if func_name == "t" then
-    return true
-  end
-  local scope = translation_scope_for(translation_scopes, row)
-  if not scope then
-    return false
-  end
-  return scope.t_func == func_name
-end
-
----@param bufnr integer|nil
----@param opts table
----@param range table|nil
----@param lines string[]|nil
----@return I18nStatusScanItem[]
-local function fallback_extract(bufnr, opts, range, lines)
-  local items = {}
-  local fallback_ns = opts and opts.fallback_namespace or nil
-  local current_ns = nil
-  local source_lines = lines
-  if not source_lines then
-    if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
-      return items
-    end
-    source_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  end
-
-  local function add_item(value, row, col, end_col)
-    local key = value
-    local ns = key:match("^(.-):")
-    local used_fallback = false
-    if not ns then
-      ns = current_ns or fallback_ns or "common"
-      used_fallback = current_ns == nil
-      key = ns .. ":" .. key
-    end
-    table.insert(items, {
-      key = key,
-      raw = value,
-      namespace = ns,
-      lnum = row,
-      col = col,
-      end_col = end_col,
-      bufnr = bufnr,
-      fallback = used_fallback,
-    })
-  end
-
-  local function update_namespace(line)
-    local patterns = { "useTranslation", "useTranslations", "getTranslations" }
-    for _, name in ipairs(patterns) do
-      local ns = line:match(name .. "%s*%(%s*['\"]([^'\"]+)['\"]%s*%)")
-      if ns then
-        current_ns = ns
-        return
-      end
-    end
-  end
-
-  for i, line in ipairs(source_lines) do
-    update_namespace(line)
-    local row = i - 1
-    if row_in_range(row, range) then
-      local idx = 1
-      while true do
-        local s, e, quote, value = line:find("t%s*%(%s*(['\"])(.-)%1%s*%)", idx)
-        if not s then
-          break
-        end
-        local prev = s > 1 and line:sub(s - 1, s - 1) or ""
-        if prev == "." or prev == "" or not prev:match("[%w_]") then
-          local quote_pos = line:find(quote, s, true)
-          if quote_pos then
-            local col = quote_pos - 1
-            local end_col = col + #value + 2
-            add_item(value, row, col, end_col)
-          end
-        end
-        idx = e + 1
-      end
-    end
-  end
-
-  return items
-end
-
----@param lang string
----@param parser TSParser
----@param source integer|string
----@param opts table
----@param range table|nil
----@param meta? { bufnr?: integer, lines?: string[], allow_fallback?: boolean }
----@return I18nStatusScanItem[]
-local function extract_from_parser(lang, parser, source, opts, range, meta)
-  meta = meta or {}
-  local items = {}
-  local tree = parser:parse()[1]
-  if not tree then
-    return items
-  end
-  local root = tree:root()
-  local consts = collect_consts(root, source, lang)
-  local scopes = collect_namespaces(root, source, lang)
-  local translation_scopes = collect_translation_scopes(root, source, lang, consts)
-
-  local query_call = get_query(lang, "call", QUERY_CALL)
-  local query_member = get_query(lang, "member", QUERY_MEMBER)
-  if not query_call and not query_member then
-    if meta.allow_fallback then
-      return fallback_extract(meta.bufnr, opts, range, meta.lines)
-    end
-    return items
-  end
-
-  local function handle_call(arg)
-    local value = eval_string(arg, source, consts)
-    if not value then
-      return
-    end
-    local row = select(1, arg:range())
-    if not row_in_range(row, range) then
-      return
-    end
-    local key = value
-    local ns = nil
-    local used_fallback = false
-    if key:find(":", 1, true) then
-      ns = key:match("^(.-):")
-    else
-      ns = namespace_for(scopes, row)
-    end
-    if not ns then
-      used_fallback = true
-      ns = (opts and opts.fallback_namespace) or "common"
-    end
-    if not key:find(":", 1, true) then
-      key = ns .. ":" .. key
-    end
-    local _, col, _, end_col = arg:range()
-    table.insert(items, {
-      key = key,
-      raw = value,
-      namespace = ns,
-      lnum = row,
-      col = col,
-      end_col = end_col,
-      bufnr = meta.bufnr,
-      fallback = used_fallback,
-    })
-  end
-
-  if query_call then
-    for _, match in query_call:iter_matches(root, source) do
-      local func = capture_node(match, 1)
-      local arg = capture_node(match, 2)
-      if func and arg then
-        local row = select(1, arg:range())
-        local func_name = node_text(func, source)
-        if is_translation_call(func_name, row, translation_scopes) then
-          handle_call(arg)
-        end
-      end
-    end
-  end
-
-  if query_member then
-    for _, match in query_member:iter_matches(root, source) do
-      local prop = capture_node(match, 2)
-      local arg = capture_node(match, 3)
-      if prop and arg and node_text(prop, source) == "t" then
-        handle_call(arg)
-      end
-    end
-  end
-
-  return items
+local function buf_source(bufnr)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  return table.concat(lines, "\n")
 end
 
 ---@param bufnr integer
----@param opts? { fallback_namespace?: string, range?: { start_line?: integer, end_line?: integer } }
----@return I18nStatusScanItem[]
-function M.extract(bufnr, opts)
-  local items = {}
-  local lang = get_lang(bufnr)
-  local range = normalize_range(opts and opts.range or nil)
-  if lang == "" then
-    return items
-  end
-  local ok, parser = pcall(vim.treesitter.get_parser, bufnr, lang)
-  if not ok or not parser then
-    if lang == "tsx" then
-      ok, parser = pcall(vim.treesitter.get_parser, bufnr, "typescript")
-      lang = "typescript"
-    elseif lang == "jsx" then
-      ok, parser = pcall(vim.treesitter.get_parser, bufnr, "javascript")
-      lang = "javascript"
-    end
-  end
-  if not ok or not parser then
-    return fallback_extract(bufnr, opts, range)
-  end
-  return extract_from_parser(lang, parser, bufnr, opts, range, { bufnr = bufnr, allow_fallback = true })
+---@return string
+local function lang_for_buf(bufnr)
+  return util.lang_for_filetype(vim.bo[bufnr].filetype)
 end
 
----@param text string
----@param lang string|nil
----@param opts? { fallback_namespace?: string, range?: { start_line?: integer, end_line?: integer } }
----@return I18nStatusScanItem[]
-function M.extract_text(text, lang, opts)
-  if not text or text == "" then
+---@param value string
+---@param fallback_ns string
+---@return table[]
+local function regex_extract(value, fallback_ns)
+  local items = {}
+  local line_num = 0
+  for line in (value .. "\n"):gmatch("([^\n]*)\n") do
+    local col = 1
+    while true do
+      local s, e, key = line:find("t%s*%(%s*[\"']([^\"']+)[\"']", col)
+      if not s then
+        break
+      end
+      local ns = key:match("^(.-):")
+      local canonical = key
+      local fallback = false
+      if not ns then
+        ns = fallback_ns
+        canonical = ns .. ":" .. key
+        fallback = true
+      end
+      table.insert(items, {
+        key = canonical,
+        raw = key,
+        namespace = ns,
+        lnum = line_num,
+        col = s - 1,
+        end_col = e,
+        fallback = fallback,
+      })
+      col = e + 1
+    end
+    line_num = line_num + 1
+  end
+  return items
+end
+
+---@param source string
+---@param lang string
+---@param opts { fallback_namespace?: string, range?: { start_line: integer, end_line: integer } }
+---@return table
+local function extract_params(source, lang, opts)
+  return {
+    source = source,
+    lang = lang,
+    fallback_namespace = opts.fallback_namespace or "",
+    range = opts.range and {
+      start_line = opts.range.start_line,
+      end_line = opts.range.end_line,
+    } or vim.NIL,
+  }
+end
+
+---@param source string
+---@param info { namespace?: string|nil, is_root?: boolean|nil }
+---@param opts { range?: { start_line: integer, end_line: integer } }
+---@return table
+local function extract_resource_params(source, info, opts)
+  return {
+    source = source,
+    namespace = info.namespace or "",
+    is_root = info.is_root or false,
+    range = opts.range and {
+      start_line = opts.range.start_line,
+      end_line = opts.range.end_line,
+    } or vim.NIL,
+  }
+end
+
+---@param source string
+---@param lang string
+---@param row integer
+---@param fallback_ns string
+---@return table|nil
+local function request_translation_context(source, lang, row, fallback_ns)
+  local result, err = rpc.request_sync("scan/translationContextAt", {
+    source = source,
+    lang = lang,
+    row = row,
+    fallback_namespace = fallback_ns,
+  })
+  if err then
+    return nil
+  end
+  return result
+end
+
+---@param bufnr integer
+---@param opts? { fallback_namespace?: string, range?: { start_line: integer, end_line: integer } }
+---@return table[]
+function M.extract(bufnr, opts)
+  local lang = lang_for_buf(bufnr)
+  if lang == "" then
     return {}
   end
-  local range = normalize_range(opts and opts.range or nil)
-  local lines = vim.split(text, "\n", { plain = true })
+  opts = opts or {}
+  local result, err = rpc.request_sync("scan/extract", extract_params(buf_source(bufnr), lang, opts))
+  if err or not result then
+    return {}
+  end
+  return result.items or {}
+end
+
+---@param source string
+---@param lang string|nil
+---@param opts? { fallback_namespace?: string, range?: { start_line: integer, end_line: integer } }
+---@return table[]
+function M.extract_text(source, lang, opts)
+  opts = opts or {}
+  local fallback_ns = opts.fallback_namespace or ""
   if not lang or lang == "" then
-    return fallback_extract(nil, opts, range, lines)
+    return regex_extract(source, fallback_ns)
   end
-  local ok, parser = pcall(vim.treesitter.get_string_parser, text, lang)
-  if not ok or not parser then
-    return fallback_extract(nil, opts, range, lines)
+  local result, err = rpc.request_sync("scan/extract", extract_params(source, lang, opts))
+  if err or not result then
+    return {}
   end
-  return extract_from_parser(lang, parser, text, opts, range, { bufnr = nil, lines = lines, allow_fallback = true })
-end
-
----@param node TSNode|nil
----@param source integer|string
----@return string|nil
-local function json_key_text(node, source)
-  if not node then
-    return nil
-  end
-  return strip_quotes(node_text(node, source))
+  return result.items or {}
 end
 
 ---@param bufnr integer
----@param info { namespace: string|nil, is_root: boolean }
----@param opts? { range?: { start_line?: integer, end_line?: integer } }
----@return I18nStatusScanItem[]
+---@param info { namespace?: string|nil, is_root?: boolean|nil }
+---@param opts? { range?: { start_line: integer, end_line: integer } }
+---@return table[]
 function M.extract_resource(bufnr, info, opts)
-  local items = {}
-  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
-    return items
+  opts = opts or {}
+  local result, err = rpc.request_sync("scan/extractResource", extract_resource_params(buf_source(bufnr), info, opts))
+  if err or not result then
+    return {}
   end
-  if not info or (not info.is_root and (not info.namespace or info.namespace == "")) then
-    return items
-  end
-  local range = normalize_range(opts and opts.range or nil)
-  local ft = vim.bo[bufnr].filetype
-  local ok, parser = pcall(vim.treesitter.get_parser, bufnr, ft)
-  if not ok or not parser then
-    if ft == "jsonc" then
-      ok, parser = pcall(vim.treesitter.get_parser, bufnr, "json")
-    else
-      ok, parser = pcall(vim.treesitter.get_parser, bufnr, "jsonc")
-      if not ok or not parser then
-        ok, parser = pcall(vim.treesitter.get_parser, bufnr, "json")
-      end
-    end
-  end
-  if not ok or not parser then
-    return items
-  end
-  local tree = parser:parse()[1]
-  if not tree then
-    return items
-  end
-  local root = tree:root()
-  local source = bufnr
-  if root:type() == "document" then
-    root = root:named_child(0) or root
-  end
-
-  local function add_item(namespace, key_path, key_node)
-    if not namespace or namespace == "" or not key_path or key_path == "" then
-      return
-    end
-    local row, col, _, end_col = key_node:range()
-    if not row_in_range(row, range) then
-      return
-    end
-    table.insert(items, {
-      key = namespace .. ":" .. key_path,
-      raw = key_path,
-      namespace = namespace,
-      lnum = row,
-      col = col,
-      end_col = end_col,
-      bufnr = bufnr,
-    })
-  end
-
-  local function walk_object(node, namespace, prefix)
-    for child in node:iter_children() do
-      if child:type() == "pair" then
-        local key_node = child:child(0)
-        local val_node = child:child(2) or child:child(1)
-        local key = json_key_text(key_node, source)
-        if key and key ~= "" then
-          local path = prefix ~= "" and (prefix .. "." .. key) or key
-          local val_type = val_node and val_node:type() or ""
-          if val_type == "object" then
-            walk_object(val_node, namespace, path)
-          elseif val_type ~= "array" then
-            add_item(namespace, path, key_node)
-          end
-        end
-      end
-    end
-  end
-
-  if info.is_root then
-    if root and root:type() == "object" then
-      for child in root:iter_children() do
-        if child:type() == "pair" then
-          local key_node = child:child(0)
-          local val_node = child:child(2) or child:child(1)
-          local namespace = json_key_text(key_node, source)
-          if namespace and namespace ~= "" and val_node and val_node:type() == "object" then
-            walk_object(val_node, namespace, "")
-          end
-        end
-      end
-    end
-  elseif info.namespace and root and root:type() == "object" then
-    walk_object(root, info.namespace, "")
-  end
-
-  return items
+  return result.items or {}
 end
 
 ---@param bufnr integer
----@param row integer
----@param opts table|nil
----@return string
-function M.namespace_at(bufnr, row, opts)
-  local fallback_ns = opts and opts.fallback_namespace or nil
-  local lang = get_lang(bufnr)
+---@param opts? { fallback_namespace?: string, range?: { start_line: integer, end_line: integer } }
+---@param cb fun(items: table[])
+function M.extract_async(bufnr, opts, cb)
+  local lang = lang_for_buf(bufnr)
   if lang == "" then
-    return fallback_ns
-  end
-  local ok, parser = pcall(vim.treesitter.get_parser, bufnr, lang)
-  if not ok or not parser then
-    if lang == "tsx" then
-      ok, parser = pcall(vim.treesitter.get_parser, bufnr, "typescript")
-      lang = "typescript"
-    elseif lang == "jsx" then
-      ok, parser = pcall(vim.treesitter.get_parser, bufnr, "javascript")
-      lang = "javascript"
-    end
-  end
-  if not ok or not parser then
-    local current_ns = fallback_ns
-    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, row + 1, false)
-    for _, line in ipairs(lines) do
-      local patterns = { "useTranslation", "useTranslations", "getTranslations" }
-      for _, name in ipairs(patterns) do
-        local ns = line:match(name .. "%s*%(%s*['\"]([^'\"]+)['\"]%s*%)")
-        if ns then
-          current_ns = ns
-        end
-      end
-    end
-    return current_ns
-  end
-  local tree = parser:parse()[1]
-  if not tree then
-    return fallback_ns
-  end
-  local scopes = collect_namespaces(tree:root(), bufnr, lang)
-  return namespace_for(scopes, row) or fallback_ns
-end
-
----@param line string
----@param state table
-local function update_translation_state_from_line(line, state)
-  if not line or line == "" then
+    cb({})
     return
   end
-  local hook_patterns = { "useTranslation", "useTranslations", "getTranslations" }
-  for _, name in ipairs(hook_patterns) do
-    if line:find(name, 1, true) then
-      state.has_hook = true
-      local ns = line:match(name .. "%s*%(%s*['\"]([^'\"]+)['\"]%s*%)")
-      if ns then
-        state.namespace = ns
-      end
+  opts = opts or {}
+  rpc.request("scan/extract", extract_params(buf_source(bufnr), lang, opts), function(err, result)
+    if err or not result then
+      cb({})
+      return
     end
-  end
-  local alias = line:match("const%s*{%s*t%s*:%s*([%a_][%w_]*)%s*}%s*=%s*[%w_%.]*useTranslation%s*%(")
-    or line:match("const%s*{%s*t%s*:%s*([%a_][%w_]*)%s*}%s*=%s*[%w_%.]*useTranslations%s*%(")
-    or line:match("const%s*{%s*t%s*:%s*([%a_][%w_]*)%s*}%s*=%s*[%w_%.]*getTranslations%s*%(")
-  if alias then
-    state.has_hook = true
-    state.t_func = alias
-  end
+    cb(result.items or {})
+  end)
+end
 
-  local plain_t = line:match("const%s*{%s*t%s*}%s*=%s*[%w_%.]*useTranslation%s*%(")
-    or line:match("const%s*{%s*t%s*}%s*=%s*[%w_%.]*useTranslations%s*%(")
-    or line:match("const%s*{%s*t%s*}%s*=%s*[%w_%.]*getTranslations%s*%(")
-  if plain_t then
-    state.has_hook = true
-    state.t_func = "t"
-  end
-
-  local assigned = line:match("const%s+([%a_][%w_]*)%s*=%s*[%w_%.]*useTranslations%s*%(")
-    or line:match("const%s+([%a_][%w_]*)%s*=%s*[%w_%.]*getTranslations%s*%(")
-  if assigned then
-    state.has_hook = true
-    state.t_func = assigned
-  end
+---@param bufnr integer
+---@param info { namespace?: string|nil, is_root?: boolean|nil }
+---@param opts? { range?: { start_line: integer, end_line: integer } }
+---@param cb fun(items: table[])
+function M.extract_resource_async(bufnr, info, opts, cb)
+  opts = opts or {}
+  rpc.request("scan/extractResource", extract_resource_params(buf_source(bufnr), info, opts), function(err, result)
+    if err or not result then
+      cb({})
+      return
+    end
+    cb(result.items or {})
+  end)
 end
 
 ---@param bufnr integer
 ---@param row integer
----@param opts table|nil
+---@param opts? { fallback_namespace?: string }
 ---@return { namespace: string|nil, t_func: string, found_hook: boolean, has_any_hook: boolean }
 function M.translation_context_at(bufnr, row, opts)
-  local fallback_ns = opts and opts.fallback_namespace or nil
-  local lang = get_lang(bufnr)
+  opts = opts or {}
+  local fallback_ns = opts.fallback_namespace or ""
+  local lang = lang_for_buf(bufnr)
   if lang == "" then
-    return {
-      namespace = fallback_ns,
-      t_func = "t",
-      found_hook = false,
-      has_any_hook = false,
-    }
+    return { namespace = fallback_ns, t_func = "t", found_hook = false, has_any_hook = false }
   end
 
-  local ok, parser = pcall(vim.treesitter.get_parser, bufnr, lang)
-  if not ok or not parser then
-    if lang == "tsx" then
-      ok, parser = pcall(vim.treesitter.get_parser, bufnr, "typescript")
-      lang = "typescript"
-    elseif lang == "jsx" then
-      ok, parser = pcall(vim.treesitter.get_parser, bufnr, "javascript")
-      lang = "javascript"
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local source = table.concat(lines, "\n")
+  local result = request_translation_context(source, lang, row, fallback_ns)
+  if not result and row + 1 <= #lines then
+    local patched = vim.deepcopy(lines)
+    patched[row + 1] = ""
+    result = request_translation_context(table.concat(patched, "\n"), lang, row, fallback_ns)
+  end
+  if not result and row > 0 then
+    local clipped = {}
+    for i = 1, row do
+      clipped[#clipped + 1] = lines[i] or ""
     end
+    result = request_translation_context(table.concat(clipped, "\n"), lang, row - 1, fallback_ns)
   end
-
-  if not ok or not parser then
-    local state = {
-      namespace = fallback_ns,
-      t_func = "t",
-      has_hook = false,
-    }
-    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, row + 1, false)
-    for _, line in ipairs(lines) do
-      update_translation_state_from_line(line, state)
-    end
-    return {
-      namespace = state.namespace,
-      t_func = state.t_func,
-      found_hook = state.has_hook,
-      has_any_hook = state.has_hook,
-    }
+  if not result then
+    return { namespace = fallback_ns, t_func = "t", found_hook = false, has_any_hook = false }
   end
-
-  local tree = parser:parse()[1]
-  if not tree then
-    return {
-      namespace = fallback_ns,
-      t_func = "t",
-      found_hook = false,
-      has_any_hook = false,
-    }
-  end
-
-  local root = tree:root()
-  local consts = collect_consts(root, bufnr, lang)
-  local scopes = collect_translation_scopes(root, bufnr, lang, consts)
-  local scope = nil
-  for _, entry in ipairs(scopes) do
-    if row >= entry.start_row and row <= entry.end_row then
-      scope = entry
-      break
-    end
-  end
-
   return {
-    namespace = (scope and scope.ns) or fallback_ns,
-    t_func = (scope and scope.t_func) or "t",
-    found_hook = scope ~= nil,
-    has_any_hook = #scopes > 0,
+    namespace = result.namespace,
+    t_func = result.t_func or "t",
+    found_hook = result.found_hook or false,
+    has_any_hook = result.has_any_hook or false,
   }
 end
 

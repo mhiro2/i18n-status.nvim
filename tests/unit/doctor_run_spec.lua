@@ -3,29 +3,25 @@ local config_mod = require("i18n-status.config")
 local helpers = require("tests.helpers")
 
 describe("doctor async run", function()
-  local original_system
-  local original_defer
   local original_notify
   local original_setqflist
   local original_cmd
+  local rpc
+  local original_rpc_request
+  local original_rpc_request_sync
+  local original_rpc_on_notification
+  local original_rpc_off_notification
 
   before_each(function()
-    original_system = vim.system
-    original_defer = vim.defer_fn
     original_notify = vim.notify
     original_setqflist = vim.fn.setqflist
     original_cmd = vim.api.nvim_cmd
+    rpc = require("i18n-status.rpc")
+    original_rpc_request = rpc.request
+    original_rpc_request_sync = rpc.request_sync
+    original_rpc_on_notification = rpc.on_notification
+    original_rpc_off_notification = rpc.off_notification
 
-    vim.system = function(_cmd, _opts, on_exit)
-      local handle = { kill = function() end }
-      vim.schedule(function()
-        on_exit({ code = 0, stdout = "" })
-      end)
-      return handle
-    end
-    vim.defer_fn = function(fn, _)
-      fn()
-    end
     vim.notify = function(...)
       original_notify(...)
     end
@@ -35,14 +31,43 @@ describe("doctor async run", function()
     vim.api.nvim_cmd = function()
       return
     end
+    rpc.on_notification = function()
+      return
+    end
+    rpc.off_notification = function()
+      return
+    end
+    rpc.request = function(_method, _params, cb, _opts)
+      vim.schedule(function()
+        cb(nil, { issues = {}, used_keys = {} })
+      end)
+    end
+    rpc.request_sync = function(method, _params)
+      if method == "resource/resolveRoots" then
+        return { roots = {} }, nil
+      end
+      if method == "resource/buildIndex" then
+        return {
+          index = {},
+          files = {},
+          languages = { "ja", "en" },
+          errors = {},
+          namespaces = {},
+        },
+          nil
+      end
+      return {}, nil
+    end
   end)
 
   after_each(function()
-    vim.system = original_system
-    vim.defer_fn = original_defer
     vim.notify = original_notify
     vim.fn.setqflist = original_setqflist
     vim.api.nvim_cmd = original_cmd
+    rpc.request = original_rpc_request
+    rpc.request_sync = original_rpc_request_sync
+    rpc.on_notification = original_rpc_on_notification
+    rpc.off_notification = original_rpc_off_notification
   end)
 
   it("completes run() without errors", function()
@@ -62,7 +87,7 @@ describe("doctor async run", function()
       end
 
       doctor.run(buf, config_mod.setup({ primary_lang = "ja" }))
-      local completed = vim.wait(100, function()
+      local completed = vim.wait(500, function()
         return #messages >= 2
       end)
       assert.is_true(completed, "doctor.run did not finish")
@@ -82,20 +107,41 @@ describe("doctor async run", function()
       vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("login.title")' })
       vim.bo[buf].filetype = "typescript"
 
-      local killed_signal = nil
-      vim.system = function(_cmd, _opts, _on_exit)
-        return {
-          kill = function(_, signal)
-            killed_signal = signal
-          end,
-        }
+      local request_params = nil
+      local request_cb = nil
+      rpc.request = function(_method, params, cb, _opts)
+        request_params = params
+        request_cb = cb
+        return 42
+      end
+      local original_stop = rpc.stop
+      local stop_called = false
+      rpc.stop = function()
+        stop_called = true
+      end
+      vim.notify = function()
+        return
       end
 
       doctor.run(buf, config_mod.setup({ primary_lang = "ja" }))
-      local cancelled = doctor.cancel()
+      local started = vim.wait(500, function()
+        return request_params ~= nil
+      end, 10)
+      assert.is_true(started, "doctor request did not start")
+      assert.is_truthy(request_params.cancel_token_path)
 
+      local cancelled = doctor.cancel()
       assert.is_true(cancelled)
-      assert.are.equal(15, killed_signal)
+      assert.is_false(stop_called)
+      assert.is_not_nil(vim.uv.fs_stat(request_params.cancel_token_path))
+
+      request_cb(nil, { issues = {}, used_keys = {}, cancelled = true })
+      local cleaned = vim.wait(500, function()
+        return vim.uv.fs_stat(request_params.cancel_token_path) == nil
+      end, 10)
+
+      assert.is_true(cleaned, "cancel token file should be removed after callback")
+      rpc.stop = original_stop
     end)
   end)
 end)

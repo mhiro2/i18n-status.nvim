@@ -11,15 +11,6 @@ local function make_buf(lines, ft)
   return buf
 end
 
-local function skip_if_no_parser(buf, lang)
-  local ok = pcall(vim.treesitter.get_parser, buf, lang)
-  if ok then
-    return false
-  end
-  pending("treesitter parser not available: " .. lang)
-  return true
-end
-
 local function inline_text(buf, ns)
   local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
   if #marks == 0 then
@@ -321,9 +312,6 @@ describe("render", function()
     helpers.with_cwd(root, function()
       local buf = make_buf(vim.split(ja, "\n", { plain = true }), "json")
       vim.api.nvim_buf_set_name(buf, root .. "/locales/ja/common.json")
-      if skip_if_no_parser(buf, "json") then
-        return
-      end
       local config = config_mod.setup({
         primary_lang = "ja",
         inline = {
@@ -336,6 +324,9 @@ describe("render", function()
       core.refresh_now(buf, config)
       local ns = render.namespace()
       local texts = inline_texts(buf, ns)
+      local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+      assert.are.equal(1, #marks)
+      assert.are.equal(1, marks[1][2])
       local has_ja = false
       for _, text in ipairs(texts) do
         if text:find("ログイン", 1, true) then
@@ -348,6 +339,9 @@ describe("render", function()
       state.set_current(project_key, "en")
       core.refresh_now(buf, config)
       texts = inline_texts(buf, ns)
+      marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+      assert.are.equal(1, #marks)
+      assert.are.equal(1, marks[1][2])
       local has_en = false
       for _, text in ipairs(texts) do
         if text:find("Login", 1, true) then

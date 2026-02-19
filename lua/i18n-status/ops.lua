@@ -7,7 +7,13 @@ local state = require("i18n-status.state")
 local core = require("i18n-status.core")
 local scan = require("i18n-status.scan")
 
-local uv = vim.uv
+---@param bufnr integer
+---@return string[]
+local function rpc_scan_extract(bufnr, fallback_ns)
+  return scan.extract(bufnr, {
+    fallback_namespace = fallback_ns,
+  })
+end
 
 ---@param bufnr integer
 ---@return boolean
@@ -22,23 +28,7 @@ local function is_target_rename_buf(bufnr)
   if not vim.bo[bufnr].modifiable then
     return false
   end
-  local ft = vim.bo[bufnr].filetype
-  return ft == "javascript" or ft == "typescript" or ft == "javascriptreact" or ft == "typescriptreact"
-end
-
-local function normalize_path(path, root)
-  -- Try to resolve to real path for comparison
-  local real = uv.fs_realpath(path)
-  if real then
-    return real
-  end
-  -- If path doesn't exist, normalize it using util.sanitize_path
-  local normalized, err = util.sanitize_path(path, root or ".")
-  if err then
-    -- Fall back to basic normalization if sanitize fails
-    return path:gsub("\\", "/")
-  end
-  return normalized
+  return util.is_source_filetype(vim.bo[bufnr].filetype)
 end
 
 ---@param tbl table
@@ -98,7 +88,7 @@ end
 ---@param explicit_ns boolean
 ---@param fallback_ns string
 local function rename_in_buffer(bufnr, old_key, new_key, new_ns, explicit_ns, fallback_ns)
-  local items = scan.extract(bufnr, { fallback_namespace = fallback_ns })
+  local items = rpc_scan_extract(bufnr, fallback_ns)
   local edits = {}
   for _, item in ipairs(items) do
     if item.key == old_key then
@@ -235,7 +225,7 @@ function M.rename(opts)
           new_ns or "default"
         )
     end
-    local same_file = normalize_path(old_file, root) == normalize_path(new_file, root)
+    local same_file = util.normalize_path(old_file, root) == util.normalize_path(new_file, root)
 
     util.ensure_dir(util.dirname(new_file))
 

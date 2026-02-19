@@ -1,6 +1,8 @@
 ---@class I18nStatus
 local M = {}
 
+require("i18n-status.types")
+
 local config_mod = require("i18n-status.config")
 local core = require("i18n-status.core")
 local state = require("i18n-status.state")
@@ -9,6 +11,7 @@ local resources = require("i18n-status.resources")
 local doctor = require("i18n-status.doctor")
 local util = require("i18n-status.util")
 local extract = require("i18n-status.extract")
+local rpc = require("i18n-status.rpc")
 
 local config = nil
 local setup_done = false
@@ -132,6 +135,7 @@ function M.setup(opts)
   if not config then
     config = config_mod.setup(opts)
     state.init(config.primary_lang, {})
+    rpc.start()
     need_refresh_all = true
   elseif opts ~= nil then
     local prev_primary = config.primary_lang
@@ -172,7 +176,7 @@ function M.setup(opts)
           -- the file watcher handles those on save.
           if args.event == "TextChanged" or args.event == "TextChangedI" then
             local ft = vim.bo[args.buf].filetype
-            if ft == "json" or ft == "jsonc" then
+            if util.is_resource_filetype(ft) then
               return
             end
           end
@@ -190,6 +194,7 @@ function M.setup(opts)
       group = group,
       callback = function()
         resources.stop_watch()
+        rpc.stop()
       end,
     })
 

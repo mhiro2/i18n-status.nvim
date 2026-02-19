@@ -7,28 +7,21 @@ local function make_buf(lines, ft)
   return buf
 end
 
-local function skip_if_no_parser(buf, lang, fallback_lang)
-  local ok = pcall(vim.treesitter.get_parser, buf, lang)
-  if ok then
-    return false
-  end
-  if fallback_lang then
-    local ok_fallback = pcall(vim.treesitter.get_parser, buf, fallback_lang)
-    if ok_fallback then
-      return false
-    end
-  end
-  pending("treesitter parser not available: " .. lang)
-  return true
-end
-
-local function skip_if_no_string_parser(lang)
-  local ok = pcall(vim.treesitter.get_string_parser, "", lang)
-  if ok then
-    return false
-  end
-  pending("treesitter parser not available: " .. lang)
-  return true
+---@param bufnr integer
+---@param opts? { fallback_namespace?: string, range?: { start_line: integer, end_line: integer } }
+---@return table[]
+local function extract_async(bufnr, opts)
+  local done = false
+  local result = nil
+  scan.extract_async(bufnr, opts, function(items)
+    result = items
+    done = true
+  end)
+  local ok = vim.wait(5000, function()
+    return done
+  end)
+  assert.is_true(ok, "scan.extract_async timed out")
+  return result or {}
 end
 
 describe("scan", function()
@@ -47,10 +40,17 @@ describe("scan", function()
       'const { t: tr } = useTranslation("auth")',
       'tr("login.title")',
     }, "typescript")
-    if skip_if_no_parser(buf, "typescript") then
-      return
-    end
     local items = scan.extract(buf, { fallback_namespace = "common" })
+    assert.are.equal(1, #items)
+    assert.are.equal("auth:login.title", items[1].key)
+  end)
+
+  it("extracts asynchronously", function()
+    local buf = make_buf({
+      'const { t } = useTranslation("auth")',
+      't("login.title")',
+    }, "typescript")
+    local items = extract_async(buf, { fallback_namespace = "common" })
     assert.are.equal(1, #items)
     assert.are.equal("auth:login.title", items[1].key)
   end)
@@ -73,9 +73,6 @@ describe("scan", function()
       '  t("dashboard.title")',
       "}",
     }, "typescript")
-    if skip_if_no_parser(buf, "typescript") then
-      return
-    end
     local items = scan.extract(buf, { fallback_namespace = "common" })
     local by_raw = {}
     for _, item in ipairs(items) do
@@ -109,9 +106,6 @@ describe("scan", function()
       'const { t } = useTranslation("auth")',
       'return <div>{t("login.title")}</div>',
     }, "typescriptreact")
-    if skip_if_no_parser(buf, "tsx", "typescript") then
-      return
-    end
     local items = scan.extract(buf, { fallback_namespace = "common" })
     assert.are.equal(1, #items)
     assert.are.equal("auth:login.title", items[1].key)
@@ -122,9 +116,6 @@ describe("scan", function()
       'const { t } = useTranslation("auth")',
       'return <div>{t("login.title")}</div>',
     }, "javascriptreact")
-    if skip_if_no_parser(buf, "jsx", "javascript") then
-      return
-    end
     local items = scan.extract(buf, { fallback_namespace = "common" })
     assert.are.equal(1, #items)
     assert.are.equal("auth:login.title", items[1].key)
@@ -136,9 +127,6 @@ describe("scan", function()
       '/* t("login.desc") */',
       't("login.cta")',
     }, "typescript")
-    if skip_if_no_parser(buf, "typescript") then
-      return
-    end
     local items = scan.extract(buf, { fallback_namespace = "common" })
     assert.are.equal(1, #items)
     assert.are.equal("common:login.cta", items[1].key)
@@ -150,9 +138,6 @@ describe("scan", function()
       't("k2")',
       't("k3")',
     }, "typescript")
-    if skip_if_no_parser(buf, "typescript") then
-      return
-    end
     local items = scan.extract(buf, {
       fallback_namespace = "common",
       range = { start_line = 1, end_line = 2 },
@@ -163,9 +148,6 @@ describe("scan", function()
   end)
 
   it("extracts directly from text when parser exists", function()
-    if skip_if_no_string_parser("typescript") then
-      return
-    end
     local text = table.concat({
       'const t = useTranslation("auth")',
       't("login.title")',
@@ -199,9 +181,6 @@ describe("scan", function()
       '  "plain": "OK"',
       "}",
     }, "json")
-    if skip_if_no_parser(buf, "json") then
-      return
-    end
     local items = scan.extract_resource(buf, { namespace = "common", is_root = false })
     local keys = {}
     for _, item in ipairs(items) do
@@ -223,9 +202,6 @@ describe("scan", function()
       "  }",
       "}",
     }, "json")
-    if skip_if_no_parser(buf, "json") then
-      return
-    end
     local items = scan.extract_resource(buf, { namespace = nil, is_root = true })
     local keys = {}
     for _, item in ipairs(items) do
@@ -240,9 +216,6 @@ describe("scan", function()
       'const { t: tr } = useTranslation("auth")',
       "const label = <p>Hello</p>",
     }, "typescriptreact")
-    if skip_if_no_parser(buf, "tsx", "typescript") then
-      return
-    end
     local ctx = scan.translation_context_at(buf, 1, { fallback_namespace = "common" })
     assert.are.equal("tr", ctx.t_func)
     assert.are.equal("auth", ctx.namespace)
@@ -253,9 +226,6 @@ describe("scan", function()
     local buf = make_buf({
       "const label = <p>Hello</p>",
     }, "typescriptreact")
-    if skip_if_no_parser(buf, "tsx", "typescript") then
-      return
-    end
     local ctx = scan.translation_context_at(buf, 0, { fallback_namespace = "common" })
     assert.are.equal("t", ctx.t_func)
     assert.are.equal("common", ctx.namespace)

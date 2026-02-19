@@ -11,6 +11,9 @@ pre-commit:
     stylua:
       glob: "*.lua"
       run: stylua --check {staged_files}
+    rustfmt:
+      glob: "rust/**/*.rs"
+      run: make rustfmt-check
     typos:
       run: typos {staged_files}
 

@@ -1,4 +1,4 @@
-.PHONY: deps deps-plenary deps-treesitter deps-grammars treesitter-build treesitter-install fmt lint stylua stylua-check selene test
+.PHONY: deps deps-plenary deps-treesitter deps-grammars treesitter-build treesitter-install fmt lint stylua stylua-check selene rustfmt rustfmt-check rust-lint test rust-build rust-test lua-test
 
 CC ?= cc
 NVIM ?= nvim
@@ -59,9 +59,9 @@ treesitter-build: deps-grammars
 
 treesitter-install: treesitter-build
 
-fmt: stylua
+fmt: stylua rustfmt
 
-lint: stylua-check selene
+lint: stylua-check selene rustfmt-check rust-lint
 
 stylua:
 	stylua .
@@ -72,8 +72,24 @@ stylua-check:
 selene:
 	selene ./lua ./plugin ./tests
 
-test: deps
+rustfmt:
+	cd rust && cargo fmt
+
+rustfmt-check:
+	cd rust && cargo fmt -- --check
+
+rust-lint:
+	cd rust && cargo clippy --all-targets -- -D warnings
+
+rust-build:
+	cd rust && cargo build --release
+
+rust-test:
+	cd rust && cargo test
+
+test: lua-test rust-test
+
+lua-test: deps rust-build
 	PLENARY_PATH="$(PLENARY_PATH)" TREESITTER_INSTALL_DIR="$(TREESITTER_INSTALL_DIR)" TREESITTER_PATH="$(TREESITTER_PATH)" \
 		$(NVIM) --headless -u tests/minimal_init.lua \
-		-c "PlenaryBustedDirectory tests { minimal_init = './tests/minimal_init.lua' }" \
-		-c "qa"
+		-c "lua require('plenary.test_harness').test_directory('tests', {minimal_init = 'tests/minimal_init.lua'})"

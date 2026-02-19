@@ -1,6 +1,7 @@
 local core = require("i18n-status.core")
 local render = require("i18n-status.render")
 local config_mod = require("i18n-status.config")
+local init = require("i18n-status")
 local helpers = require("tests.helpers")
 local state = require("i18n-status.state")
 local resources = require("i18n-status.resources")
@@ -28,6 +29,10 @@ end
 describe("resource change handling", function()
   before_each(function()
     state.init("ja", {})
+    init.setup({
+      primary_lang = "ja",
+      resource_watch = { enabled = false },
+    })
   end)
 
   after_each(function()
@@ -46,11 +51,17 @@ describe("resource change handling", function()
       })
 
       core.refresh_now(buf, config)
-      assert.is_true(inline_text(buf):find("ログイン", 1, true) ~= nil)
+      local initial_rendered = vim.wait(1000, function()
+        return inline_text(buf):find("ログイン", 1, true) ~= nil
+      end, 10)
+      assert.is_true(initial_rendered)
 
       helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"サインイン"}}')
       core.refresh_now(buf, config)
-      assert.is_true(inline_text(buf):find("サインイン", 1, true) ~= nil)
+      local updated_rendered = vim.wait(1000, function()
+        return inline_text(buf):find("サインイン", 1, true) ~= nil
+      end, 10)
+      assert.is_true(updated_rendered)
     end)
   end)
 

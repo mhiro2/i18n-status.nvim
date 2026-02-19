@@ -2,7 +2,7 @@ local doctor = require("i18n-status.doctor")
 local config_mod = require("i18n-status.config")
 local helpers = require("tests.helpers")
 local state = require("i18n-status.state")
-local discovery = require("i18n-status.resource_discovery")
+local resources = require("i18n-status.resources")
 local stub = require("luassert.stub")
 
 local function diagnose(bufnr, config)
@@ -87,7 +87,7 @@ describe("doctor", function()
     end)
   end)
 
-  it("delegates project root resolution to discovery.project_root", function()
+  it("delegates project root resolution to resources.project_root", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
     helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
@@ -101,7 +101,7 @@ describe("doctor", function()
 
       local config = config_mod.setup({ primary_lang = "ja" })
       local called = nil
-      local project_root_stub = stub(discovery, "project_root", function(start_dir, roots)
+      local project_root_stub = stub(resources, "project_root", function(start_dir, roots)
         called = { start_dir = start_dir, roots = roots }
         return start_dir
       end)

@@ -28,6 +28,26 @@ local function list_item_keys(buf)
 end
 
 describe("doctor review", function()
+  after_each(function()
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      local buf = vim.api.nvim_win_get_buf(win)
+      if vim.api.nvim_buf_is_valid(buf) then
+        local ft = vim.bo[buf].filetype
+        if ft == "i18n-status-review" or ft == "i18n-status-review-help" then
+          pcall(vim.api.nvim_win_close, win, true)
+        end
+      end
+    end
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_valid(buf) then
+        local ft = vim.bo[buf].filetype
+        if ft == "i18n-status-review" or ft == "i18n-status-review-help" then
+          pcall(vim.api.nvim_buf_delete, buf, { force = true })
+        end
+      end
+    end
+  end)
+
   it("shows list and detail in floating window", function()
     state.init("en", { "en", "ja" })
 

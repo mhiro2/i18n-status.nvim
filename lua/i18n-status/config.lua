@@ -83,6 +83,13 @@ local defaults = {
 function M.setup(opts)
   local merged = util.tbl_deep_merge(defaults, opts or {})
 
+  if vim.g.i18n_status_test_disable_watch then
+    local explicit_watch_enabled = opts and opts.resource_watch and opts.resource_watch.enabled ~= nil
+    if not explicit_watch_enabled then
+      merged.resource_watch.enabled = false
+    end
+  end
+
   -- Validation
   M._validate(merged)
 

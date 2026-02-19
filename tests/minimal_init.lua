@@ -22,6 +22,7 @@ end
 vim.opt.packpath = vim.opt.runtimepath:get()
 
 vim.g.mapleader = " "
+vim.g.i18n_status_test_disable_watch = true
 
 vim.api.nvim_cmd({ cmd = "runtime", args = { "plugin/plenary.vim" } }, {})
 if vim.fn.isdirectory(treesitter) == 1 then
