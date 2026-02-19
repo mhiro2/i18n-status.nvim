@@ -104,6 +104,45 @@ end
 function M.check()
   health.start("i18n-status")
 
+  -- Check Rust binary
+  health.start("Core Binary")
+  local rpc_mod = require("i18n-status.rpc")
+  if rpc_mod.is_running() then
+    ok("i18n-status-core process is running")
+  else
+    info("i18n-status-core process is not running (will start on first use)")
+  end
+  -- Check binary exists
+  local source = debug.getinfo(1, "S").source:sub(2)
+  local plugin_root = vim.fs.dirname(vim.fs.dirname(vim.fs.dirname(source)))
+  local binary_candidates = {
+    vim.fs.joinpath(plugin_root, "rust", "target", "release", "i18n-status-core"),
+    vim.fs.joinpath(plugin_root, "rust", "target", "debug", "i18n-status-core"),
+    vim.fs.joinpath(plugin_root, "bin", "i18n-status-core"),
+  }
+  local data_dir = vim.fn.stdpath("data")
+  if data_dir then
+    table.insert(binary_candidates, vim.fs.joinpath(data_dir, "i18n-status", "bin", "i18n-status-core"))
+  end
+  local binary_found = false
+  for _, path in ipairs(binary_candidates) do
+    if vim.uv.fs_stat(path) then
+      ok("binary found: " .. path)
+      binary_found = true
+      break
+    end
+  end
+  if not binary_found then
+    local exepath = vim.fn.exepath("i18n-status-core")
+    if exepath and exepath ~= "" then
+      ok("binary found in PATH: " .. exepath)
+      binary_found = true
+    end
+  end
+  if not binary_found then
+    warn("i18n-status-core binary not found. Build with: cd rust && cargo build --release")
+  end
+
   local plugin = package.loaded["i18n-status"]
   local cfg = nil
   if plugin and type(plugin.get_config) == "function" then
@@ -196,17 +235,11 @@ function M.check()
   end
 
   health.start("Treesitter")
-  if not vim.treesitter or type(vim.treesitter.get_parser) ~= "function" then
-    warn("treesitter API not available")
-  else
-    -- Use get_parser() to avoid deprecated vim.treesitter.language.require_language() warnings.
+  info("JS/TS parsing is handled by the Rust core (swc); treesitter parsers are optional")
+  if vim.treesitter and type(vim.treesitter.get_parser) == "function" then
     local langs = {
-      { name = "javascript", note = "needed for javascript" },
-      { name = "typescript", note = "needed for typescript" },
-      { name = "jsx", note = "needed for javascriptreact" },
-      { name = "tsx", note = "needed for typescriptreact" },
-      { name = "json", note = "needed for translation JSON inline" },
-      { name = "jsonc", note = "needed for translation JSON inline (comments)" },
+      { name = "json", note = "useful for JSON resource file highlighting" },
+      { name = "jsonc", note = "useful for JSONC resource file highlighting" },
     }
     for _, entry in ipairs(langs) do
       local lang = entry.name
@@ -217,7 +250,7 @@ function M.check()
         ok("parser installed: " .. lang)
       else
         local note = entry.note and (" (" .. entry.note .. ")") or ""
-        warn("parser missing: " .. lang .. note)
+        info("parser not installed: " .. lang .. note)
       end
     end
   end
