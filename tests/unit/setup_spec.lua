@@ -76,23 +76,35 @@ describe("setup reconfiguration", function()
   end)
 
   it("keeps current language when toggling auto_hover", function()
-    i18n.setup({ primary_lang = "ja" })
+    i18n.setup({
+      primary_lang = "ja",
+      resource_watch = { enabled = true },
+    })
 
     local bufnr = vim.api.nvim_get_current_buf()
     local _, key = state.project_for_buf(bufnr)
     state.set_languages(key, { "ja", "en" })
     state.set_current(key, "en")
 
-    i18n.setup({ auto_hover = { enabled = false } })
+    i18n.setup({
+      auto_hover = { enabled = false },
+      resource_watch = { enabled = true },
+    })
     assert.are.equal("en", state.project_for_key(key).current_lang)
 
-    i18n.setup({ auto_hover = { enabled = true } })
+    i18n.setup({
+      auto_hover = { enabled = true },
+      resource_watch = { enabled = true },
+    })
     assert.are.equal("en", state.project_for_key(key).current_lang)
   end)
 
   it("does not start watcher repeatedly for the same buffer/key", function()
     should_refresh = true
-    i18n.setup({ primary_lang = "ja" })
+    i18n.setup({
+      primary_lang = "ja",
+      resource_watch = { enabled = true },
+    })
 
     local bufnr = vim.api.nvim_get_current_buf()
     vim.api.nvim_exec_autocmds("BufEnter", { buffer = bufnr, modeline = false })
@@ -110,7 +122,10 @@ describe("setup reconfiguration", function()
 
   it("switches watcher references only when watcher key changes", function()
     should_refresh = true
-    i18n.setup({ primary_lang = "ja" })
+    i18n.setup({
+      primary_lang = "ja",
+      resource_watch = { enabled = true },
+    })
 
     local bufnr = vim.api.nvim_get_current_buf()
     watcher_key = "__project2__"
@@ -126,7 +141,10 @@ describe("setup reconfiguration", function()
 
   it("does not start watcher for unsupported buffers", function()
     should_refresh = false
-    i18n.setup({ primary_lang = "ja" })
+    i18n.setup({
+      primary_lang = "ja",
+      resource_watch = { enabled = true },
+    })
 
     local bufnr = vim.api.nvim_get_current_buf()
     vim.api.nvim_exec_autocmds("BufEnter", { buffer = bufnr, modeline = false })

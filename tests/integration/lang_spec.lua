@@ -26,7 +26,10 @@ describe(":I18nLang", function()
 
     helpers.with_cwd(root, function()
       local buf = setup_buffer(root)
-      init.setup({ primary_lang = "ja" })
+      init.setup({
+        primary_lang = "ja",
+        resource_watch = { enabled = false },
+      })
       init.attach(buf)
       core.refresh_now(buf, init.get_config())
 
@@ -55,7 +58,10 @@ describe(":I18nLang", function()
 
     helpers.with_cwd(root, function()
       local buf = setup_buffer(root)
-      init.setup({ primary_lang = "ja" })
+      init.setup({
+        primary_lang = "ja",
+        resource_watch = { enabled = false },
+      })
       init.attach(buf)
       core.refresh_now(buf, init.get_config())
 
@@ -82,7 +88,10 @@ describe(":I18nLang", function()
 
     helpers.with_cwd(root, function()
       local buf = setup_buffer(root)
-      init.setup({ primary_lang = "ja" })
+      init.setup({
+        primary_lang = "ja",
+        resource_watch = { enabled = false },
+      })
       init.attach(buf)
       core.refresh_now(buf, init.get_config())
 
