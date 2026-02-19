@@ -75,6 +75,7 @@ Everything else is auto-detected:
   - languages
   - namespaces
   - resource roots (locales/, public/locales/ or messages/)
+  - core binary path (plugin `bin/`, local rust build, stdpath(data), PATH)
 
 Namespace is inferred from useTranslation(s)/getTranslations or explicit ns:key.
 If none is found, a best-effort fallback is used and :checkhealth will warn.
@@ -94,11 +95,54 @@ Resource layouts:
 
 Configuration options                                   *i18n-status-config*
 
+Full default settings:
+>
+  require("i18n-status").setup({
+    primary_lang = "en",
+    inline = {
+      position = "eol", -- "eol" | "after_key"
+      max_len = 80,
+      visible_only = true,
+      status_only = false,
+      debounce_ms = 80,
+      hl = {
+        text = "Comment",
+        same = "I18nStatusSame",
+        diff = "I18nStatusDiff",
+        fallback = "I18nStatusFallback",
+        missing = "I18nStatusMissing",
+        mismatch = "I18nStatusMismatch",
+      },
+    },
+    resource_watch = {
+      enabled = true,
+      debounce_ms = 200,
+    },
+    doctor = {
+      ignore_keys = {},
+      float = {
+        width = 0.8, -- 0.0-1.0
+        height = 0.8, -- 0.0-1.0
+        border = "rounded", -- "none" | "single" | "double" | "rounded" | "solid" | "shadow"
+      },
+    },
+    auto_hover = {
+      enabled = true,
+    },
+    extract = {
+      min_length = 2,
+      exclude_components = { "Trans", "Translation" },
+      key_separator = "-", -- "." | "_" | "-"
+    },
+  })
+<
+
 primary_lang (default: "en")
     Reference language that determines fallback and doctor results.
 
 inline.position (default: "eol")
     Display inline status at the end of line or right after the key.
+    Must be one of "eol" or "after_key".
 
 inline.max_len (default: 80)
     Trim inline previews after this many visible characters.
@@ -116,6 +160,7 @@ inline.hl (default: { text = "Comment", same = "I18nStatusSame",
     diff = "I18nStatusDiff", fallback = "I18nStatusFallback",
     missing = "I18nStatusMissing", mismatch = "I18nStatusMismatch" })
     Highlight groups used for inline text and status markers.
+    See |i18n-status-highlights|.
 
 resource_watch.enabled (default: true)
     Start a filesystem watcher to hot-reload JSON resources.
@@ -156,6 +201,9 @@ The plugin creates the following user commands:
   :I18nHover          Show hover (markdown floating window) for the i18n key
                       under cursor.
 
+  :I18nGotoDefinition Jump to the translation file for the i18n key under
+                      cursor.
+
   :I18nDoctor         Run diagnostics across the entire project and open
                       Review UI (floating window).
 
@@ -170,10 +218,12 @@ The plugin creates the following user commands:
 
   :I18nRefresh        Force refresh for current buffer.
 
-  :I18nLangNext        Cycle current language (yankround-style).
-  :I18nLangPrev        Cycle previous language (with history).
-  :I18nLang {lang}     Set current language explicitly. Warns when {lang} is
-                       not part of the detected languages for the project.
+  :I18nLangNext       Cycle current language (yankround-style).
+  :I18nLangPrev       Cycle previous language (with history).
+  :I18nLang [lang]    Without args: same as :I18nLangNext.
+                      With args: set current language explicitly.
+                      Supports command-line completion and warns when {lang}
+                      is not part of the detected languages for the project.
 
 Example keymaps:
 >
@@ -308,9 +358,11 @@ Run:
   :checkhealth i18n-status
 
 Health checks report:
+  - i18n-status-core binary availability
+  - core process status
   - configuration (primary_lang)
   - resource roots / languages / parse errors
-  - Tree-sitter parsers (javascript / typescript / tsx)
+  - optional Tree-sitter parsers (json / jsonc)
   - blink.cmp integration status
 
 Note: checkhealth does NOT run :I18nDoctor.

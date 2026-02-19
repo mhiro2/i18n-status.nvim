@@ -91,9 +91,9 @@ Examples:
 
 ## 🧰 Requirements
 
-- **Neovim**: >= 0.10
-- **Tree-sitter**: `javascript`, `typescript`, `jsx`, `tsx` parsers installed (plus `json` for translation files)
-- **Completion (optional)**: [`saghen/blink.cmp`](https://github.com/saghen/blink.cmp) (only supported completion engine)
+- **Neovim** >= 0.10
+- **Tree-sitter** (optional): `json` / `jsonc` parsers for better resource editing UX
+- **[blink.cmp](https://github.com/saghen/blink.cmp)** (optional): i18n key completion
 
 ## 🚀 Installation (lazy.nvim)
 
@@ -102,6 +102,7 @@ Set up the plugin with minimal options, then configure language-cycling helpers 
 ```lua
 {
   "mhiro2/i18n-status.nvim",
+  build = "./scripts/download-binary.sh",
   config = function()
     local i18n_status = require("i18n-status")
     i18n_status.setup({
@@ -119,6 +120,20 @@ Set up the plugin with minimal options, then configure language-cycling helpers 
     })
   end,
 }
+```
+
+`download-binary.sh` resolves binary version in this order:
+
+1. `I18N_STATUS_CORE_TAG` environment variable
+2. current plugin git tag (if `HEAD` is tagged)
+3. latest GitHub Release (fallback)
+
+If binary download prerequisites are missing or download fails, it falls back to `cargo build --release`.
+
+If you prefer local build:
+
+```bash
+cd rust && cargo build --release
 ```
 
 ```lua
@@ -141,38 +156,66 @@ vim.api.nvim_create_autocmd("LspAttach", {
 })
 ```
 
-### Options (overview)
+## ⚙️ Configuration
 
-- **`primary_lang`** *(string)*: Primary language used to render inline text.
-- **`resource_watch.enabled`** *(boolean)*: Watch translation files and auto-refresh. Default: `true`.
-- **`resource_watch.debounce_ms`** *(integer)*: Debounce for watcher refresh. Default: `200`.
-- **`doctor.ignore_keys`** *(string[])*: Patterns to ignore keys in doctor. Default: `{}`.
-- **`doctor.float.width`** *(number)*: Width of Doctor UI floating window (0.0-1.0). Default: `0.8`.
-- **`doctor.float.height`** *(number)*: Height of Doctor UI floating window (0.0-1.0). Default: `0.8`.
-- **`doctor.float.border`** *(string)*: Border style for Doctor UI. Default: `"rounded"`. Options: `"none"`, `"single"`, `"double"`, `"rounded"`, `"solid"`, `"shadow"`.
-- **`auto_hover.enabled`** *(boolean)*: Automatically show hover when cursor stops on i18n key. Default: `true`. Uses `vim.opt.updatetime` for delay (default 4000ms). Set to `false` to disable.
-- **`extract.min_length`** *(integer)*: Minimum text length to consider for `:I18nExtract`. Default: `2`.
-- **`extract.exclude_components`** *(string[])*: JSX component names to skip during extraction. Default: `{ "Trans", "Translation" }`.
-- **`extract.key_separator`** *("."|"_"|"-")*: Delimiter used for auto-generated extract keys. Default: `"-"`.
+Configure via `require("i18n-status").setup({ ... })`.
+For full option and command details, see `:help i18n-status`.
+
+<details><summary>Default Settings</summary>
+
+```lua
+{
+  primary_lang = "en",
+  inline = {
+    position = "eol", -- "eol" | "after_key"
+    max_len = 80,
+    visible_only = true,
+    status_only = false,
+    debounce_ms = 80,
+    hl = {
+      text = "Comment",
+      same = "I18nStatusSame",
+      diff = "I18nStatusDiff",
+      fallback = "I18nStatusFallback",
+      missing = "I18nStatusMissing",
+      mismatch = "I18nStatusMismatch",
+    },
+  },
+  resource_watch = {
+    enabled = true,
+    debounce_ms = 200,
+  },
+  doctor = {
+    ignore_keys = {},
+    float = {
+      width = 0.8, -- 0.0-1.0
+      height = 0.8, -- 0.0-1.0
+      border = "rounded", -- "none" | "single" | "double" | "rounded" | "solid" | "shadow"
+    },
+  },
+  auto_hover = {
+    enabled = true,
+  },
+  extract = {
+    min_length = 2,
+    exclude_components = { "Trans", "Translation" },
+    key_separator = "-", -- "." | "_" | "-"
+  },
+}
+```
+
+</details>
 
 Resource roots are auto-detected from the current buffer's directory.
 Namespace is inferred from `useTranslation(s)/getTranslations` or explicit `ns:key`.
 If none is found, a best-effort fallback is used and `:checkhealth` will warn.
-
-Inline:
-
-- **`inline.position`**: `"eol"` or `"after_key"`. Default: `"eol"`.
-- **`inline.max_len`**: Max inline text length. Default: `80`.
-- **`inline.visible_only`**: Render + scan/resolve only the visible range for better performance. Default: `true`.
-- **`inline.status_only`**: Show only status marker (e.g. `[=]`) without translation text. Default: `false`.
-- **`inline.debounce_ms`**: Debounce for refresh on edits. Default: `80`.
-- **`inline.hl`**: Override highlight groups (see below).
 
 ## ⌨️ Commands
 
 ### Core
 
 - **`:I18nHover`**: Hover details for the i18n key under cursor
+- **`:I18nGotoDefinition`**: Jump to the translation file for the i18n key under cursor
 - **`:I18nDoctor`**: Diagnose i18n issues across the entire project and open Review UI
 - **`:I18nDoctorCancel`**: Cancel a running doctor scan
 - **`:I18nAddKey`**: Add a new i18n key to all language files interactively
@@ -181,12 +224,12 @@ Inline:
 
 ### Language
 
-- **`:I18nLang {lang}`**: Set language explicitly (warns if `{lang}` isn't part of the detected languages)
+- **`:I18nLang [lang]`**: With no argument, same as `:I18nLangNext`. With argument, set language explicitly (warns if unknown). Supports command-line completion.
 - **`:I18nLangNext`** / **`:I18nLangPrev`**: Cycle languages
 
 ## ✅ Health check
 
-Run `:checkhealth i18n-status` to verify configuration, resource discovery, Treesitter parsers, and blink.cmp integration.
+Run `:checkhealth i18n-status` to verify core binary, configuration, resource discovery, optional Treesitter parsers, and blink.cmp integration.
 
 ## 🩺 Doctor
 
