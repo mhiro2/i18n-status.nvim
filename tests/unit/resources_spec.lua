@@ -437,6 +437,39 @@ describe("resources", function()
     assert.are.equal(0, second_calls)
   end)
 
+  it("does not resolve roots again when start_watch gets precomputed target", function()
+    local root = helpers.tmpdir()
+    write(root .. "/locales/ja/common.json", '{"hello":"ja"}')
+    write(root .. "/locales/en/common.json", '{"hello":"en"}')
+
+    local resolve_roots_calls = 0
+    local original_request_sync = rpc.request_sync
+    rpc.request_sync = function(method, params, timeout_ms)
+      if method == "resource/resolveRoots" then
+        resolve_roots_calls = resolve_roots_calls + 1
+      end
+      return original_request_sync(method, params, timeout_ms)
+    end
+
+    local ok, err = pcall(function()
+      local watcher_key, roots = resources.resolve_watch_target(root)
+      local calls_after_resolve = resolve_roots_calls
+      resources.start_watch(root, function() end, {
+        debounce_ms = 10,
+        cache_key = watcher_key,
+        roots = roots,
+      })
+      resources.stop_watch(watcher_key)
+      assert.is_true(calls_after_resolve > 0)
+      assert.are.equal(calls_after_resolve, resolve_roots_calls)
+    end)
+
+    rpc.request_sync = original_request_sync
+    if not ok then
+      error(err)
+    end
+  end)
+
   it("marks only caches under the exact root boundary", function()
     local root = helpers.tmpdir()
     local original_caches = resources.caches
