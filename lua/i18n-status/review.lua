@@ -1,9 +1,9 @@
 ---@class I18nStatusReview
 local M = {}
 
+local resolve = require("i18n-status.resolve")
 local state = require("i18n-status.state")
 local util = require("i18n-status.util")
-local resolve = require("i18n-status.resolve")
 local review_ui = require("i18n-status.review_ui")
 local review_actions_mod = require("i18n-status.review_actions")
 
@@ -192,6 +192,9 @@ end
 ---@param buf integer
 ---@param lines string[]
 local function set_lines(buf, lines)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
@@ -200,6 +203,9 @@ end
 ---@param buf integer
 ---@param decorations { line: integer, group: string, col_start?: integer, col_end?: integer }[]
 local function apply_decorations(buf, decorations)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
   vim.api.nvim_buf_clear_namespace(buf, REVIEW_NS, 0, -1)
   for _, deco in ipairs(decorations or {}) do
     if deco.group and deco.line then
@@ -522,7 +528,7 @@ end
 ---@param max_width integer
 ---@return string
 local function sanitize_value(value, max_width)
-  local text = value or ""
+  local text = type(value) == "string" and value or ""
   text = text:gsub("\r", " "):gsub("\n", " ")
   text = text:gsub("%s+", " ")
   if text == "" then
@@ -795,18 +801,23 @@ local function build_resolved_items(keys, cache, primary_lang, display_lang)
     return {}
   end
 
-  local resolve_state = {
+  local project = {
     primary_lang = primary_lang,
     current_lang = display_lang,
     languages = cache.languages or {},
   }
 
-  local dummy_items = {}
+  local items = {}
   for _, key in ipairs(keys) do
-    table.insert(dummy_items, { key = key, lnum = 0, col = 0 })
+    table.insert(items, {
+      key = key,
+      raw = key:match("^[^:]+:(.+)$") or key,
+      namespace = key:match("^(.-):") or "",
+      fallback = false,
+    })
   end
 
-  return resolve.compute(dummy_items, resolve_state, cache.index)
+  return resolve.compute(items, project, cache.index)
 end
 
 ---@param issues I18nStatusDoctorIssue[]

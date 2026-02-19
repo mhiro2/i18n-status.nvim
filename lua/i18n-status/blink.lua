@@ -7,8 +7,8 @@ Source.__index = Source
 local M = {}
 
 local resources = require("i18n-status.resources")
-local state = require("i18n-status.state")
 local scan = require("i18n-status.scan")
+local state = require("i18n-status.state")
 
 local SUPPORTED_FILETYPES = {
   javascript = true,
@@ -135,7 +135,9 @@ local function get_completion_items(ctx)
     else
       local hint, reason = resources.namespace_hint(start_dir)
       local fallback_ns = reason == "single" and hint or nil
-      ns = scan.namespace_at(bufnr, row, { fallback_namespace = fallback_ns })
+      local ctx_result = scan.translation_context_at(bufnr, row, { fallback_namespace = fallback_ns })
+      ns = ctx_result.namespace
+      ns = ns or fallback_ns
     end
   end
 

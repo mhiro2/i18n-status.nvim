@@ -1,5 +1,23 @@
 local resolve = require("i18n-status.resolve")
 
+---@param items table[]
+---@param project table
+---@param index table
+---@return table[]
+local function compute_async(items, project, index)
+  local done = false
+  local result = nil
+  resolve.compute_async(items, project, index, function(resolved)
+    result = resolved
+    done = true
+  end)
+  local ok = vim.wait(5000, function()
+    return done
+  end)
+  assert.is_true(ok, "resolve.compute_async timed out")
+  return result or {}
+end
+
 describe("resolve", function()
   local project
 
@@ -137,5 +155,15 @@ describe("resolve", function()
     }
     local out = resolve.compute(items, project, index)
     assert.are.equal("Login", out[1].text)
+  end)
+
+  it("computes asynchronously", function()
+    local items = { { key = "common:login.title", raw = "login.title" } }
+    local index = {
+      ja = { ["common:login.title"] = { value = "Login" } },
+      en = { ["common:login.title"] = { value = "Login" } },
+    }
+    local out = compute_async(items, project, index)
+    assert.are.equal("=", out[1].status)
   end)
 end)

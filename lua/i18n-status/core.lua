@@ -1,13 +1,14 @@
 ---@class I18nStatusCore
 local M = {}
 
-local scan = require("i18n-status.scan")
 local resources = require("i18n-status.resources")
-local resolve = require("i18n-status.resolve")
 local render = require("i18n-status.render")
+local resolve = require("i18n-status.resolve")
+local scan = require("i18n-status.scan")
 local state = require("i18n-status.state")
 local util = require("i18n-status.util")
 local uv = vim.uv
+local refresh_seq_by_buf = {}
 
 ---@param bufnr integer
 ---@return boolean
@@ -39,10 +40,10 @@ function M.should_refresh(bufnr)
     return false
   end
   local ft = vim.bo[bufnr].filetype
-  if ft == "javascript" or ft == "typescript" or ft == "javascriptreact" or ft == "typescriptreact" then
+  if util.is_source_filetype(ft) then
     return true
   end
-  if ft == "json" or ft == "jsonc" then
+  if util.is_resource_filetype(ft) then
     return resources.resource_info_for_buf(bufnr) ~= nil
   end
   return false
@@ -61,16 +62,18 @@ end
 
 ---@param bufnr integer
 ---@param config I18nStatusConfig
-function M.refresh_now(bufnr, config)
+local function refresh_now_async(bufnr, config)
   if not buf_ready(bufnr) then
     return
   end
+
+  local seq = (refresh_seq_by_buf[bufnr] or 0) + 1
+  refresh_seq_by_buf[bufnr] = seq
+
   local start_dir = resources.start_dir(bufnr)
-  local cache = resources.ensure_index(start_dir)
-  local project = state.set_languages(cache.key, cache.languages)
-  state.set_buf_project(bufnr, cache.key)
   local fallback_ns = resources.fallback_namespace(start_dir)
-  local scan_opts = { fallback_namespace = fallback_ns }
+
+  local scan_range = nil
   local visible_top = nil
   local visible_bottom = nil
   if config.inline.visible_only then
@@ -80,7 +83,7 @@ function M.refresh_now(bufnr, config)
     bottom = math.max(top, math.min(bottom, line_count))
     visible_top = top
     visible_bottom = bottom
-    scan_opts.range = {
+    scan_range = {
       start_line = top - 1,
       end_line = bottom - 1,
     }
@@ -89,14 +92,99 @@ function M.refresh_now(bufnr, config)
   if visible_top and visible_bottom then
     state.visible_range_by_buf[bufnr] = { top = visible_top, bottom = visible_bottom }
   end
-  local info = resources.resource_info(start_dir, vim.api.nvim_buf_get_name(bufnr))
-  local items
-  if info then
-    items = scan.extract_resource(bufnr, info, scan_opts)
-  else
-    items = scan.extract(bufnr, scan_opts)
+
+  local function stale()
+    return refresh_seq_by_buf[bufnr] ~= seq or not buf_ready(bufnr)
   end
+
+  resources.ensure_index_async(start_dir, nil, function(cache)
+    if stale() then
+      return
+    end
+    local project = state.set_languages(cache.key, cache.languages)
+    state.set_buf_project(bufnr, cache.key)
+
+    local info = resources.resource_info(start_dir, vim.api.nvim_buf_get_name(bufnr))
+
+    local function on_items(items)
+      if stale() then
+        return
+      end
+      resolve.compute_async(items, project, cache.index, function(resolved)
+        if stale() then
+          return
+        end
+        render.apply(bufnr, items, resolved, config)
+        state.last_changedtick[bufnr] = vim.api.nvim_buf_get_changedtick(bufnr)
+      end)
+    end
+
+    if info then
+      scan.extract_resource_async(bufnr, info, { range = scan_range }, on_items)
+      return
+    end
+
+    local ft = vim.bo[bufnr].filetype
+    if not util.is_source_filetype(ft) then
+      return
+    end
+    scan.extract_async(bufnr, {
+      fallback_namespace = fallback_ns,
+      range = scan_range,
+    }, on_items)
+  end)
+end
+
+---@param bufnr integer
+---@param config I18nStatusConfig
+function M.refresh_now(bufnr, config)
+  if not buf_ready(bufnr) then
+    return
+  end
+  local start_dir = resources.start_dir(bufnr)
+  local cache = resources.ensure_index(start_dir)
+  local project = state.set_languages(cache.key, cache.languages)
+  state.set_buf_project(bufnr, cache.key)
+  local fallback_ns = resources.fallback_namespace(start_dir)
+
+  local scan_range = nil
+  local visible_top = nil
+  local visible_bottom = nil
+  if config.inline.visible_only then
+    local top, bottom = util.visible_range(bufnr)
+    local line_count = math.max(1, vim.api.nvim_buf_line_count(bufnr))
+    top = math.max(1, math.min(top, line_count))
+    bottom = math.max(top, math.min(bottom, line_count))
+    visible_top = top
+    visible_bottom = bottom
+    scan_range = {
+      start_line = top - 1,
+      end_line = bottom - 1,
+    }
+  end
+  state.visible_range_by_buf[bufnr] = nil
+  if visible_top and visible_bottom then
+    state.visible_range_by_buf[bufnr] = { top = visible_top, bottom = visible_bottom }
+  end
+
+  local info = resources.resource_info(start_dir, vim.api.nvim_buf_get_name(bufnr))
+
+  local items = {}
+  if info then
+    items = scan.extract_resource(bufnr, info, { range = scan_range })
+  else
+    local ft = vim.bo[bufnr].filetype
+    if not util.is_source_filetype(ft) then
+      return
+    end
+    items = scan.extract(bufnr, {
+      fallback_namespace = fallback_ns,
+      range = scan_range,
+    })
+  end
+
   local resolved = resolve.compute(items, project, cache.index)
+
   render.apply(bufnr, items, resolved, config)
   state.last_changedtick[bufnr] = vim.api.nvim_buf_get_changedtick(bufnr)
 end
@@ -150,13 +238,14 @@ function M.refresh(bufnr, config, debounce_ms, opts)
       if not buf_ready(bufnr) then
         return
       end
-      M.refresh_now(bufnr, config)
+      refresh_now_async(bufnr, config)
     end)
   )
 end
 
 ---@param bufnr integer
 function M.cleanup_buf(bufnr)
+  refresh_seq_by_buf[bufnr] = nil
   close_timer(state.timers[bufnr])
   state.timers[bufnr] = nil
 
