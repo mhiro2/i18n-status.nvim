@@ -215,6 +215,25 @@ function Page() {
 }
 
 #[test]
+fn const_shadowing_uses_nearest_scope() {
+    let source = r#"
+const KEY = "outer.title";
+function Page() {
+  const KEY = "inner.title";
+  t(KEY);
+}
+t(KEY);
+"#;
+    let result = extract(source, "tsx", "common");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["key"], "common:inner.title");
+    assert_eq!(items[0]["raw"], "inner.title");
+    assert_eq!(items[1]["key"], "common:outer.title");
+    assert_eq!(items[1]["raw"], "outer.title");
+}
+
+#[test]
 fn extract_resource_preserves_source_line_locations() {
     let source = r#"{
   "login": {
