@@ -55,12 +55,77 @@ describe("util", function()
     end)
   end)
 
+  describe("normalize_path and path_under", function()
+    local base_dir
+
+    before_each(function()
+      base_dir = vim.fn.tempname()
+      util.ensure_dir(base_dir)
+    end)
+
+    after_each(function()
+      if base_dir and util.is_dir(base_dir) then
+        vim.fn.delete(base_dir, "rf")
+      end
+    end)
+
+    it("normalizes existing path with realpath", function()
+      local file_path = util.path_join(base_dir, "a.json")
+      vim.fn.writefile({ "{}" }, file_path)
+      local expected = (vim.uv.fs_realpath(file_path) or file_path):gsub("\\", "/")
+      assert.are.equal(expected, util.normalize_path(file_path))
+    end)
+
+    it("normalizes unresolved relative path with base_dir", function()
+      local normalized = util.normalize_path("nested/new.json", base_dir)
+      local real_base = (vim.uv.fs_realpath(base_dir) or base_dir):gsub("\\", "/")
+      if real_base:sub(-1) ~= "/" then
+        real_base = real_base .. "/"
+      end
+      local base_hint = base_dir:gsub("\\", "/")
+      if base_hint:sub(-1) ~= "/" then
+        base_hint = base_hint .. "/"
+      end
+      assert.is_true(
+        type(normalized) == "string"
+          and (normalized:find(real_base, 1, true) == 1 or normalized:find(base_hint, 1, true) == 1)
+      )
+    end)
+
+    it("checks whether path is under root", function()
+      local child = util.path_join(base_dir, "locales", "ja", "common.json")
+      local outside = util.path_join(base_dir, "..", "outside.json")
+      assert.is_true(util.path_under(child, base_dir))
+      assert.is_false(util.path_under(outside, base_dir))
+    end)
+  end)
+
   describe("trim", function()
     it("should trim leading and trailing whitespace", function()
       assert.equals("hello", util.trim("  hello  "))
       assert.equals("hello", util.trim("hello  "))
       assert.equals("hello", util.trim("  hello"))
       assert.equals("hello", util.trim("hello"))
+    end)
+  end)
+
+  describe("filetype helpers", function()
+    it("maps source filetypes to parser languages", function()
+      assert.are.equal("javascript", util.lang_for_filetype("javascript"))
+      assert.are.equal("jsx", util.lang_for_filetype("javascriptreact"))
+      assert.are.equal("typescript", util.lang_for_filetype("typescript"))
+      assert.are.equal("tsx", util.lang_for_filetype("typescriptreact"))
+      assert.are.equal("", util.lang_for_filetype("lua"))
+    end)
+
+    it("classifies source/resource filetypes", function()
+      assert.is_true(util.is_source_filetype("typescript"))
+      assert.is_true(util.is_source_filetype("javascriptreact"))
+      assert.is_false(util.is_source_filetype("json"))
+
+      assert.is_true(util.is_resource_filetype("json"))
+      assert.is_true(util.is_resource_filetype("jsonc"))
+      assert.is_false(util.is_resource_filetype("typescript"))
     end)
   end)
 

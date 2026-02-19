@@ -3,6 +3,49 @@ local M = {}
 
 local uv = vim.uv
 
+---@type table<string, string>
+M.FILETYPE_TO_LANG = {
+  javascript = "javascript",
+  javascriptreact = "jsx",
+  typescript = "typescript",
+  typescriptreact = "tsx",
+}
+
+---@type table<string, boolean>
+M.SOURCE_FILETYPES = {
+  javascript = true,
+  javascriptreact = true,
+  typescript = true,
+  typescriptreact = true,
+}
+
+---@type table<string, boolean>
+M.RESOURCE_FILETYPES = {
+  json = true,
+  jsonc = true,
+}
+
+---@param ft string|nil
+---@return string
+function M.lang_for_filetype(ft)
+  if type(ft) ~= "string" then
+    return ""
+  end
+  return M.FILETYPE_TO_LANG[ft] or ""
+end
+
+---@param ft string|nil
+---@return boolean
+function M.is_source_filetype(ft)
+  return type(ft) == "string" and M.SOURCE_FILETYPES[ft] == true
+end
+
+---@param ft string|nil
+---@return boolean
+function M.is_resource_filetype(ft)
+  return type(ft) == "string" and M.RESOURCE_FILETYPES[ft] == true
+end
+
 ---@param base table
 ---@param extra table
 ---@return table
@@ -19,7 +62,87 @@ end
 ---@param path string
 ---@return string
 function M.dirname(path)
+  if type(path) ~= "string" or path == "" then
+    return "."
+  end
   return vim.fs.dirname(path) or "."
+end
+
+---@param path string|nil
+---@param base_dir string|nil
+---@return string|nil
+function M.normalize_path(path, base_dir)
+  if type(path) ~= "string" then
+    return nil
+  end
+  if path == "" then
+    return path
+  end
+
+  local real = uv.fs_realpath(path)
+  if real then
+    return real:gsub("\\", "/")
+  end
+
+  if type(base_dir) == "string" and base_dir ~= "" then
+    local sanitized, err = M.sanitize_path(path, base_dir)
+    if sanitized and not err then
+      return sanitized
+    end
+  end
+
+  return path:gsub("\\", "/")
+end
+
+---@param path string|nil
+---@param root string|nil
+---@return boolean
+function M.path_under(path, root)
+  if type(path) ~= "string" or path == "" or type(root) ~= "string" or root == "" then
+    return false
+  end
+
+  local path_candidates = {}
+  local root_candidates = {}
+  local seen_path = {}
+  local seen_root = {}
+
+  local function push_candidate(list, seen, value)
+    if type(value) ~= "string" or value == "" then
+      return
+    end
+    local normalized = value:gsub("\\", "/")
+    if vim.fs and vim.fs.normalize then
+      normalized = vim.fs.normalize(normalized)
+    end
+    if seen[normalized] then
+      return
+    end
+    seen[normalized] = true
+    table.insert(list, normalized)
+  end
+
+  push_candidate(path_candidates, seen_path, path)
+  push_candidate(path_candidates, seen_path, uv.fs_realpath(path))
+  push_candidate(root_candidates, seen_root, root)
+  push_candidate(root_candidates, seen_root, uv.fs_realpath(root))
+
+  for _, candidate_path in ipairs(path_candidates) do
+    for _, candidate_root in ipairs(root_candidates) do
+      if candidate_path == candidate_root then
+        return true
+      end
+      local prefix = candidate_root
+      if prefix:sub(-1) ~= "/" then
+        prefix = prefix .. "/"
+      end
+      if candidate_path:sub(1, #prefix) == prefix then
+        return true
+      end
+    end
+  end
+
+  return false
 end
 
 ---@param path string
@@ -201,28 +324,6 @@ function M.json_encode_pretty(value, indent_unit)
   return encode_pretty(value, unit, 0)
 end
 
----@param tbl table
----@param prefix string
----@param out table
----@return table
-local function flatten_into(tbl, prefix, out)
-  for k, v in pairs(tbl) do
-    local key = prefix ~= "" and (prefix .. "." .. k) or k
-    if type(v) == "table" then
-      flatten_into(v, key, out)
-    else
-      out[key] = v
-    end
-  end
-  return out
-end
-
----@param tbl table
----@return table
-function M.flatten_table(tbl)
-  return flatten_into(tbl, "", {})
-end
-
 ---@param text string
 ---@return table<string, boolean>
 function M.extract_placeholders(text)
@@ -254,27 +355,6 @@ function M.placeholder_equal(a, b)
     end
   end
   return true
-end
-
----@param start_dir string
----@param targets string[]
----@return string|nil
-function M.find_up(start_dir, targets)
-  local dir = start_dir
-  while dir and dir ~= "/" do
-    for _, target in ipairs(targets) do
-      local candidate = M.path_join(dir, target)
-      if M.is_dir(candidate) then
-        return candidate
-      end
-    end
-    local parent = M.dirname(dir)
-    if parent == dir then
-      break
-    end
-    dir = parent
-  end
-  return nil
 end
 
 ---@param bufnr integer
@@ -329,9 +409,15 @@ function M.find_git_root(start_dir)
 end
 
 ---@param path string
----@return string
+---@return string|nil
 function M.shorten_path(path)
-  if not path or path == "" then
+  if path == nil or path == vim.NIL then
+    return nil
+  end
+  if type(path) ~= "string" then
+    return nil
+  end
+  if path == "" then
     return path
   end
 

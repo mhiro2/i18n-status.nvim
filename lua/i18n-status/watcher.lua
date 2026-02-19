@@ -165,6 +165,9 @@ function M.start(key, opts)
     end
     safe_close_handle(watch.timer)
     watch.timer = uv.new_timer()
+    pcall(function()
+      watch.timer:unref()
+    end)
     watch.timer:start(
       watch.debounce_ms,
       0,
@@ -221,8 +224,12 @@ function M.start(key, opts)
         end)
 
         if not start_ok then
+          safe_close_handle(handle)
           log_watcher_error(path, start_err or "unknown error starting watcher")
         else
+          pcall(function()
+            handle:unref()
+          end)
           table.insert(watch.handles, handle)
         end
       end

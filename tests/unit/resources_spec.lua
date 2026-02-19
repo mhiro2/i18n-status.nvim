@@ -1,8 +1,26 @@
 local resources = require("i18n-status.resources")
+local rpc = require("i18n-status.rpc")
+local watcher = require("i18n-status.watcher")
 local helpers = require("tests.helpers")
 
 local function write(path, content)
   helpers.write_file(path, content)
+end
+
+---@param start_dir string
+---@return table
+local function ensure_index_async(start_dir)
+  local done = false
+  local result = nil
+  resources.ensure_index_async(start_dir, nil, function(cache)
+    result = cache
+    done = true
+  end)
+  local ok = vim.wait(5000, function()
+    return done
+  end)
+  assert.is_true(ok, "resources.ensure_index_async timed out")
+  return result
 end
 
 describe("resources", function()
@@ -11,6 +29,16 @@ describe("resources", function()
     write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
     write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
     local cache = resources.ensure_index(root)
+    table.sort(cache.languages)
+    assert.are.same({ "en", "ja" }, cache.languages)
+    assert.are.equal("ログイン", cache.index.ja["common:login.title"].value)
+  end)
+
+  it("loads i18next resources asynchronously", function()
+    local root = helpers.tmpdir()
+    write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+    write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+    local cache = ensure_index_async(root)
     table.sort(cache.languages)
     assert.are.same({ "en", "ja" }, cache.languages)
     assert.are.equal("ログイン", cache.index.ja["common:login.title"].value)
@@ -58,13 +86,72 @@ describe("resources", function()
     assert.are.equal("C", cache.index.ja["common:login.title"].value)
   end)
 
+  it("reuses cache without rebuild when watcher is disabled and files are unchanged", function()
+    local root = helpers.tmpdir()
+    write(root .. "/locales/ja/common.json", '{"login":{"title":"A"}}')
+    write(root .. "/locales/en/common.json", '{"login":{"title":"B"}}')
+
+    local build_count = 0
+    local original_build_index = resources.build_index
+    resources.build_index = function(roots)
+      build_count = build_count + 1
+      return original_build_index(roots)
+    end
+
+    local ok, err = pcall(function()
+      local cache1 = resources.ensure_index(root)
+      local cache2 = resources.ensure_index(root)
+      assert.is_true(cache1 == cache2)
+      assert.are.equal(1, build_count)
+    end)
+
+    resources.build_index = original_build_index
+    if not ok then
+      error(err)
+    end
+  end)
+
+  it("skips resolveRoots RPC when watcher is active for start_dir", function()
+    local root = helpers.tmpdir()
+    write(root .. "/locales/ja/common.json", '{"login":{"title":"A"}}')
+    write(root .. "/locales/en/common.json", '{"login":{"title":"B"}}')
+
+    local cache = resources.ensure_index(root)
+    local resolve_roots_calls = 0
+
+    local original_is_watching = watcher.is_watching
+    local original_request_sync = rpc.request_sync
+    watcher.is_watching = function(key)
+      return key == cache.key
+    end
+    rpc.request_sync = function(method, params, timeout_ms)
+      if method == "resource/resolveRoots" then
+        resolve_roots_calls = resolve_roots_calls + 1
+      end
+      return original_request_sync(method, params, timeout_ms)
+    end
+
+    local ok, err = pcall(function()
+      local reused = resources.ensure_index(root)
+      assert.is_true(reused == cache)
+      assert.are.equal(0, resolve_roots_calls)
+    end)
+
+    watcher.is_watching = original_is_watching
+    rpc.request_sync = original_request_sync
+    if not ok then
+      error(err)
+    end
+  end)
+
   it("prefers next-intl root files when available", function()
     local root = helpers.tmpdir()
     write(root .. "/messages/en.json", '{"common":{"title":"Root"}}')
     write(root .. "/messages/en/common.json", '{"title":"Namespaced"}')
 
     local path = resources.namespace_path(root, "en", "common")
-    assert.are.equal(root .. "/messages/en.json", path)
+    local expected = vim.uv.fs_realpath(root .. "/messages/en.json") or (root .. "/messages/en.json")
+    assert.are.equal(expected, path)
   end)
 
   it("falls back to namespace files when root missing", function()
@@ -72,7 +159,8 @@ describe("resources", function()
     write(root .. "/messages/en/common.json", '{"title":"Namespaced"}')
 
     local path = resources.namespace_path(root, "en", "common")
-    assert.are.equal(root .. "/messages/en/common.json", path)
+    local expected = vim.uv.fs_realpath(root .. "/messages/en/common.json") or (root .. "/messages/en/common.json")
+    assert.are.equal(expected, path)
   end)
 
   it("detects new files when watcher disabled", function()
@@ -128,7 +216,7 @@ describe("resources", function()
 
     local resume_count = 0
     local co = coroutine.create(function()
-      resources.ensure_index(root)
+      resources.ensure_index(root, { cooperative = true })
     end)
 
     while coroutine.status(co) ~= "dead" do
@@ -147,7 +235,8 @@ describe("resources", function()
     vim.fn.mkdir(root .. "/src/app", "p")
 
     local project_root = resources.project_root(root .. "/src/app")
-    assert.are.equal(root, project_root)
+    local expected = vim.uv.fs_realpath(root) or root
+    assert.are.equal(expected, project_root)
   end)
 
   describe("write_json_table", function()
