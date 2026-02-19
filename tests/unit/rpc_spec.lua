@@ -4,6 +4,7 @@ describe("rpc", function()
   local original_spawn
   local original_new_timer
   local original_fs_stat
+  local original_wait
 
   local spawned_exit_cb
   local kill_signals
@@ -31,6 +32,7 @@ describe("rpc", function()
     original_spawn = uv.spawn
     original_new_timer = uv.new_timer
     original_fs_stat = uv.fs_stat
+    original_wait = vim.wait
 
     spawned_exit_cb = nil
     kill_signals = {}
@@ -90,6 +92,7 @@ describe("rpc", function()
     uv.spawn = original_spawn
     uv.new_timer = original_new_timer
     uv.fs_stat = original_fs_stat
+    vim.wait = original_wait
 
     package.loaded["i18n-status.rpc"] = nil
   end)
@@ -112,5 +115,28 @@ describe("rpc", function()
 
     force_kill_timer.cb()
     assert.are.same({ 15, 9 }, kill_signals)
+  end)
+
+  it("cleans pending sync request when vim.wait times out first", function()
+    assert.is_true(rpc.start())
+
+    vim.wait = function()
+      return false
+    end
+
+    local result, err =
+      rpc.request_sync("scan/extract", { source = "", lang = "tsx", fallback_namespace = "common" }, 1234)
+    assert.is_nil(result)
+    assert.are.equal("sync request timeout", err)
+
+    local request_timer = nil
+    for _, timer in ipairs(timers) do
+      if timer.delay == 1234 then
+        request_timer = timer
+        break
+      end
+    end
+    assert.is_not_nil(request_timer)
+    assert.is_true(request_timer.closed)
   end)
 end)
