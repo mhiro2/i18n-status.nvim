@@ -234,6 +234,56 @@ t(KEY);
 }
 
 #[test]
+fn ts_as_const_literal() {
+    let source = r#"
+const { t } = useTranslation("common");
+t("hello" as const);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:hello");
+}
+
+#[test]
+fn ts_satisfies_literal() {
+    let source = r#"
+const { t } = useTranslation("common");
+t("hello" satisfies string);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:hello");
+}
+
+#[test]
+fn ts_non_null_assertion() {
+    let source = r#"
+const KEY = "hello";
+const { t } = useTranslation("common");
+t(KEY!);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:hello");
+}
+
+#[test]
+fn const_with_as_const() {
+    let source = r#"
+const KEY = "hello" as const;
+const { t } = useTranslation("common");
+t(KEY);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:hello");
+}
+
+#[test]
 fn extract_resource_preserves_source_line_locations() {
     let source = r#"{
   "login": {

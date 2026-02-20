@@ -192,6 +192,12 @@ where
         }
         Expr::Ident(ident) => resolve_ident(ident.sym.as_ref()),
         Expr::Paren(paren) => eval_string_expr_with_resolver(&paren.expr, resolve_ident),
+        Expr::TsAs(ts_as) => eval_string_expr_with_resolver(&ts_as.expr, resolve_ident),
+        Expr::TsSatisfies(ts_sat) => eval_string_expr_with_resolver(&ts_sat.expr, resolve_ident),
+        Expr::TsNonNull(ts_nn) => eval_string_expr_with_resolver(&ts_nn.expr, resolve_ident),
+        Expr::TsConstAssertion(ts_const) => {
+            eval_string_expr_with_resolver(&ts_const.expr, resolve_ident)
+        }
         _ => None,
     }
 }
