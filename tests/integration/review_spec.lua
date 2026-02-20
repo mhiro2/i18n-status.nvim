@@ -27,6 +27,16 @@ local function list_item_keys(buf)
   return keys, lines
 end
 
+---@param ctx table
+---@return string[]
+local function view_item_keys(ctx)
+  local keys = {}
+  for _, item in ipairs(ctx.view_items or {}) do
+    table.insert(keys, item.key)
+  end
+  return keys
+end
+
 describe("doctor review", function()
   after_each(function()
     for _, win in ipairs(vim.api.nvim_list_wins()) do
@@ -230,6 +240,41 @@ describe("doctor review", function()
       assert.is_nil(cleared_winbar:find("[/", 1, true))
 
       vim.ui.input = original_input
+
+      pcall(vim.api.nvim_win_close, ctx.list_win, true)
+      pcall(vim.api.nvim_win_close, ctx.detail_win, true)
+    end)
+  end)
+
+  it("keeps internal view item order aligned with rendered list order", function()
+    state.init("en", { "en", "ja" })
+
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/en/common.json", '{"alpha":"Alpha","beta":"Beta","gamma":"Gamma"}')
+    helpers.write_file(
+      root .. "/locales/ja/common.json",
+      '{"alpha":"アルファ","beta":"ベータ","gamma":"ガンマ"}'
+    )
+
+    helpers.with_cwd(root, function()
+      local src = make_buf({ 't("alpha")', 't("beta")', 't("gamma")' }, "typescript")
+      local issues = {
+        { kind = "missing", key = "common:beta", severity = vim.log.levels.ERROR },
+        { kind = "drift_missing", key = "common:alpha", severity = vim.log.levels.WARN },
+        { kind = "drift_extra", key = "common:gamma", severity = vim.log.levels.WARN },
+      }
+      local cache = resources.ensure_index(root)
+      local ctx_mock = {
+        bufnr = src,
+        cache = cache,
+      }
+
+      local config = config_mod.setup({ primary_lang = "en" })
+      local ctx = review.open_doctor_results(issues, ctx_mock, config)
+
+      local rendered_keys = list_item_keys(ctx.list_buf)
+      local internal_keys = view_item_keys(ctx)
+      assert.same(rendered_keys, internal_keys)
 
       pcall(vim.api.nvim_win_close, ctx.list_win, true)
       pcall(vim.api.nvim_win_close, ctx.detail_win, true)
