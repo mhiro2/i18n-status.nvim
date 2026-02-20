@@ -284,6 +284,44 @@ t(KEY);
 }
 
 #[test]
+fn template_literal_with_const_expr() {
+    let source = r#"
+const prefix = "errors";
+const { t } = useTranslation("common");
+t(`${prefix}.not_found`);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:errors.not_found");
+}
+
+#[test]
+fn template_literal_mixed() {
+    let source = r#"
+const a = "errors";
+const b = "validation";
+const { t } = useTranslation("common");
+t(`${a}.${b}.required`);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:errors.validation.required");
+}
+
+#[test]
+fn template_literal_with_unresolvable_expr() {
+    let source = r#"
+const { t } = useTranslation("common");
+t(`${dynamic}.key`);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 0);
+}
+
+#[test]
 fn extract_resource_preserves_source_line_locations() {
     let source = r#"{
   "login": {

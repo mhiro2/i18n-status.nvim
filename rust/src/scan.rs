@@ -172,12 +172,14 @@ where
     match expr {
         Expr::Lit(Lit::Str(s)) => Some(wtf8_to_string(&s.value)),
         Expr::Tpl(tpl) => {
-            if !tpl.exprs.is_empty() {
-                return None;
-            }
+            // Template literals: quasis[0] expr[0] quasis[1] expr[1] ... quasis[N]
             let mut result = String::new();
-            for quasi in &tpl.quasis {
+            for (i, quasi) in tpl.quasis.iter().enumerate() {
                 result.push_str(&quasi.raw);
+                if let Some(expr) = tpl.exprs.get(i) {
+                    let val = eval_string_expr_with_resolver(expr, resolve_ident)?;
+                    result.push_str(&val);
+                }
             }
             Some(result)
         }
