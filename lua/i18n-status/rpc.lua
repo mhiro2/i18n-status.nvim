@@ -28,6 +28,7 @@ local read_buffer = ""
 local exit_hook_registered = false
 ---@type uv_timer_t|nil
 local stop_kill_timer = nil
+local handling_stdin_read_error = false
 
 ---@param timer uv_timer_t|nil
 local function stop_and_close_timer(timer)
@@ -64,6 +65,15 @@ local function clear_stop_kill_timer()
     end)
     stop_kill_timer = nil
   end
+end
+
+---@param line string
+---@return string
+local function prefixed_core_line(line)
+  if line:find("^i18n%-status%-core:") then
+    return line
+  end
+  return "i18n-status-core: " .. line
 end
 
 ---@return string|nil
@@ -148,10 +158,21 @@ end
 local function on_stderr(data)
   -- Log to stderr for debugging
   for line in data:gmatch("[^\n]+") do
+    if line:find("read error: failed to read from stdin", 1, true) then
+      if not handling_stdin_read_error then
+        handling_stdin_read_error = true
+        vim.schedule(function()
+          if process then
+            M.stop()
+          end
+        end)
+      end
+      return
+    end
     -- Only show warnings/errors to user, suppress info messages
     if line:find("error") or line:find("fatal") then
       vim.schedule(function()
-        vim.notify("i18n-status-core: " .. line, vim.log.levels.ERROR)
+        vim.notify(prefixed_core_line(line), vim.log.levels.ERROR)
       end)
     end
   end
@@ -203,6 +224,7 @@ function M.start()
     -- on exit
     vim.schedule(function()
       clear_stop_kill_timer()
+      handling_stdin_read_error = false
       process = nil
       -- Fail all pending requests
       for id, entry in pairs(pending) do
@@ -371,7 +393,32 @@ function M.request(method, params, cb, opts)
   }) .. "\n"
 
   if stdin_pipe then
-    stdin_pipe:write(msg)
+    local write_ok, write_err = pcall(function()
+      stdin_pipe:write(msg, function(err)
+        if not err then
+          return
+        end
+        local entry = take_pending(id)
+        if entry then
+          vim.schedule(function()
+            entry.cb("write failed: " .. tostring(err), nil)
+          end)
+        end
+        vim.schedule(function()
+          if process then
+            M.stop()
+          end
+        end)
+      end)
+    end)
+    if not write_ok then
+      take_pending(id)
+      cb("write failed: " .. tostring(write_err), nil)
+      if process then
+        M.stop()
+      end
+      return nil
+    end
   else
     take_pending(id)
     cb("stdin not available", nil)

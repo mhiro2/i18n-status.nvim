@@ -30,6 +30,7 @@ describe("extract", function()
   local select_queue
   local select_calls
   local hardcoded_items
+  local hardcoded_error
   local context_fn
   local cache_data
 
@@ -47,6 +48,7 @@ describe("extract", function()
     select_queue = {}
     select_calls = {}
     hardcoded_items = {}
+    hardcoded_error = nil
     cache_data = {
       languages = { "ja", "en" },
       index = { ja = {}, en = {} },
@@ -70,7 +72,7 @@ describe("extract", function()
       return "common"
     end)
     add_stub(hardcoded, "extract", function()
-      return hardcoded_items
+      return hardcoded_items, hardcoded_error
     end)
     add_stub(scan, "translation_context_at", function(bufnr, row, opts)
       return context_fn(bufnr, row, opts)
@@ -143,7 +145,7 @@ describe("extract", function()
         col = 0,
         end_lnum = 0,
         end_col = 4,
-        text = "ログインしてください",
+        text = "日本語メッセージ",
         kind = "jsx_text",
       },
     }
@@ -157,7 +159,7 @@ describe("extract", function()
     assert.are.equal(1, #write_calls)
     assert.are.equal("common", write_calls[1].namespace)
     assert.are.equal("key-0", write_calls[1].key_path)
-    assert.are.equal("ログインしてください", write_calls[1].translations.ja)
+    assert.are.equal("日本語メッセージ", write_calls[1].translations.ja)
     assert.are.equal("", write_calls[1].translations.en)
   end)
 
@@ -235,6 +237,30 @@ describe("extract", function()
     assert.are.equal("No translation hook found in this file. Continue?", select_calls[1].opts.prompt)
   end)
 
+  it("shows warning when hardcoded scan fails", function()
+    local buf = make_buf({ "TEXT" }, "typescriptreact", "/tmp/project/src/file3_err.tsx")
+    hardcoded_error = "timeout after 30000ms"
+    local cfg = config_mod.setup({ primary_lang = "ja" })
+
+    extract.run(buf, cfg, {})
+
+    assert.are.equal(0, #write_calls)
+
+    local found_scan_warning = false
+    local found_no_hardcoded_info = false
+    for _, call in ipairs(notify_calls) do
+      if call.msg:find("failed to scan hardcoded text", 1, true) then
+        found_scan_warning = true
+        assert.are.equal(vim.log.levels.WARN, call.level)
+      end
+      if call.msg:find("no hardcoded text found", 1, true) then
+        found_no_hardcoded_info = true
+      end
+    end
+    assert.is_true(found_scan_warning)
+    assert.is_false(found_no_hardcoded_info)
+  end)
+
   it("uses translation function alias for replacement", function()
     local buf = make_buf({ "TEXT" }, "typescriptreact", "/tmp/project/src/file4.tsx")
     hardcoded_items = {
@@ -263,6 +289,52 @@ describe("extract", function()
 
     local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
     assert.are.equal('{tr("common:hello")}', line)
+  end)
+
+  it("replaces multibyte text range without leaving broken bytes", function()
+    local buf = make_buf({ "<p>日本語</p>" }, "typescriptreact", "/tmp/project/src/file_multibyte.tsx")
+    hardcoded_items = {
+      {
+        bufnr = buf,
+        lnum = 0,
+        col = 3,
+        end_lnum = 0,
+        end_col = 9,
+        text = "日本語",
+        kind = "jsx_text",
+      },
+    }
+    input_queue = { "__DEFAULT__" }
+    local cfg = config_mod.setup({ primary_lang = "ja" })
+
+    extract.run(buf, cfg, {})
+
+    local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
+    assert.are.equal('<p>{t("common:key")}</p>', line)
+  end)
+
+  it("converts display columns to byte range for mixed ascii and wide text", function()
+    local buf = make_buf({
+      "<p>alpha module 日本語</p>",
+    }, "typescriptreact", "/tmp/project/src/file_mixed_width.tsx")
+    hardcoded_items = {
+      {
+        bufnr = buf,
+        lnum = 0,
+        col = 3,
+        end_lnum = 0,
+        end_col = 22,
+        text = "alpha module 日本語",
+        kind = "jsx_text",
+      },
+    }
+    input_queue = { "__DEFAULT__" }
+    local cfg = config_mod.setup({ primary_lang = "ja" })
+
+    extract.run(buf, cfg, {})
+
+    local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
+    assert.are.equal('<p>{t("common:key")}</p>', line)
   end)
 
   it("uses configured key separator for auto-generated keys", function()

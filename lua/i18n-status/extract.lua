@@ -148,12 +148,83 @@ end
 ---@field mark_id integer
 ---@field text string
 
+---@param line string
+---@param display_col integer
+---@return integer
+local function display_col_to_byte_col(line, display_col)
+  if line == "" then
+    return 0
+  end
+  local target = math.max(0, display_col or 0)
+  if target == 0 then
+    return 0
+  end
+  local total_width = vim.fn.strdisplaywidth(line)
+  if target >= total_width then
+    return #line
+  end
+
+  local byte_col = 0
+  local width = 0
+  local line_len = #line
+  while byte_col < line_len do
+    local first_byte = line:byte(byte_col + 1) or 0
+    local char_len = 1
+    if first_byte >= 0xF0 then
+      char_len = 4
+    elseif first_byte >= 0xE0 then
+      char_len = 3
+    elseif first_byte >= 0xC2 then
+      char_len = 2
+    end
+    local next_byte_col = math.min(byte_col + char_len, line_len)
+    local ch = line:sub(byte_col + 1, next_byte_col)
+    local ch_width = vim.api.nvim_strwidth(ch)
+    if width + ch_width > target then
+      return byte_col
+    end
+    width = width + ch_width
+    byte_col = next_byte_col
+    if width == target then
+      return byte_col
+    end
+  end
+  return line_len
+end
+
+---@param bufnr integer
+---@param item I18nStatusHardcodedItem
+---@return I18nStatusHardcodedItem
+local function item_with_byte_columns(bufnr, item)
+  local start_line = vim.api.nvim_buf_get_lines(bufnr, item.lnum, item.lnum + 1, false)[1] or ""
+  local end_line = start_line
+  if item.end_lnum ~= item.lnum then
+    end_line = vim.api.nvim_buf_get_lines(bufnr, item.end_lnum, item.end_lnum + 1, false)[1] or ""
+  end
+
+  local start_col = display_col_to_byte_col(start_line, item.col)
+  local end_col = display_col_to_byte_col(end_line, item.end_col)
+  if item.end_lnum == item.lnum and end_col < start_col then
+    end_col = start_col
+  end
+
+  return {
+    lnum = item.lnum,
+    col = start_col,
+    end_lnum = item.end_lnum,
+    end_col = end_col,
+    text = item.text,
+    kind = item.kind,
+  }
+end
+
 ---@param bufnr integer
 ---@param items I18nStatusHardcodedItem[]
 ---@return I18nStatusExtractTrackedItem[]
 local function create_tracked_items(bufnr, items)
   local tracked = {}
-  for _, item in ipairs(items) do
+  for _, source_item in ipairs(items) do
+    local item = item_with_byte_columns(bufnr, source_item)
     local mark_id = vim.api.nvim_buf_set_extmark(bufnr, EXTRACT_TRACK_NS, item.lnum, item.col, {
       end_row = item.end_lnum,
       end_col = item.end_col,
@@ -352,11 +423,15 @@ function M.run(bufnr, cfg, opts)
   local cache = resources.ensure_index(start_dir)
   local fallback_ns = resources.fallback_namespace(start_dir)
   local extract_cfg = (cfg and cfg.extract) or {}
-  local items = hardcoded.extract(bufnr, {
+  local items, hardcoded_err = hardcoded.extract(bufnr, {
     range = opts.range,
     min_length = extract_cfg.min_length,
     exclude_components = extract_cfg.exclude_components,
   })
+  if hardcoded_err then
+    vim.notify("i18n-status extract: failed to scan hardcoded text (" .. hardcoded_err .. ")", vim.log.levels.WARN)
+    return
+  end
   if #items == 0 then
     vim.notify("i18n-status extract: no hardcoded text found", vim.log.levels.INFO)
     return

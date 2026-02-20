@@ -10,13 +10,22 @@ describe("rpc", function()
   local kill_signals
   local timers
   local rpc
+  local pipes
+  local write_error
 
   local function make_pipe()
     local closed = false
-    return {
+    local pipe = {
+      on_read = nil,
       unref = function() end,
-      read_start = function() end,
-      write = function() end,
+      read_start = function(self, cb)
+        self.on_read = cb
+      end,
+      write = function(_, _, cb)
+        if cb then
+          cb(write_error)
+        end
+      end,
       close = function(_)
         closed = true
       end,
@@ -24,6 +33,8 @@ describe("rpc", function()
         return closed
       end,
     }
+    table.insert(pipes, pipe)
+    return pipe
   end
 
   before_each(function()
@@ -37,6 +48,8 @@ describe("rpc", function()
     spawned_exit_cb = nil
     kill_signals = {}
     timers = {}
+    pipes = {}
+    write_error = nil
 
     uv.new_pipe = function()
       return make_pipe()
@@ -138,5 +151,32 @@ describe("rpc", function()
     end
     assert.is_not_nil(request_timer)
     assert.is_true(request_timer.closed)
+  end)
+
+  it("stops process when stdin read error is emitted on stderr", function()
+    assert.is_true(rpc.start())
+    local stderr_pipe = pipes[3]
+    assert.is_not_nil(stderr_pipe)
+    assert.is_not_nil(stderr_pipe.on_read)
+
+    stderr_pipe.on_read(nil, "i18n-status-core: read error: failed to read from stdin\n")
+    vim.wait(50, function()
+      return #kill_signals >= 1
+    end, 1)
+
+    assert.are.same({ 15 }, kill_signals)
+  end)
+
+  it("fails sync request immediately when stdin write fails", function()
+    assert.is_true(rpc.start())
+    write_error = "broken pipe"
+
+    local result, err =
+      rpc.request_sync("scan/extract", { source = "", lang = "tsx", fallback_namespace = "common" }, 1234)
+
+    assert.is_nil(result)
+    assert.is_not_nil(err)
+    assert.is_true(err:find("write failed", 1, true) ~= nil)
+    assert.are.same({ 15 }, kill_signals)
   end)
 end)
