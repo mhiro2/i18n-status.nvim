@@ -1,26 +1,43 @@
 ---@class I18nStatus
 local M = {}
 
-require("i18n-status.types")
-
-local config_mod = require("i18n-status.config")
-local core = require("i18n-status.core")
-local state = require("i18n-status.state")
-local actions = require("i18n-status.actions")
-local resources = require("i18n-status.resources")
-local doctor = require("i18n-status.doctor")
-local util = require("i18n-status.util")
-local extract = require("i18n-status.extract")
-local rpc = require("i18n-status.rpc")
+local types_loaded = false
+local config_mod
+local core
+local state
+local actions
+local resources
+local doctor
+local util
+local extract
+local rpc
 
 local config = nil
 local setup_done = false
 local group = nil
 local auto_hover_autocmd = nil
+
+local function ensure_modules()
+  if not types_loaded then
+    require("i18n-status.types")
+    types_loaded = true
+  end
+  config_mod = config_mod or require("i18n-status.config")
+  core = core or require("i18n-status.core")
+  state = state or require("i18n-status.state")
+  actions = actions or require("i18n-status.actions")
+  resources = resources or require("i18n-status.resources")
+  doctor = doctor or require("i18n-status.doctor")
+  util = util or require("i18n-status.util")
+  extract = extract or require("i18n-status.extract")
+  rpc = rpc or require("i18n-status.rpc")
+end
+
 ---@param cfg I18nStatusConfig
 ---@param bufnr integer|nil
 ---@param should_refresh boolean|nil
 local function setup_watch(cfg, bufnr, should_refresh)
+  ensure_modules()
   if cfg.resource_watch and cfg.resource_watch.enabled ~= false then
     if should_refresh == false then
       return
@@ -79,6 +96,7 @@ local function setup_watch(cfg, bufnr, should_refresh)
 end
 
 local function configure_auto_hover()
+  ensure_modules()
   if auto_hover_autocmd then
     pcall(vim.api.nvim_del_autocmd, auto_hover_autocmd)
     auto_hover_autocmd = nil
@@ -114,6 +132,7 @@ end
 ---@param bufnr integer
 ---@return I18nStatusProjectState, string|nil
 local function project_for_buf(bufnr)
+  ensure_modules()
   local start_dir = resources.start_dir(bufnr)
   local cache = resources.ensure_index(start_dir)
   return state.project_for_buf(bufnr, cache)
@@ -121,6 +140,7 @@ end
 
 ---@param bufnr integer
 local function goto_definition(bufnr)
+  ensure_modules()
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return false
   end
@@ -138,6 +158,7 @@ end
 
 ---@param opts I18nStatusConfig|nil
 function M.setup(opts)
+  ensure_modules()
   local need_refresh_all = false
   if not config then
     config = config_mod.setup(opts)
@@ -220,6 +241,7 @@ end
 
 ---@param bufnr integer
 function M.attach(bufnr)
+  ensure_modules()
   if not setup_done then
     M.setup({})
   end
@@ -230,6 +252,7 @@ function M.attach(bufnr)
 end
 
 function M.ensure_setup()
+  ensure_modules()
   if not setup_done then
     M.setup({})
   end
@@ -241,6 +264,7 @@ function M.get_config()
 end
 
 function M.lang_next()
+  ensure_modules()
   M.ensure_setup()
   if guard_doctor_open() then
     return
@@ -252,6 +276,7 @@ function M.lang_next()
 end
 
 function M.lang_prev()
+  ensure_modules()
   M.ensure_setup()
   if guard_doctor_open() then
     return
@@ -264,6 +289,7 @@ end
 
 ---@param lang string
 function M.lang_set(lang)
+  ensure_modules()
   M.ensure_setup()
   if guard_doctor_open() then
     return
@@ -291,6 +317,7 @@ end
 ---@param _cursor_pos integer
 ---@return string[]
 function M.lang_complete(arg_lead, _cmdline, _cursor_pos)
+  ensure_modules()
   M.ensure_setup()
   local bufnr = vim.api.nvim_get_current_buf()
   local project = select(1, project_for_buf(bufnr))
@@ -309,11 +336,13 @@ end
 
 ---@param bufnr integer|nil
 function M.goto_definition(bufnr)
+  ensure_modules()
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   return goto_definition(bufnr)
 end
 
 function M.hover()
+  ensure_modules()
   M.ensure_setup()
   local bufnr = vim.api.nvim_get_current_buf()
   if core.should_refresh(bufnr) then
@@ -323,6 +352,7 @@ function M.hover()
 end
 
 function M.doctor()
+  ensure_modules()
   M.ensure_setup()
   local review = require("i18n-status.review")
   if review.is_doctor_open() then
@@ -333,11 +363,13 @@ function M.doctor()
 end
 
 function M.doctor_cancel()
+  ensure_modules()
   M.ensure_setup()
   doctor.cancel()
 end
 
 function M.refresh()
+  ensure_modules()
   M.ensure_setup()
   local bufnr = vim.api.nvim_get_current_buf()
   if core.should_refresh(bufnr) then
@@ -349,6 +381,7 @@ function M.refresh()
 end
 
 function M.add_key()
+  ensure_modules()
   M.ensure_setup()
   local review = require("i18n-status.review")
   review.add_key_command(config)
@@ -356,6 +389,7 @@ end
 
 ---@param opts? { start_line?: integer, end_line?: integer }
 function M.extract(opts)
+  ensure_modules()
   M.ensure_setup()
   local bufnr = vim.api.nvim_get_current_buf()
   if not core.should_refresh(bufnr) then

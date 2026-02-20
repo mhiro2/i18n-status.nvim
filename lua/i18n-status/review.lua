@@ -511,8 +511,11 @@ local function render_list(buf, ctx)
   ctx.line_to_section = line_to_section
 
   local view_items = {}
-  for _, item in pairs(line_to_item) do
-    table.insert(view_items, item)
+  for line = 1, #lines do
+    local item = line_to_item[line]
+    if item then
+      table.insert(view_items, item)
+    end
   end
   ctx.view_items = view_items
 

@@ -21,12 +21,16 @@ end
 describe("extract", function()
   local stubs = {}
   local original_input
+  local original_select
   local original_notify
   local write_calls
   local notify_calls
   local input_queue
   local input_calls
+  local select_queue
+  local select_calls
   local hardcoded_items
+  local hardcoded_error
   local context_fn
   local cache_data
 
@@ -41,7 +45,10 @@ describe("extract", function()
     notify_calls = {}
     input_queue = {}
     input_calls = {}
+    select_queue = {}
+    select_calls = {}
     hardcoded_items = {}
+    hardcoded_error = nil
     cache_data = {
       languages = { "ja", "en" },
       index = { ja = {}, en = {} },
@@ -65,7 +72,7 @@ describe("extract", function()
       return "common"
     end)
     add_stub(hardcoded, "extract", function()
-      return hardcoded_items
+      return hardcoded_items, hardcoded_error
     end)
     add_stub(scan, "translation_context_at", function(bufnr, row, opts)
       return context_fn(bufnr, row, opts)
@@ -94,6 +101,21 @@ describe("extract", function()
       on_confirm(next_value)
     end
 
+    original_select = vim.ui.select
+    vim.ui.select = function(items, opts, on_choice)
+      table.insert(select_calls, { items = items, opts = opts })
+      local next_value = table.remove(select_queue, 1)
+      if next_value == "__DEFAULT__" then
+        on_choice(items[1])
+        return
+      end
+      if next_value == "__NONE__" then
+        on_choice(nil)
+        return
+      end
+      on_choice(next_value)
+    end
+
     original_notify = vim.notify
     vim.notify = function(msg, level)
       table.insert(notify_calls, { msg = msg, level = level })
@@ -102,6 +124,7 @@ describe("extract", function()
 
   after_each(function()
     vim.ui.input = original_input
+    vim.ui.select = original_select
     vim.notify = original_notify
     for _, s in ipairs(stubs) do
       s:revert()
@@ -122,7 +145,7 @@ describe("extract", function()
         col = 0,
         end_lnum = 0,
         end_col = 4,
-        text = "ログインしてください",
+        text = "日本語メッセージ",
         kind = "jsx_text",
       },
     }
@@ -136,7 +159,7 @@ describe("extract", function()
     assert.are.equal(1, #write_calls)
     assert.are.equal("common", write_calls[1].namespace)
     assert.are.equal("key-0", write_calls[1].key_path)
-    assert.are.equal("ログインしてください", write_calls[1].translations.ja)
+    assert.are.equal("日本語メッセージ", write_calls[1].translations.ja)
     assert.are.equal("", write_calls[1].translations.en)
   end)
 
@@ -201,7 +224,7 @@ describe("extract", function()
         has_any_hook = false,
       }
     end
-    input_queue = { "n" }
+    select_queue = { "No" }
     local cfg = config_mod.setup({ primary_lang = "ja" })
 
     extract.run(buf, cfg, {})
@@ -209,6 +232,33 @@ describe("extract", function()
     local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
     assert.are.equal("TEXT", line)
     assert.are.equal(0, #write_calls)
+    assert.are.equal(1, #select_calls)
+    assert.same({ "Yes", "No" }, select_calls[1].items)
+    assert.are.equal("No translation hook found in this file. Continue?", select_calls[1].opts.prompt)
+  end)
+
+  it("shows warning when hardcoded scan fails", function()
+    local buf = make_buf({ "TEXT" }, "typescriptreact", "/tmp/project/src/file3_err.tsx")
+    hardcoded_error = "timeout after 30000ms"
+    local cfg = config_mod.setup({ primary_lang = "ja" })
+
+    extract.run(buf, cfg, {})
+
+    assert.are.equal(0, #write_calls)
+
+    local found_scan_warning = false
+    local found_no_hardcoded_info = false
+    for _, call in ipairs(notify_calls) do
+      if call.msg:find("failed to scan hardcoded text", 1, true) then
+        found_scan_warning = true
+        assert.are.equal(vim.log.levels.WARN, call.level)
+      end
+      if call.msg:find("no hardcoded text found", 1, true) then
+        found_no_hardcoded_info = true
+      end
+    end
+    assert.is_true(found_scan_warning)
+    assert.is_false(found_no_hardcoded_info)
   end)
 
   it("uses translation function alias for replacement", function()
@@ -239,6 +289,52 @@ describe("extract", function()
 
     local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
     assert.are.equal('{tr("common:hello")}', line)
+  end)
+
+  it("replaces multibyte text range without leaving broken bytes", function()
+    local buf = make_buf({ "<p>日本語</p>" }, "typescriptreact", "/tmp/project/src/file_multibyte.tsx")
+    hardcoded_items = {
+      {
+        bufnr = buf,
+        lnum = 0,
+        col = 3,
+        end_lnum = 0,
+        end_col = 9,
+        text = "日本語",
+        kind = "jsx_text",
+      },
+    }
+    input_queue = { "__DEFAULT__" }
+    local cfg = config_mod.setup({ primary_lang = "ja" })
+
+    extract.run(buf, cfg, {})
+
+    local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
+    assert.are.equal('<p>{t("common:key")}</p>', line)
+  end)
+
+  it("converts display columns to byte range for mixed ascii and wide text", function()
+    local buf = make_buf({
+      "<p>alpha module 日本語</p>",
+    }, "typescriptreact", "/tmp/project/src/file_mixed_width.tsx")
+    hardcoded_items = {
+      {
+        bufnr = buf,
+        lnum = 0,
+        col = 3,
+        end_lnum = 0,
+        end_col = 22,
+        text = "alpha module 日本語",
+        kind = "jsx_text",
+      },
+    }
+    input_queue = { "__DEFAULT__" }
+    local cfg = config_mod.setup({ primary_lang = "ja" })
+
+    extract.run(buf, cfg, {})
+
+    local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
+    assert.are.equal('<p>{t("common:key")}</p>', line)
   end)
 
   it("uses configured key separator for auto-generated keys", function()
@@ -382,7 +478,7 @@ describe("extract", function()
         has_any_hook = false,
       }
     end
-    input_queue = { "n" }
+    select_queue = { "No" }
     local cfg = config_mod.setup({ primary_lang = "ja" })
     local cursor_calls = {}
     local clear_calls = {}

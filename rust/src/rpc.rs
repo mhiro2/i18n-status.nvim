@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{self, BufRead, BufReader, Write};
+use std::thread;
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 pub struct Request {
@@ -98,9 +100,18 @@ fn parse_message_line(line: &str) -> Result<Option<Request>> {
 fn read_message_from_reader<R: BufRead>(reader: &mut R) -> Result<Option<Request>> {
     loop {
         let mut line = String::new();
-        let bytes_read = reader
-            .read_line(&mut line)
-            .context("failed to read from stdin")?;
+        let bytes_read = match reader.read_line(&mut line) {
+            Ok(bytes_read) => bytes_read,
+            Err(err) => match err.kind() {
+                io::ErrorKind::Interrupted => continue,
+                io::ErrorKind::BrokenPipe => return Ok(None),
+                io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                _ => return Err(err).context("failed to read from stdin"),
+            },
+        };
 
         if bytes_read == 0 {
             return Ok(None); // EOF
@@ -151,7 +162,65 @@ impl Default for Transport {
 #[cfg(test)]
 mod tests {
     use super::read_message_from_reader;
-    use std::io::{BufReader, Cursor};
+    use std::io::{self, BufRead, BufReader, Cursor, Read};
+
+    struct BrokenPipeReader;
+
+    impl Read for BrokenPipeReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+        }
+    }
+
+    impl BufRead for BrokenPipeReader {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+        }
+
+        fn consume(&mut self, _amt: usize) {}
+
+        fn read_line(&mut self, _buf: &mut String) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+        }
+    }
+
+    struct InterruptedThenMessageReader {
+        interrupted_once: bool,
+        cursor: Cursor<Vec<u8>>,
+    }
+
+    impl InterruptedThenMessageReader {
+        fn new(input: &str) -> Self {
+            Self {
+                interrupted_once: false,
+                cursor: Cursor::new(input.as_bytes().to_vec()),
+            }
+        }
+    }
+
+    impl Read for InterruptedThenMessageReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.cursor.read(buf)
+        }
+    }
+
+    impl BufRead for InterruptedThenMessageReader {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            self.cursor.fill_buf()
+        }
+
+        fn consume(&mut self, amt: usize) {
+            self.cursor.consume(amt)
+        }
+
+        fn read_line(&mut self, buf: &mut String) -> io::Result<usize> {
+            if !self.interrupted_once {
+                self.interrupted_once = true;
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "interrupted"));
+            }
+            self.cursor.read_line(buf)
+        }
+    }
 
     #[test]
     fn read_message_skips_blank_lines() {
@@ -176,5 +245,23 @@ mod tests {
 
         let second = read_message_from_reader(&mut reader).expect("second read should succeed");
         assert!(second.is_none());
+    }
+
+    #[test]
+    fn read_message_treats_broken_pipe_as_eof() {
+        let mut reader = BrokenPipeReader;
+        let request =
+            read_message_from_reader(&mut reader).expect("broken pipe should be treated as eof");
+        assert!(request.is_none());
+    }
+
+    #[test]
+    fn read_message_retries_after_interrupted() {
+        let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n";
+        let mut reader = InterruptedThenMessageReader::new(input);
+        let request = read_message_from_reader(&mut reader)
+            .expect("read_message should recover from interrupted")
+            .expect("request should be parsed");
+        assert_eq!(request.method, "initialize");
     }
 }

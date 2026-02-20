@@ -1,5 +1,6 @@
 local config_mod = require("i18n-status.config")
 local extract = require("i18n-status.extract")
+local hardcoded = require("i18n-status.hardcoded")
 local helpers = require("tests.helpers")
 
 local function make_buf(lines, ft, name)
@@ -104,6 +105,45 @@ describe("extract integration", function()
       local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
       assert.is_true(lines[4]:find('{t("common:first-text")}', 1, true) ~= nil)
       assert.are.equal("    <p>Second text</p>", lines[5])
+    end)
+  end)
+
+  it("preserves closing tags when extracting mixed-width jsx text", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", "{}")
+    helpers.write_file(root .. "/locales/en/common.json", "{}")
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf({
+        "import { useTranslation } from 'react-i18next'",
+        "export function Page() {",
+        "  const { t } = useTranslation()",
+        "  return (",
+        "    <>",
+        "      <p>alpha module 日本語</p>",
+        "      <p>beta module 多言語</p>",
+        "    </>",
+        "  )",
+        "}",
+      }, "typescriptreact", root .. "/src/page.tsx")
+      if skip_if_no_parser(buf, "tsx", "typescript") then
+        return
+      end
+      local cfg = config_mod.setup({ primary_lang = "ja" })
+
+      vim.ui.input = function(opts, on_confirm)
+        on_confirm(opts.default)
+      end
+
+      extract.run(buf, cfg, {})
+
+      local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+      assert.are.equal('      <p>{t("common:key")}</p>', lines[6])
+      assert.are.equal('      <p>{t("common:key-0")}</p>', lines[7])
+
+      local items, err = hardcoded.extract(buf, { min_length = 2 })
+      assert.is_nil(err)
+      assert.are.equal(0, #items)
     end)
   end)
 end)

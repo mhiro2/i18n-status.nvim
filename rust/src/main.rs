@@ -41,6 +41,9 @@ impl Server {
                     break;
                 }
                 Err(e) => {
+                    if e.to_string().contains("failed to read from stdin") {
+                        break;
+                    }
                     eprintln!("i18n-status-core: read error: {}", e);
                     continue;
                 }
