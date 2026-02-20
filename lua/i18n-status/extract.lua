@@ -51,6 +51,20 @@ local function prompt_for_item(item)
   return string.format('Extract "%s" (%d:%d): ', preview, item.lnum + 1, item.col + 1)
 end
 
+---@param on_confirm fun()
+---@param on_cancel fun()
+local function confirm_without_hook(on_confirm, on_cancel)
+  vim.ui.select({ "Yes", "No" }, {
+    prompt = "No translation hook found in this file. Continue?",
+  }, function(choice)
+    if choice == "Yes" then
+      on_confirm()
+      return
+    end
+    on_cancel()
+  end)
+end
+
 ---@param bufnr integer
 local function clear_extract_highlight(bufnr)
   if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
@@ -488,13 +502,11 @@ function M.run(bufnr, cfg, opts)
     return
   end
 
-  vim.ui.input({ prompt = "No translation hook found in this file. Continue? (y/N): " }, function(answer)
-    if not answer or answer:lower() ~= "y" then
-      cleanup_visual_state()
-      vim.notify("i18n-status extract: cancelled", vim.log.levels.INFO)
-      return
-    end
+  confirm_without_hook(function()
     run_loop(1)
+  end, function()
+    cleanup_visual_state()
+    vim.notify("i18n-status extract: cancelled", vim.log.levels.INFO)
   end)
 end
 

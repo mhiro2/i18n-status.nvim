@@ -21,11 +21,14 @@ end
 describe("extract", function()
   local stubs = {}
   local original_input
+  local original_select
   local original_notify
   local write_calls
   local notify_calls
   local input_queue
   local input_calls
+  local select_queue
+  local select_calls
   local hardcoded_items
   local context_fn
   local cache_data
@@ -41,6 +44,8 @@ describe("extract", function()
     notify_calls = {}
     input_queue = {}
     input_calls = {}
+    select_queue = {}
+    select_calls = {}
     hardcoded_items = {}
     cache_data = {
       languages = { "ja", "en" },
@@ -94,6 +99,21 @@ describe("extract", function()
       on_confirm(next_value)
     end
 
+    original_select = vim.ui.select
+    vim.ui.select = function(items, opts, on_choice)
+      table.insert(select_calls, { items = items, opts = opts })
+      local next_value = table.remove(select_queue, 1)
+      if next_value == "__DEFAULT__" then
+        on_choice(items[1])
+        return
+      end
+      if next_value == "__NONE__" then
+        on_choice(nil)
+        return
+      end
+      on_choice(next_value)
+    end
+
     original_notify = vim.notify
     vim.notify = function(msg, level)
       table.insert(notify_calls, { msg = msg, level = level })
@@ -102,6 +122,7 @@ describe("extract", function()
 
   after_each(function()
     vim.ui.input = original_input
+    vim.ui.select = original_select
     vim.notify = original_notify
     for _, s in ipairs(stubs) do
       s:revert()
@@ -201,7 +222,7 @@ describe("extract", function()
         has_any_hook = false,
       }
     end
-    input_queue = { "n" }
+    select_queue = { "No" }
     local cfg = config_mod.setup({ primary_lang = "ja" })
 
     extract.run(buf, cfg, {})
@@ -209,6 +230,9 @@ describe("extract", function()
     local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
     assert.are.equal("TEXT", line)
     assert.are.equal(0, #write_calls)
+    assert.are.equal(1, #select_calls)
+    assert.same({ "Yes", "No" }, select_calls[1].items)
+    assert.are.equal("No translation hook found in this file. Continue?", select_calls[1].opts.prompt)
   end)
 
   it("uses translation function alias for replacement", function()
@@ -382,7 +406,7 @@ describe("extract", function()
         has_any_hook = false,
       }
     end
-    input_queue = { "n" }
+    select_queue = { "No" }
     local cfg = config_mod.setup({ primary_lang = "ja" })
     local cursor_calls = {}
     local clear_calls = {}
