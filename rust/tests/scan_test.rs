@@ -322,6 +322,71 @@ t(`${dynamic}.key`);
 }
 
 #[test]
+fn conditional_both_branches() {
+    let source = r#"
+const { t } = useTranslation("common");
+t(isError ? "error.title" : "success.title");
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["key"], "common:error.title");
+    assert_eq!(items[1]["key"], "common:success.title");
+}
+
+#[test]
+fn nested_conditional() {
+    let source = r#"
+const { t } = useTranslation("common");
+t(a ? "x" : b ? "y" : "z");
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["key"], "common:x");
+    assert_eq!(items[1]["key"], "common:y");
+    assert_eq!(items[2]["key"], "common:z");
+}
+
+#[test]
+fn conditional_one_branch_unresolvable() {
+    let source = r#"
+const { t } = useTranslation("common");
+t(cond ? dynamicVar : "fallback");
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:fallback");
+}
+
+#[test]
+fn conditional_inside_concatenation() {
+    let source = r#"
+const { t } = useTranslation("common");
+t("errors." + (cond ? "a" : "b"));
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["key"], "common:errors.a");
+    assert_eq!(items[1]["key"], "common:errors.b");
+}
+
+#[test]
+fn conditional_inside_template_literal() {
+    let source = r#"
+const { t } = useTranslation("common");
+t(`${cond ? "a" : "b"}.title`);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["key"], "common:a.title");
+    assert_eq!(items[1]["key"], "common:b.title");
+}
+
+#[test]
 fn extract_resource_preserves_source_line_locations() {
     let source = r#"{
   "login": {

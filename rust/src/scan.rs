@@ -211,6 +211,80 @@ fn eval_string_expr(expr: &Expr, line: u32, const_bindings: &[ConstBinding]) -> 
     })
 }
 
+/// Evaluate a string expression that may produce multiple values (e.g. ternary).
+/// Returns all statically resolvable branches. For non-branching expressions,
+/// returns a single-element vec or empty vec.
+fn eval_string_exprs_multi<F>(expr: &Expr, resolve_ident: &F) -> Vec<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match expr {
+        Expr::Cond(cond) => {
+            let mut results = eval_string_exprs_multi(&cond.cons, resolve_ident);
+            results.extend(eval_string_exprs_multi(&cond.alt, resolve_ident));
+            results
+        }
+        Expr::Bin(bin) if bin.op == BinaryOp::Add => {
+            let lefts = eval_string_exprs_multi(&bin.left, resolve_ident);
+            let rights = eval_string_exprs_multi(&bin.right, resolve_ident);
+            if lefts.is_empty() || rights.is_empty() {
+                return Vec::new();
+            }
+            let mut results = Vec::with_capacity(lefts.len() * rights.len());
+            for l in &lefts {
+                for r in &rights {
+                    results.push(format!("{}{}", l, r));
+                }
+            }
+            results
+        }
+        Expr::Tpl(tpl) => {
+            // Start with a single empty prefix, then for each quasi+expr pair,
+            // compute the cartesian product of accumulated prefixes × expr values.
+            let mut accum: Vec<String> = Vec::new();
+            for (i, quasi) in tpl.quasis.iter().enumerate() {
+                let quasi_str: &str = &quasi.raw;
+                if accum.is_empty() {
+                    accum.push(quasi_str.to_string());
+                } else {
+                    for s in &mut accum {
+                        s.push_str(quasi_str);
+                    }
+                }
+                if let Some(expr) = tpl.exprs.get(i) {
+                    let vals = eval_string_exprs_multi(expr, resolve_ident);
+                    if vals.is_empty() {
+                        return Vec::new();
+                    }
+                    let mut next = Vec::with_capacity(accum.len() * vals.len());
+                    for prefix in &accum {
+                        for v in &vals {
+                            next.push(format!("{}{}", prefix, v));
+                        }
+                    }
+                    accum = next;
+                }
+            }
+            accum
+        }
+        Expr::Paren(paren) => eval_string_exprs_multi(&paren.expr, resolve_ident),
+        Expr::TsAs(ts_as) => eval_string_exprs_multi(&ts_as.expr, resolve_ident),
+        Expr::TsSatisfies(ts_sat) => eval_string_exprs_multi(&ts_sat.expr, resolve_ident),
+        Expr::TsNonNull(ts_nn) => eval_string_exprs_multi(&ts_nn.expr, resolve_ident),
+        Expr::TsConstAssertion(ts_const) => eval_string_exprs_multi(&ts_const.expr, resolve_ident),
+        _ => eval_string_expr_with_resolver(expr, resolve_ident)
+            .into_iter()
+            .collect(),
+    }
+}
+
+/// Evaluate multiple string values from an expression, resolving const bindings.
+fn eval_string_exprs(expr: &Expr, line: u32, const_bindings: &[ConstBinding]) -> Vec<String> {
+    eval_string_exprs_multi(expr, &|name| {
+        resolve_const_at_line(name, line, const_bindings)
+    })
+}
+
 /// Collect const declarations with lexical scope and declaration order.
 fn collect_consts(module: &Module, cm: &SourceMap) -> Vec<ConstBinding> {
     struct ConstCollector<'a> {
@@ -941,11 +1015,6 @@ impl<'a> CallVisitor<'a> {
 
         let (lnum, col, end_col) = span_to_loc(self.cm, first_arg.expr.span());
 
-        let value = match eval_string_expr(&first_arg.expr, lnum, self.const_bindings) {
-            Some(v) => v,
-            None => return,
-        };
-
         // Check range
         if let Some(range) = self.range {
             if lnum < range.start_line || lnum > range.end_line {
@@ -953,18 +1022,23 @@ impl<'a> CallVisitor<'a> {
             }
         }
 
-        // Determine namespace
-        let (key, ns, fallback) = self.resolve_namespace(&value, lnum);
+        let values = eval_string_exprs(&first_arg.expr, lnum, self.const_bindings);
+        if values.is_empty() {
+            return;
+        }
 
-        self.items.push(ScanItem {
-            key,
-            raw: value,
-            namespace: ns,
-            lnum,
-            col,
-            end_col,
-            fallback,
-        });
+        for value in values {
+            let (key, ns, fallback) = self.resolve_namespace(&value, lnum);
+            self.items.push(ScanItem {
+                key,
+                raw: value,
+                namespace: ns,
+                lnum,
+                col,
+                end_col,
+                fallback,
+            });
+        }
     }
 
     fn is_translation_call(&self, func_name: &str, call: &CallExpr) -> bool {
