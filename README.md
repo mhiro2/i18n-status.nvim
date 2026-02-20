@@ -87,6 +87,7 @@ Examples:
 - 🩺 **Doctor + Review**: Diagnose project-wide issues and review/fix them in a two-pane floating UI where the left list drives every action and the right side stays as a live preview.
 - ✂️ **Interactive JSX extraction**: Detect hardcoded JSX text, then extract it with per-item prompts that show text preview, jump to the target, and highlight the exact replacement range.
 - ⚡ **Completion**: blink.cmp source (first argument only), missing-first sorting.
+- 🧩 **Dynamic key resolution**: const refs, template interpolations, ternary branches — resolved statically via Rust AST.
 - 🔄 **Auto reload**: Translation file changes update inline quickly (watcher + cache).
 
 ## 🧰 Requirements
@@ -351,20 +352,23 @@ require("i18n-status").setup({
 >   2. `next-intl` root file (`messages/{lang}.json`, priority 40)
 >   3. `next-intl` namespace file (`messages/{lang}/{namespace}.json`, priority 50)
 
-## 🧩 Dynamic i18n key support (limited)
+## 🧩 Dynamic i18n key support
 
 Supported:
 
 - String literals
 - Literal concatenation (e.g. `"a" + "b"`)
-- Template literals without `${}` (e.g. `` `a.b` ``)
+- Template literals (e.g. `` `a.b` ``)
+- Template literals with const interpolations (e.g. `` `${prefix}.key` `` where `prefix` is a `const`)
 - `const` string references in the same scope
+- TypeScript type assertions (`"key" as const`, `"key" satisfies string`, `key!`)
+- Conditional (ternary) expressions — both branches are emitted (e.g. `cond ? "a" : "b"` → 2 keys)
 
-Not supported (initially):
+Not supported:
 
 - Runtime-dependent values
 - Expressions with function calls
-- Any runtime evaluation
+- Conditional const bindings (`const K = cond ? "a" : "b"; t(K)` — use `t(cond ? "a" : "b")` directly instead)
 
 ## 📄 License
 

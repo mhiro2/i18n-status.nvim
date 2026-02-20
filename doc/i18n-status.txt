@@ -370,16 +370,21 @@ Note: checkhealth does NOT run :I18nDoctor.
 ==============================================================================
 8. Notes / limitations                                          *i18n-status-notes*
 
-Dynamic key support is intentionally limited (no runtime evaluation).
-Supported examples:
+Dynamic key support (no runtime evaluation).
+Supported:
   - string literals
   - literal concatenation ("a" + "b")
-  - template literals without ${}
+  - template literals (`a.b`)
+  - template literals with const interpolations (`${prefix}.key`)
   - const string references in the same scope
+  - TypeScript type assertions ("key" as const, satisfies, !)
+  - conditional (ternary) expressions — both branches emitted
 
-Not supported (initially):
+Not supported:
   - runtime-dependent expressions
-  - template literals with ${}
+  - expressions with function calls
+  - conditional const bindings (const K = cond ? "a" : "b"; t(K))
+    Use t(cond ? "a" : "b") directly instead.
 
 next-intl root file priority:
   When both messages/{lang}.json (root file) and

@@ -234,6 +234,159 @@ t(KEY);
 }
 
 #[test]
+fn ts_as_const_literal() {
+    let source = r#"
+const { t } = useTranslation("common");
+t("hello" as const);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:hello");
+}
+
+#[test]
+fn ts_satisfies_literal() {
+    let source = r#"
+const { t } = useTranslation("common");
+t("hello" satisfies string);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:hello");
+}
+
+#[test]
+fn ts_non_null_assertion() {
+    let source = r#"
+const KEY = "hello";
+const { t } = useTranslation("common");
+t(KEY!);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:hello");
+}
+
+#[test]
+fn const_with_as_const() {
+    let source = r#"
+const KEY = "hello" as const;
+const { t } = useTranslation("common");
+t(KEY);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:hello");
+}
+
+#[test]
+fn template_literal_with_const_expr() {
+    let source = r#"
+const prefix = "errors";
+const { t } = useTranslation("common");
+t(`${prefix}.not_found`);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:errors.not_found");
+}
+
+#[test]
+fn template_literal_mixed() {
+    let source = r#"
+const a = "errors";
+const b = "validation";
+const { t } = useTranslation("common");
+t(`${a}.${b}.required`);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:errors.validation.required");
+}
+
+#[test]
+fn template_literal_with_unresolvable_expr() {
+    let source = r#"
+const { t } = useTranslation("common");
+t(`${dynamic}.key`);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 0);
+}
+
+#[test]
+fn conditional_both_branches() {
+    let source = r#"
+const { t } = useTranslation("common");
+t(isError ? "error.title" : "success.title");
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["key"], "common:error.title");
+    assert_eq!(items[1]["key"], "common:success.title");
+}
+
+#[test]
+fn nested_conditional() {
+    let source = r#"
+const { t } = useTranslation("common");
+t(a ? "x" : b ? "y" : "z");
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["key"], "common:x");
+    assert_eq!(items[1]["key"], "common:y");
+    assert_eq!(items[2]["key"], "common:z");
+}
+
+#[test]
+fn conditional_one_branch_unresolvable() {
+    let source = r#"
+const { t } = useTranslation("common");
+t(cond ? dynamicVar : "fallback");
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:fallback");
+}
+
+#[test]
+fn conditional_inside_concatenation() {
+    let source = r#"
+const { t } = useTranslation("common");
+t("errors." + (cond ? "a" : "b"));
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["key"], "common:errors.a");
+    assert_eq!(items[1]["key"], "common:errors.b");
+}
+
+#[test]
+fn conditional_inside_template_literal() {
+    let source = r#"
+const { t } = useTranslation("common");
+t(`${cond ? "a" : "b"}.title`);
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["key"], "common:a.title");
+    assert_eq!(items[1]["key"], "common:b.title");
+}
+
+#[test]
 fn extract_resource_preserves_source_line_locations() {
     let source = r#"{
   "login": {
