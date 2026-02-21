@@ -98,8 +98,10 @@ describe("resource change handling", function()
       })
 
       core.refresh_all(config)
-      assert.is_true(inline_text(buf1):find("A", 1, true) ~= nil)
-      assert.is_true(inline_text(buf2):find("B", 1, true) ~= nil)
+      local refreshed = vim.wait(1000, function()
+        return inline_text(buf1):find("A", 1, true) ~= nil and inline_text(buf2):find("B", 1, true) ~= nil
+      end, 10)
+      assert.is_true(refreshed)
     end)
   end)
 
