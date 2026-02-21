@@ -222,7 +222,7 @@ describe("ops.rename", function()
     end)
   end)
 
-  it("does not crash when buffer text APIs fail during rename", function()
+  it("returns failure when buffer text update fails during rename", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
     helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
@@ -277,7 +277,9 @@ describe("ops.rename", function()
       vim.api.nvim_buf_get_text = original_get_text
       vim.api.nvim_buf_set_text = original_set_text
 
-      assert.is_true(ok, err)
+      assert.is_false(ok)
+      assert.is_truthy(err)
+      assert.is_true(err:find("resource files were renamed", 1, true) ~= nil)
       local ja = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
       local en = vim.fn.json_decode(helpers.read_file(root .. "/locales/en/common.json"))
       assert.is_nil(ja.rename.title)

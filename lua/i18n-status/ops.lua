@@ -87,9 +87,11 @@ end
 ---@param new_ns string
 ---@param explicit_ns boolean
 ---@param fallback_ns string
+---@return string[] edit_errors
 local function rename_in_buffer(bufnr, old_key, new_key, new_ns, explicit_ns, fallback_ns)
   local items = rpc_scan_extract(bufnr, fallback_ns)
   local edits = {}
+  local edit_errors = {}
   for _, item in ipairs(items) do
     if item.key == old_key then
       local new_raw = new_key
@@ -127,9 +129,17 @@ local function rename_in_buffer(bufnr, old_key, new_key, new_ns, explicit_ns, fa
         end
       end
       local new_text = quote .. edit.new_raw .. quote
-      pcall(vim.api.nvim_buf_set_text, bufnr, edit.lnum, edit.col, edit.lnum, edit.end_col, { new_text })
+      local ok_set, set_err =
+        pcall(vim.api.nvim_buf_set_text, bufnr, edit.lnum, edit.col, edit.lnum, edit.end_col, { new_text })
+      if not ok_set then
+        table.insert(
+          edit_errors,
+          string.format("buf=%d line=%d col=%d error=%s", bufnr, edit.lnum + 1, edit.col + 1, tostring(set_err))
+        )
+      end
     end
   end
+  return edit_errors
 end
 
 ---@param cache table|nil
@@ -146,6 +156,21 @@ local function active_languages(cache, project)
     table.insert(langs, project.primary_lang)
   end
   return langs
+end
+
+---@param errors string[]
+---@return string
+local function summarize_edit_errors(errors)
+  local max_count = 3
+  local count = math.min(#errors, max_count)
+  local summary = {}
+  for i = 1, count do
+    summary[#summary + 1] = errors[i]
+  end
+  if #errors > max_count then
+    summary[#summary + 1] = string.format("+%d more", #errors - max_count)
+  end
+  return table.concat(summary, "; ")
 end
 
 ---@param opts { item: I18nStatusResolved, source_buf?: integer, new_key: string, config: I18nStatusConfig }
@@ -299,17 +324,28 @@ function M.rename(opts)
   end
 
   local updated_bufs = {}
+  local buffer_edit_errors = {}
 
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if is_target_rename_buf(buf) then
       local fb = resources.fallback_namespace_for_buf(buf)
-      rename_in_buffer(buf, old_key, new_key, new_ns, explicit_ns, fb)
+      local edit_errors = rename_in_buffer(buf, old_key, new_key, new_ns, explicit_ns, fb)
+      for _, edit_err in ipairs(edit_errors) do
+        table.insert(buffer_edit_errors, edit_err)
+      end
       table.insert(updated_bufs, buf)
     end
   end
 
   for _, buf in ipairs(updated_bufs) do
     core.refresh_now(buf, opts.config)
+  end
+
+  if #buffer_edit_errors > 0 then
+    return false,
+      "resource files were renamed, but failed to update some open buffers: " .. summarize_edit_errors(
+        buffer_edit_errors
+      )
   end
 
   return true
