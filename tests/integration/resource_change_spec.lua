@@ -203,22 +203,26 @@ describe("resource change handling", function()
 
     helpers.with_cwd(root, function()
       local received_event = nil
+      local callback_count = 0
 
       resources.start_watch(root, function(event)
+        callback_count = callback_count + 1
         received_event = event
       end, { debounce_ms = 10 })
 
       -- Wait for watcher to be set up
-      vim.wait(50, function()
+      vim.wait(200, function()
         return false
       end, 10)
+      local baseline_count = callback_count
+      received_event = nil
 
       -- Modify file
       helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"変更後"}}')
 
       -- Wait for callback
       local ok = vim.wait(2000, function()
-        return received_event ~= nil
+        return callback_count > baseline_count and received_event ~= nil
       end, 10)
 
       assert.is_true(ok, "Callback was not called")
