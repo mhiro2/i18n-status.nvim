@@ -4,11 +4,47 @@ local M = {}
 local rpc = require("i18n-status.rpc")
 local util = require("i18n-status.util")
 
+---@class I18nStatusScanSnapshot
+---@field tick integer
+---@field source string
+---@field lines string[]
+
+---@type table<integer, I18nStatusScanSnapshot>
+local source_cache = {}
+local cache_autocmd_registered = false
+
+local function ensure_cache_autocmd()
+  if cache_autocmd_registered then
+    return
+  end
+  cache_autocmd_registered = true
+
+  local group = vim.api.nvim_create_augroup("I18nStatusScanCache", { clear = false })
+  vim.api.nvim_create_autocmd({ "BufUnload", "BufWipeout" }, {
+    group = group,
+    callback = function(args)
+      source_cache[args.buf] = nil
+    end,
+  })
+end
+
 ---@param bufnr integer
----@return string
-local function buf_source(bufnr)
+---@return I18nStatusScanSnapshot
+local function buf_snapshot(bufnr)
+  ensure_cache_autocmd()
+  local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+  local cached = source_cache[bufnr]
+  if cached and cached.tick == tick then
+    return cached
+  end
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  return table.concat(lines, "\n")
+  local snapshot = {
+    tick = tick,
+    source = table.concat(lines, "\n"),
+    lines = lines,
+  }
+  source_cache[bufnr] = snapshot
+  return snapshot
 end
 
 ---@param bufnr integer
@@ -104,6 +140,49 @@ local function request_translation_context(source, lang, row, fallback_ns)
   return result
 end
 
+---@param ft string
+---@param line string|nil
+---@return boolean
+local function should_retry_translation_context(ft, line)
+  if ft == "javascriptreact" or ft == "typescriptreact" then
+    return true
+  end
+  if not line or line == "" then
+    return false
+  end
+  if line:find("t%s*%(") then
+    local open_paren = select(2, line:gsub("%(", ""))
+    local close_paren = select(2, line:gsub("%)", ""))
+    if open_paren > close_paren or line:find("[\"']%s*$") then
+      return true
+    end
+  end
+  return line:find("<", 1, true) ~= nil or line:find(">", 1, true) ~= nil
+end
+
+---@param lines string[]
+---@param line_idx integer 1-based
+---@param replacement string
+---@return string
+local function source_with_replaced_line(lines, line_idx, replacement)
+  local patched = {}
+  for i = 1, #lines do
+    patched[i] = i == line_idx and replacement or lines[i]
+  end
+  return table.concat(patched, "\n")
+end
+
+---@param lines string[]
+---@param count integer
+---@return string
+local function source_from_prefix(lines, count)
+  local clipped = {}
+  for i = 1, count do
+    clipped[#clipped + 1] = lines[i] or ""
+  end
+  return table.concat(clipped, "\n")
+end
+
 ---@param bufnr integer
 ---@param opts? { fallback_namespace?: string, range?: { start_line: integer, end_line: integer } }
 ---@return table[]
@@ -113,7 +192,7 @@ function M.extract(bufnr, opts)
     return {}
   end
   opts = opts or {}
-  local result, err = rpc.request_sync("scan/extract", extract_params(buf_source(bufnr), lang, opts))
+  local result, err = rpc.request_sync("scan/extract", extract_params(buf_snapshot(bufnr).source, lang, opts))
   if err or not result then
     return {}
   end
@@ -143,7 +222,8 @@ end
 ---@return table[]
 function M.extract_resource(bufnr, info, opts)
   opts = opts or {}
-  local result, err = rpc.request_sync("scan/extractResource", extract_resource_params(buf_source(bufnr), info, opts))
+  local result, err =
+    rpc.request_sync("scan/extractResource", extract_resource_params(buf_snapshot(bufnr).source, info, opts))
   if err or not result then
     return {}
   end
@@ -160,7 +240,7 @@ function M.extract_async(bufnr, opts, cb)
     return
   end
   opts = opts or {}
-  rpc.request("scan/extract", extract_params(buf_source(bufnr), lang, opts), function(err, result)
+  rpc.request("scan/extract", extract_params(buf_snapshot(bufnr).source, lang, opts), function(err, result)
     if err or not result then
       cb({})
       return
@@ -175,13 +255,17 @@ end
 ---@param cb fun(items: table[])
 function M.extract_resource_async(bufnr, info, opts, cb)
   opts = opts or {}
-  rpc.request("scan/extractResource", extract_resource_params(buf_source(bufnr), info, opts), function(err, result)
-    if err or not result then
-      cb({})
-      return
+  rpc.request(
+    "scan/extractResource",
+    extract_resource_params(buf_snapshot(bufnr).source, info, opts),
+    function(err, result)
+      if err or not result then
+        cb({})
+        return
+      end
+      cb(result.items or {})
     end
-    cb(result.items or {})
-  end)
+  )
 end
 
 ---@param bufnr integer
@@ -196,20 +280,18 @@ function M.translation_context_at(bufnr, row, opts)
     return { namespace = fallback_ns, t_func = "t", found_hook = false, has_any_hook = false }
   end
 
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local source = table.concat(lines, "\n")
+  local snapshot = buf_snapshot(bufnr)
+  local lines = snapshot.lines
+  local source = snapshot.source
   local result = request_translation_context(source, lang, row, fallback_ns)
-  if not result and row + 1 <= #lines then
-    local patched = vim.deepcopy(lines)
-    patched[row + 1] = ""
-    result = request_translation_context(table.concat(patched, "\n"), lang, row, fallback_ns)
-  end
-  if not result and row > 0 then
-    local clipped = {}
-    for i = 1, row do
-      clipped[#clipped + 1] = lines[i] or ""
+  local line = lines[row + 1]
+  if not result and should_retry_translation_context(vim.bo[bufnr].filetype, line) then
+    if row + 1 <= #lines then
+      result = request_translation_context(source_with_replaced_line(lines, row + 1, ""), lang, row, fallback_ns)
     end
-    result = request_translation_context(table.concat(clipped, "\n"), lang, row - 1, fallback_ns)
+    if not result and row > 0 then
+      result = request_translation_context(source_from_prefix(lines, row), lang, row - 1, fallback_ns)
+    end
   end
   if not result then
     return { namespace = fallback_ns, t_func = "t", found_hook = false, has_any_hook = false }

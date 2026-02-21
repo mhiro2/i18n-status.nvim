@@ -1,4 +1,6 @@
 local scan = require("i18n-status.scan")
+local stub = require("luassert.stub")
+local rpc = require("i18n-status.rpc")
 
 local function make_buf(lines, ft)
   local buf = vim.api.nvim_create_buf(false, true)
@@ -25,6 +27,21 @@ local function extract_async(bufnr, opts)
 end
 
 describe("scan", function()
+  local stubs = {}
+
+  local function add_stub(tbl, method, impl)
+    local s = stub(tbl, method, impl)
+    table.insert(stubs, s)
+    return s
+  end
+
+  after_each(function()
+    for _, s in ipairs(stubs) do
+      s:revert()
+    end
+    stubs = {}
+  end)
+
   it("detects t and namespace", function()
     local buf = make_buf({
       'const { t } = useTranslation("auth")',
@@ -228,6 +245,64 @@ describe("scan", function()
     }, "typescriptreact")
     local ctx = scan.translation_context_at(buf, 0, { fallback_namespace = "common" })
     assert.are.equal("t", ctx.t_func)
+    assert.are.equal("common", ctx.namespace)
+    assert.is_false(ctx.has_any_hook)
+  end)
+
+  it("reuses cached source while changedtick is unchanged", function()
+    local buf = make_buf({
+      't("k1")',
+    }, "typescript")
+    local get_lines_calls = 0
+    local original = vim.api.nvim_buf_get_lines
+    add_stub(vim.api, "nvim_buf_get_lines", function(...)
+      get_lines_calls = get_lines_calls + 1
+      return original(...)
+    end)
+
+    local first = scan.extract(buf, { fallback_namespace = "common" })
+    local second = scan.extract(buf, { fallback_namespace = "common" })
+    vim.api.nvim_buf_set_lines(buf, 0, 0, false, { "const x = 1" })
+    local third = scan.extract(buf, { fallback_namespace = "common" })
+
+    assert.are.equal(1, #first)
+    assert.are.equal(1, #second)
+    assert.are.equal(1, #third)
+    assert.are.equal(2, get_lines_calls)
+  end)
+
+  it("avoids expensive retries for non-react buffers", function()
+    local buf = make_buf({
+      "const x = 1",
+      't("k1")',
+    }, "typescript")
+    local call_count = 0
+    add_stub(rpc, "request_sync", function()
+      call_count = call_count + 1
+      return nil, "parse error"
+    end)
+
+    local ctx = scan.translation_context_at(buf, 1, { fallback_namespace = "common" })
+
+    assert.are.equal(1, call_count)
+    assert.are.equal("common", ctx.namespace)
+    assert.is_false(ctx.found_hook)
+  end)
+
+  it("keeps retries for react buffers to recover parser errors", function()
+    local buf = make_buf({
+      'const { t } = useTranslation("common")',
+      "return <div>",
+    }, "typescriptreact")
+    local call_count = 0
+    add_stub(rpc, "request_sync", function()
+      call_count = call_count + 1
+      return nil, "parse error"
+    end)
+
+    local ctx = scan.translation_context_at(buf, 1, { fallback_namespace = "common" })
+
+    assert.are.equal(3, call_count)
     assert.are.equal("common", ctx.namespace)
     assert.is_false(ctx.has_any_hook)
   end)

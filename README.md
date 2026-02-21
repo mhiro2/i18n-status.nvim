@@ -219,7 +219,7 @@ If none is found, a best-effort fallback is used and `:checkhealth` will warn.
 - **`:I18nGotoDefinition`**: Jump to the translation file for the i18n key under cursor
 - **`:I18nDoctor`**: Diagnose i18n issues across the entire project and open Review UI
 - **`:I18nDoctorCancel`**: Cancel a running doctor scan
-- **`:I18nAddKey`**: Add a new i18n key to all language files interactively
+- **`:I18nAddKey`**: Add a new i18n key to all language files interactively (writes per language; when a write fails mid-way, successful languages remain written)
 - **`:I18nExtract`**: Detect and extract hardcoded JSX text in current buffer (supports `:'<,'>I18nExtract`), with text preview + target focus/highlight while prompting
 - **`:I18nRefresh`**: Force refresh current buffer
 
@@ -351,6 +351,7 @@ require("i18n-status").setup({
 >   1. `i18next` namespace file (`locales/...`, priority 30)
 >   2. `next-intl` root file (`messages/{lang}.json`, priority 40)
 >   3. `next-intl` namespace file (`messages/{lang}/{namespace}.json`, priority 50)
+> - Resource indexing and cross-file resolve target strict `*.json` files. `jsonc` is supported as an editor filetype UX improvement, but JSONC comments/trailing commas are not indexed.
 
 ## 🧩 Dynamic i18n key support
 

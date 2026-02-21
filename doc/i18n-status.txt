@@ -50,6 +50,9 @@ Examples:
 Supported filetypes:
   javascript, typescript, javascriptreact, typescriptreact
   json/jsonc (only for detected translation resource files)
+  Note: resource indexing and cross-file resolve target strict *.json files.
+  jsonc is supported for editor UX, but JSONC comments/trailing commas are
+  not indexed.
 
 ==============================================================================
 2. Setup                                                        *i18n-status-setup*
@@ -212,6 +215,8 @@ The plugin creates the following user commands:
   :I18nAddKey         Add a new i18n key to all language files interactively.
                       Prompts for key name and translations for all configured
                       languages.
+                      Writes are performed per language file; when a write
+                      fails mid-way, previously written languages remain.
 
   :I18nExtract        Detect and extract hardcoded JSX text in current buffer.
                       Supports ranges (e.g. :'<,'>I18nExtract).
