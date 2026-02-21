@@ -14,12 +14,18 @@ describe("actions (unit)", function()
     state.set_buf_project(vim.api.nvim_get_current_buf(), "__default__")
     project_root_dir = nil
 
-    table.insert(stubs, stub(resources, "ensure_index", function()
-      return { roots = {} }
-    end))
-    table.insert(stubs, stub(resources, "project_root", function(start_dir, _roots)
-      return project_root_dir or start_dir
-    end))
+    table.insert(
+      stubs,
+      stub(resources, "ensure_index", function()
+        return { roots = {} }
+      end)
+    )
+    table.insert(
+      stubs,
+      stub(resources, "project_root", function(start_dir, _roots)
+        return project_root_dir or start_dir
+      end)
+    )
   end)
 
   after_each(function()

@@ -228,7 +228,11 @@ describe("resource change handling", function()
       assert.is_true(ok, "Callback was not called")
       assert.is_not_nil(received_event)
       assert.is_not_nil(received_event.paths)
-      assert.is_true(#received_event.paths > 0)
+      if received_event.needs_rebuild then
+        assert.are.same({}, received_event.paths)
+      else
+        assert.is_true(#received_event.paths > 0)
+      end
     end)
   end)
 

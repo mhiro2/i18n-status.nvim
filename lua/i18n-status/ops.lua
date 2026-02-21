@@ -239,11 +239,7 @@ function M.rename(opts)
     local sanitized_path, sanitize_err = util.sanitize_path(path, base_dir)
     if not sanitized_path then
       return nil,
-        string.format(
-          "resource path for language '%s' is outside project root: %s",
-          lang,
-          sanitize_err or "unknown"
-        )
+        string.format("resource path for language '%s' is outside project root: %s", lang, sanitize_err or "unknown")
     end
     return sanitized_path, nil
   end

@@ -231,7 +231,7 @@ describe("doctor async run", function()
       vim.bo[buf].filetype = "typescript"
 
       local original_list_bufs = vim.api.nvim_list_bufs
-      local original_notify = vim.notify
+      local notify_before = vim.notify
       local captured = nil
       local warnings = {}
       local ok, err = pcall(function()
@@ -257,7 +257,7 @@ describe("doctor async run", function()
           return done
         end, 10))
       end)
-      vim.notify = original_notify
+      vim.notify = notify_before
       vim.api.nvim_list_bufs = original_list_bufs
       assert.is_true(ok, err)
       assert.is_not_nil(captured)
