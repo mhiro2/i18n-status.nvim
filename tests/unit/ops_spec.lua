@@ -288,4 +288,61 @@ describe("ops.rename", function()
       assert.are.equal("Login", en.rename.heading)
     end)
   end)
+
+  it("rejects resource file paths outside project root", function()
+    local root = helpers.tmpdir()
+    local outside_root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
+    helpers.write_file(outside_root .. "/common.json", '{"rename":{"title":"Outside"}}')
+    vim.fn.mkdir(root .. "/src", "p")
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf(root .. "/src/app.ts", 't("rename.title")')
+      local config = config_mod.setup({ primary_lang = "ja", inline = { visible_only = false } })
+      resources.ensure_index(root)
+
+      local col, end_col = literal_range(buf, "rename.title")
+      scan.extract = function()
+        return {
+          {
+            key = "common:rename.title",
+            raw = "rename.title",
+            namespace = "common",
+            lnum = 0,
+            col = col,
+            end_col = end_col,
+          },
+        }
+      end
+
+      local item = {
+        key = "common:rename.title",
+        namespace = "common",
+        hover = {
+          values = {
+            ja = { file = outside_root .. "/common.json", value = "Outside" },
+            en = { file = root .. "/locales/en/common.json", value = "Login" },
+          },
+        },
+      }
+
+      local ok, err = ops.rename({
+        item = item,
+        source_buf = buf,
+        new_key = "common:rename.heading",
+        config = config,
+      })
+
+      assert.is_false(ok)
+      assert.is_truthy(err and err:find("outside project root", 1, true))
+
+      local ja = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local en = vim.fn.json_decode(helpers.read_file(root .. "/locales/en/common.json"))
+      assert.are.equal("ログイン", ja.rename.title)
+      assert.are.equal("Login", en.rename.title)
+      assert.is_nil(ja.rename.heading)
+      assert.is_nil(en.rename.heading)
+    end)
+  end)
 end)

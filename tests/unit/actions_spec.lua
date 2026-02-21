@@ -1,11 +1,32 @@
 local actions = require("i18n-status.actions")
 local state = require("i18n-status.state")
+local helpers = require("tests.helpers")
+local resources = require("i18n-status.resources")
+local stub = require("luassert.stub")
 
 describe("actions (unit)", function()
+  local stubs = {}
+  local project_root_dir = nil
+
   before_each(function()
     state.init("en", { "en", "ja" })
     state.inline_by_buf = {}
     state.set_buf_project(vim.api.nvim_get_current_buf(), "__default__")
+    project_root_dir = nil
+
+    table.insert(stubs, stub(resources, "ensure_index", function()
+      return { roots = {} }
+    end))
+    table.insert(stubs, stub(resources, "project_root", function(start_dir, _roots)
+      return project_root_dir or start_dir
+    end))
+  end)
+
+  after_each(function()
+    for _, s in ipairs(stubs) do
+      s:revert()
+    end
+    stubs = {}
   end)
 
   it("resolves item under cursor by column", function()
@@ -72,6 +93,7 @@ describe("actions (unit)", function()
   end)
 
   it("prefers current language when jumping to definition", function()
+    project_root_dir = "/tmp"
     local original_cmd = vim.api.nvim_cmd
     local opened = nil
     vim.api.nvim_cmd = function(cmd)
@@ -96,6 +118,7 @@ describe("actions (unit)", function()
   end)
 
   it("falls back to any available file", function()
+    project_root_dir = "/tmp"
     local original_cmd = vim.api.nvim_cmd
     local opened = nil
     vim.api.nvim_cmd = function(cmd)
@@ -116,6 +139,64 @@ describe("actions (unit)", function()
 
     assert.is_true(ok)
     assert.are.equal("/tmp/fr.json", opened)
+  end)
+
+  it("skips paths outside project root when jumping to definition", function()
+    local root = helpers.tmpdir()
+    project_root_dir = root
+    helpers.write_file(root .. "/src/app.ts", 't("key")')
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_name(buf, root .. "/src/app.ts")
+    vim.api.nvim_set_current_buf(buf)
+
+    local original_cmd = vim.api.nvim_cmd
+    local opened = nil
+    vim.api.nvim_cmd = function(cmd)
+      opened = cmd.args[1]
+    end
+
+    local ok = actions.jump_to_definition({
+      hover = {
+        values = {
+          ja = { file = "/tmp/outside.json" },
+          en = { file = root .. "/locales/en/common.json" },
+        },
+      },
+    })
+    vim.api.nvim_cmd = original_cmd
+
+    assert.is_true(ok)
+    assert.are.equal(root .. "/locales/en/common.json", opened)
+  end)
+
+  it("returns false when all candidate paths are outside project root", function()
+    local root = helpers.tmpdir()
+    project_root_dir = root
+    helpers.write_file(root .. "/src/app.ts", 't("key")')
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_name(buf, root .. "/src/app.ts")
+    vim.api.nvim_set_current_buf(buf)
+
+    local original_cmd = vim.api.nvim_cmd
+    local opened = nil
+    vim.api.nvim_cmd = function(cmd)
+      opened = cmd.args[1]
+    end
+
+    local ok = actions.jump_to_definition({
+      hover = {
+        values = {
+          ja = { file = "/tmp/outside-ja.json" },
+          en = { file = "/tmp/outside-en.json" },
+        },
+      },
+    })
+    vim.api.nvim_cmd = original_cmd
+
+    assert.is_false(ok)
+    assert.is_nil(opened)
   end)
 
   it("returns false when no files exist", function()
