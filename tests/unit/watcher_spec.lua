@@ -260,5 +260,56 @@ describe("watcher", function()
       })
       assert.is_false(watcher.is_watching("key1"))
     end)
+
+    it("falls back to polling when fs_event start fails", function()
+      local root = helpers.tmpdir()
+      helpers.write_file(root .. "/test.json", "{}")
+
+      local original_new_fs_event = vim.uv.new_fs_event
+      local original_notify = vim.notify
+      local fallback_notice = nil
+      local events = {}
+      local ok, err = pcall(function()
+        vim.uv.new_fs_event = function()
+          return {
+            start = function()
+              return nil, "EMFILE"
+            end,
+            stop = function() end,
+            close = function() end,
+            is_closing = function()
+              return false
+            end,
+            unref = function() end,
+          }
+        end
+        vim.notify = function(msg, _level)
+          if msg:find("watcher fallback enabled", 1, true) then
+            fallback_notice = msg
+          end
+        end
+
+        watcher.start("key1", {
+          paths = { root },
+          rescan_paths = {},
+          on_change = function(event)
+            table.insert(events, event)
+          end,
+          debounce_ms = 100,
+          restart_fn = function() end,
+        })
+
+        local triggered = vim.wait(500, function()
+          return #events > 0
+        end, 10)
+        assert.is_true(triggered)
+      end)
+      vim.notify = original_notify
+      vim.uv.new_fs_event = original_new_fs_event
+      assert.is_true(ok, err)
+      assert.is_not_nil(fallback_notice)
+      assert.is_true(events[1].needs_rebuild)
+      assert.are.same({}, events[1].paths)
+    end)
   end)
 end)

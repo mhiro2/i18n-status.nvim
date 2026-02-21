@@ -193,7 +193,7 @@ end
 function M.refresh_all(config)
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if M.should_refresh(buf) then
-      M.refresh_now(buf, config)
+      refresh_now_async(buf, config)
     end
   end
 end

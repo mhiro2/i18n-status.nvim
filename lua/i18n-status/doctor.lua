@@ -30,7 +30,6 @@ local uv = vim.uv
 ---@field buffers integer[]
 ---@field items_by_buf table<integer, table[]>
 ---@field used_keys I18nStatusDoctorKeySet
----@field open_buf_paths table<string, boolean>
 ---@field project_root string
 ---@field project_keys I18nStatusDoctorKeySet|nil
 ---@field cancelled boolean|nil
@@ -201,6 +200,110 @@ local function doctor_lang_for_filetype(ft)
   return nil
 end
 
+local OPEN_BUFFER_MAX_BYTES = 512 * 1024
+
+---@type table<string, { changedtick: integer }>
+local open_buffer_snapshots = {}
+
+---@param open_buf_paths string[]
+---@param seen table<string, boolean>
+---@param path string|nil
+local function add_open_buffer_path(open_buf_paths, seen, path)
+  if not path or path == "" or seen[path] then
+    return
+  end
+  seen[path] = true
+  table.insert(open_buf_paths, path)
+end
+
+---@param bufnr integer
+---@return integer|nil
+local function buffer_size_bytes(bufnr)
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  local ok, size = pcall(vim.api.nvim_buf_get_offset, bufnr, line_count)
+  if ok and type(size) == "number" and size >= 0 then
+    return size
+  end
+  return nil
+end
+
+---@param ctx I18nStatusDoctorContext
+---@return { open_buffers: table[], open_buf_paths: string[] }
+local function collect_open_buffer_payload(ctx)
+  local open_buffers = {}
+  local open_buf_paths = {}
+  local open_buf_path_seen = {}
+  local active_named_paths = {}
+  local skipped_large_count = 0
+
+  for _, open_buf in ipairs(ctx.buffers) do
+    if vim.api.nvim_buf_is_valid(open_buf) and vim.api.nvim_buf_is_loaded(open_buf) then
+      local ft = vim.bo[open_buf].filetype
+      local lang = doctor_lang_for_filetype(ft)
+      if lang then
+        local path = vim.api.nvim_buf_get_name(open_buf)
+        local has_path = path ~= nil and path ~= ""
+        local changedtick = vim.api.nvim_buf_get_changedtick(open_buf)
+
+        local should_send = true
+        if has_path then
+          active_named_paths[path] = true
+          local snapshot = open_buffer_snapshots[path]
+          should_send = vim.bo[open_buf].modified or not snapshot or snapshot.changedtick ~= changedtick
+        end
+
+        if should_send then
+          local size_bytes = buffer_size_bytes(open_buf)
+          if size_bytes and size_bytes > OPEN_BUFFER_MAX_BYTES then
+            skipped_large_count = skipped_large_count + 1
+            if has_path then
+              open_buffer_snapshots[path] = nil
+            end
+          else
+            local lines = vim.api.nvim_buf_get_lines(open_buf, 0, -1, false)
+            local entry = {
+              lang = lang,
+              source = table.concat(lines, "\n"),
+            }
+            if has_path then
+              entry.path = path
+              add_open_buffer_path(open_buf_paths, open_buf_path_seen, path)
+              local real = vim.uv.fs_realpath(path)
+              if real and real ~= "" then
+                add_open_buffer_path(open_buf_paths, open_buf_path_seen, real)
+              end
+              open_buffer_snapshots[path] = { changedtick = changedtick }
+            end
+            table.insert(open_buffers, entry)
+          end
+        end
+      end
+    end
+  end
+
+  for path in pairs(open_buffer_snapshots) do
+    if not active_named_paths[path] then
+      open_buffer_snapshots[path] = nil
+    end
+  end
+
+  if skipped_large_count > 0 then
+    vim.notify(
+      string.format(
+        "i18n-status doctor: skipped %d open buffer(s) over %d bytes",
+        skipped_large_count,
+        OPEN_BUFFER_MAX_BYTES
+      ),
+      vim.log.levels.WARN
+    )
+  end
+
+  return {
+    open_buffers = open_buffers,
+    open_buf_paths = open_buf_paths,
+  }
+end
+
 ---@param bufnr integer
 ---@param config I18nStatusConfig
 ---@return I18nStatusDoctorContext
@@ -214,22 +317,12 @@ local function prepare_context(bufnr, config)
 
   local project_root = resources.project_root(start_dir, cache.roots) or start_dir
 
-  -- Collect open buffer paths
-  local open_buf_paths = {}
   local buffers = {}
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(buf) then
       local ft = vim.bo[buf].filetype
       if util.is_source_filetype(ft) then
         table.insert(buffers, buf)
-        local buf_path = vim.api.nvim_buf_get_name(buf)
-        if buf_path and buf_path ~= "" then
-          open_buf_paths[buf_path] = true
-          local real = vim.uv.fs_realpath(buf_path)
-          if real and real ~= "" then
-            open_buf_paths[real] = true
-          end
-        end
       end
     end
   end
@@ -245,7 +338,6 @@ local function prepare_context(bufnr, config)
     buffers = buffers,
     items_by_buf = {},
     used_keys = {},
-    open_buf_paths = open_buf_paths,
     project_root = project_root,
   }
 end
@@ -316,32 +408,7 @@ function M.diagnose(bufnr, config, cb, opts)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   opts = opts or {}
   local ctx = prepare_context(bufnr, config)
-
-  -- Collect open buffer paths as list
-  local open_buf_path_list = {}
-  for path in pairs(ctx.open_buf_paths) do
-    table.insert(open_buf_path_list, path)
-  end
-  local open_buffers = {}
-  for _, open_buf in ipairs(ctx.buffers) do
-    if vim.api.nvim_buf_is_valid(open_buf) and vim.api.nvim_buf_is_loaded(open_buf) then
-      local ft = vim.bo[open_buf].filetype
-      local lang = doctor_lang_for_filetype(ft)
-      if lang then
-        local lines = vim.api.nvim_buf_get_lines(open_buf, 0, -1, false)
-        local source = table.concat(lines, "\n")
-        local entry = {
-          lang = lang,
-          source = source,
-        }
-        local path = vim.api.nvim_buf_get_name(open_buf)
-        if path and path ~= "" then
-          entry.path = path
-        end
-        table.insert(open_buffers, entry)
-      end
-    end
-  end
+  local open_payload = collect_open_buffer_payload(ctx)
 
   return rpc.request("doctor/diagnose", {
     project_root = ctx.project_root,
@@ -350,8 +417,8 @@ function M.diagnose(bufnr, config, cb, opts)
     languages = ctx.cache.languages or {},
     fallback_namespace = ctx.fallback_ns,
     ignore_patterns = ctx.ignore_patterns,
-    open_buf_paths = open_buf_path_list,
-    open_buffers = open_buffers,
+    open_buf_paths = open_payload.open_buf_paths,
+    open_buffers = open_payload.open_buffers,
     cancel_token_path = opts.cancel_token_path,
   }, function(err, result)
     vim.schedule(function()
@@ -476,6 +543,12 @@ function M.cancel()
   end
   vim.notify("i18n-status doctor: cancelled", vim.log.levels.INFO)
   return true
+end
+
+---Reset module-local snapshot state used by open buffer delta sending.
+---Intended for tests.
+function M._reset_open_buffer_snapshots_for_test()
+  open_buffer_snapshots = {}
 end
 
 return M

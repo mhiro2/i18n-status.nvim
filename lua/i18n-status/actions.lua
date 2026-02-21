@@ -3,6 +3,8 @@ local M = {}
 
 local ui = require("i18n-status.ui")
 local state = require("i18n-status.state")
+local resources = require("i18n-status.resources")
+local util = require("i18n-status.util")
 
 ---@param bufnr integer
 ---@return integer|nil
@@ -53,9 +55,16 @@ function M.jump_to_definition(item, opts)
   if not item or not item.hover or not item.hover.values then
     return false
   end
+  local current_buf = vim.api.nvim_get_current_buf()
+  local start_dir = resources.start_dir(current_buf)
+  local cache = resources.ensure_index(start_dir)
+  local base_dir = resources.project_root(start_dir, cache and cache.roots)
+  if not base_dir or base_dir == "" then
+    base_dir = start_dir
+  end
 
   local order = {}
-  local project = state.project_for_buf(vim.api.nvim_get_current_buf())
+  local project = state.project_for_buf(current_buf)
   local preferred = opts.lang
     or (project and project.current_lang)
     or (project and project.primary_lang)
@@ -71,17 +80,25 @@ function M.jump_to_definition(item, opts)
   end
 
   local seen = {}
+  local blocked_path = false
   for _, lang in ipairs(order) do
     if not seen[lang] then
       seen[lang] = true
       local info = item.hover.values[lang]
       if info and info.file then
-        edit_file(info.file)
-        return true
+        local path = util.sanitize_path(info.file, base_dir)
+        if path then
+          edit_file(path)
+          return true
+        end
+        blocked_path = true
       end
     end
   end
 
+  if blocked_path then
+    vim.notify("i18n-status: blocked definition jump outside project root", vim.log.levels.WARN)
+  end
   return false
 end
 

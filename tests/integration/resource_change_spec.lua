@@ -98,8 +98,10 @@ describe("resource change handling", function()
       })
 
       core.refresh_all(config)
-      assert.is_true(inline_text(buf1):find("A", 1, true) ~= nil)
-      assert.is_true(inline_text(buf2):find("B", 1, true) ~= nil)
+      local refreshed = vim.wait(1000, function()
+        return inline_text(buf1):find("A", 1, true) ~= nil and inline_text(buf2):find("B", 1, true) ~= nil
+      end, 10)
+      assert.is_true(refreshed)
     end)
   end)
 
@@ -201,28 +203,36 @@ describe("resource change handling", function()
 
     helpers.with_cwd(root, function()
       local received_event = nil
+      local callback_count = 0
 
       resources.start_watch(root, function(event)
+        callback_count = callback_count + 1
         received_event = event
       end, { debounce_ms = 10 })
 
       -- Wait for watcher to be set up
-      vim.wait(50, function()
+      vim.wait(200, function()
         return false
       end, 10)
+      local baseline_count = callback_count
+      received_event = nil
 
       -- Modify file
       helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"変更後"}}')
 
       -- Wait for callback
       local ok = vim.wait(2000, function()
-        return received_event ~= nil
+        return callback_count > baseline_count and received_event ~= nil
       end, 10)
 
       assert.is_true(ok, "Callback was not called")
       assert.is_not_nil(received_event)
       assert.is_not_nil(received_event.paths)
-      assert.is_true(#received_event.paths > 0)
+      if received_event.needs_rebuild then
+        assert.are.same({}, received_event.paths)
+      else
+        assert.is_true(#received_event.paths > 0)
+      end
     end)
   end)
 

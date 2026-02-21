@@ -11,8 +11,10 @@ describe("doctor async run", function()
   local original_rpc_request_sync
   local original_rpc_on_notification
   local original_rpc_off_notification
+  local original_review_module
 
   before_each(function()
+    doctor._reset_open_buffer_snapshots_for_test()
     original_notify = vim.notify
     original_setqflist = vim.fn.setqflist
     original_cmd = vim.api.nvim_cmd
@@ -21,6 +23,7 @@ describe("doctor async run", function()
     original_rpc_request_sync = rpc.request_sync
     original_rpc_on_notification = rpc.on_notification
     original_rpc_off_notification = rpc.off_notification
+    original_review_module = package.loaded["i18n-status.review"]
 
     vim.notify = function(...)
       original_notify(...)
@@ -58,9 +61,14 @@ describe("doctor async run", function()
       end
       return {}, nil
     end
+
+    package.loaded["i18n-status.review"] = {
+      open_doctor_results = function() end,
+    }
   end)
 
   after_each(function()
+    doctor._reset_open_buffer_snapshots_for_test()
     vim.notify = original_notify
     vim.fn.setqflist = original_setqflist
     vim.api.nvim_cmd = original_cmd
@@ -68,6 +76,7 @@ describe("doctor async run", function()
     rpc.request_sync = original_rpc_request_sync
     rpc.on_notification = original_rpc_on_notification
     rpc.off_notification = original_rpc_off_notification
+    package.loaded["i18n-status.review"] = original_review_module
   end)
 
   it("completes run() without errors", function()
@@ -142,6 +151,120 @@ describe("doctor async run", function()
 
       assert.is_true(cleaned, "cancel token file should be removed after callback")
       rpc.stop = original_stop
+    end)
+  end)
+
+  it("sends open buffer source only when it changed", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"a":"A"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"a":"A"}')
+    helpers.write_file(root .. "/src.ts", 't("a")')
+
+    helpers.with_cwd(root, function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_name(buf, root .. "/src.ts")
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("a")' })
+      vim.bo[buf].filetype = "typescript"
+
+      local original_list_bufs = vim.api.nvim_list_bufs
+      local calls = {}
+      local ok, err = pcall(function()
+        vim.api.nvim_list_bufs = function()
+          return { buf }
+        end
+
+        rpc.request = function(_method, params, cb, _opts)
+          table.insert(calls, params)
+          vim.schedule(function()
+            cb(nil, { issues = {}, used_keys = {} })
+          end)
+        end
+
+        local config = config_mod.setup({ primary_lang = "ja" })
+        local done = false
+
+        doctor.diagnose(buf, config, function()
+          done = true
+        end)
+        assert.is_true(vim.wait(500, function()
+          return done
+        end, 10))
+        assert.are.equal(1, #calls[1].open_buffers)
+        assert.is_true(#calls[1].open_buf_paths > 0)
+
+        done = false
+        doctor.diagnose(buf, config, function()
+          done = true
+        end)
+        assert.is_true(vim.wait(500, function()
+          return done
+        end, 10))
+        assert.are.equal(0, #calls[2].open_buffers)
+        assert.are.equal(0, #calls[2].open_buf_paths)
+
+        vim.api.nvim_buf_set_lines(buf, 0, 1, false, { 't("b")' })
+
+        done = false
+        doctor.diagnose(buf, config, function()
+          done = true
+        end)
+        assert.is_true(vim.wait(500, function()
+          return done
+        end, 10))
+        assert.are.equal(1, #calls[3].open_buffers)
+      end)
+      vim.api.nvim_list_bufs = original_list_bufs
+      assert.is_true(ok, err)
+    end)
+  end)
+
+  it("skips sending oversized open buffer source", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"a":"A"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"a":"A"}')
+    helpers.write_file(root .. "/big.ts", 't("a")')
+
+    helpers.with_cwd(root, function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_name(buf, root .. "/big.ts")
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { string.rep("x", 600000) })
+      vim.bo[buf].filetype = "typescript"
+
+      local original_list_bufs = vim.api.nvim_list_bufs
+      local notify_before = vim.notify
+      local captured = nil
+      local warnings = {}
+      local ok, err = pcall(function()
+        vim.api.nvim_list_bufs = function()
+          return { buf }
+        end
+        vim.notify = function(msg, level)
+          table.insert(warnings, { msg = msg, level = level })
+        end
+        rpc.request = function(_method, params, cb, _opts)
+          captured = params
+          vim.schedule(function()
+            cb(nil, { issues = {}, used_keys = {} })
+          end)
+        end
+
+        local config = config_mod.setup({ primary_lang = "ja" })
+        local done = false
+        doctor.diagnose(buf, config, function()
+          done = true
+        end)
+        assert.is_true(vim.wait(500, function()
+          return done
+        end, 10))
+      end)
+      vim.notify = notify_before
+      vim.api.nvim_list_bufs = original_list_bufs
+      assert.is_true(ok, err)
+      assert.is_not_nil(captured)
+      assert.are.equal(0, #captured.open_buffers)
+      assert.are.equal(0, #captured.open_buf_paths)
+      assert.is_true(#warnings > 0)
+      assert.is_truthy(warnings[#warnings].msg:find("skipped 1 open buffer", 1, true))
     end)
   end)
 end)

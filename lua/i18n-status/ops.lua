@@ -207,6 +207,10 @@ function M.rename(opts)
   local old_path = old_key:match("^[^:]+:(.+)$") or ""
   local root = resources.start_dir(source_buf)
   local cache = resources.ensure_index(root)
+  local base_dir = resources.project_root(root, cache.roots)
+  if not base_dir or base_dir == "" then
+    base_dir = root
+  end
   local project = state.set_languages(cache.key, cache.languages)
   state.set_buf_project(source_buf, cache.key)
   local langs = active_languages(cache, project)
@@ -227,10 +231,23 @@ function M.rename(opts)
     return file_cache[path]
   end
 
+  ---@param path string
+  ---@param lang string
+  ---@return string|nil
+  ---@return string|nil
+  local function sanitize_resource_path(path, lang)
+    local sanitized_path, sanitize_err = util.sanitize_path(path, base_dir)
+    if not sanitized_path then
+      return nil,
+        string.format("resource path for language '%s' is outside project root: %s", lang, sanitize_err or "unknown")
+    end
+    return sanitized_path, nil
+  end
+
   for _, lang in ipairs(langs) do
     local info = item.hover and item.hover.values and item.hover.values[lang]
-    local old_file = (info and info.file) or resources.namespace_path(root, lang, old_ns)
-    if not old_file then
+    local old_file_raw = (info and info.file) or resources.namespace_path(root, lang, old_ns)
+    if not old_file_raw then
       return false,
         string.format(
           "Cannot find resource file for language '%s'. Expected file in namespace '%s'. "
@@ -239,9 +256,13 @@ function M.rename(opts)
           old_ns or "default"
         )
     end
+    local old_file, old_file_err = sanitize_resource_path(old_file_raw, lang)
+    if not old_file then
+      return false, old_file_err
+    end
     local old_is_root = resources.is_next_intl_root_file(root, lang, old_file)
-    local new_file = old_is_root and old_file or resources.namespace_path(root, lang, new_ns)
-    if not new_file then
+    local new_file_raw = old_is_root and old_file or resources.namespace_path(root, lang, new_ns)
+    if not new_file_raw then
       return false,
         string.format(
           "Cannot find resource file for language '%s'. Expected file in namespace '%s'. "
@@ -249,6 +270,10 @@ function M.rename(opts)
           lang,
           new_ns or "default"
         )
+    end
+    local new_file, new_file_err = sanitize_resource_path(new_file_raw, lang)
+    if not new_file then
+      return false, new_file_err
     end
     local same_file = util.normalize_path(old_file, root) == util.normalize_path(new_file, root)
 
