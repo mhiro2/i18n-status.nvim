@@ -1,4 +1,4 @@
-.PHONY: deps deps-plenary deps-treesitter deps-grammars treesitter-build treesitter-install fmt lint stylua stylua-check selene rustfmt rustfmt-check rust-lint test rust-build rust-test lua-test
+.PHONY: deps deps-plenary deps-treesitter deps-grammars treesitter-build treesitter-install fmt lint stylua stylua-check selene rustfmt rustfmt-check rust-lint license-check test rust-build rust-test lua-test
 
 CC ?= cc
 NVIM ?= nvim
@@ -80,6 +80,9 @@ rustfmt-check:
 
 rust-lint:
 	cd rust && cargo clippy --all-targets -- -D warnings
+
+license-check:
+	cd rust && cargo deny check licenses
 
 rust-build:
 	cd rust && cargo build --release

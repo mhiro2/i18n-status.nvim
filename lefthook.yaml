@@ -24,3 +24,5 @@ pre-push:
       run: make lint
     test:
       run: make test
+    license-check:
+      run: make license-check

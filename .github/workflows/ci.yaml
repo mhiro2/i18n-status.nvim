@@ -54,6 +54,20 @@ jobs:
       - name: Run clippy
         run: make rust-lint
 
+  rust-license:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2.8.2
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Run license check
+        run: make license-check
+
   test:
     runs-on: ubuntu-latest
     strategy:
