@@ -85,7 +85,7 @@ Examples:
 - 🔁 **Language cycling**: yankround-style next/prev + "back to previous".
 - 🎯 **Inline goto definition (opt-in)**: Map any keys (e.g. `gd`) to jump straight to the translation file under the cursor.
 - 🩺 **Doctor + Review**: Diagnose project-wide issues and review/fix them in a two-pane floating UI where the left list drives every action and the right side stays as a live preview.
-- ✂️ **Interactive JSX extraction**: Detect hardcoded JSX text, then extract it with per-item prompts that show text preview, jump to the target, and highlight the exact replacement range.
+- ✂️ **Interactive JSX extraction**: Detect hardcoded JSX text and open a Review UI with diff preview, bulk selection, and one-shot apply.
 - ⚡ **Completion**: blink.cmp source (first argument only), missing-first sorting.
 - 🧩 **Dynamic key resolution**: const refs, template interpolations, ternary branches — resolved statically via Rust AST.
 - 🔄 **Auto reload**: Translation file changes update inline quickly (watcher + cache).
@@ -220,7 +220,7 @@ If none is found, a best-effort fallback is used and `:checkhealth` will warn.
 - **`:I18nDoctor`**: Diagnose i18n issues across the entire project and open Review UI
 - **`:I18nDoctorCancel`**: Cancel a running doctor scan
 - **`:I18nAddKey`**: Add a new i18n key to all language files interactively (writes per language; when a write fails mid-way, successful languages remain written)
-- **`:I18nExtract`**: Detect and extract hardcoded JSX text in current buffer (supports `:'<,'>I18nExtract`), with text preview + target focus/highlight while prompting
+- **`:I18nExtract`**: Detect hardcoded JSX text and open the Extract Review UI (supports `:'<,'>I18nExtract` for range extraction)
 - **`:I18nRefresh`**: Force refresh current buffer
 
 ### Language
@@ -285,6 +285,27 @@ All groups are created with `default=true` and linked to Telescope/Diagnostic gr
 | `resource errors` | invalid JSON or read errors |
 | `roots missing` | no resource root found (`locales/`, `public/locales/`, or `messages/`) |
 
+
+## ✂️ Extract Review UI
+
+Run `:I18nExtract` (or `:'<,'>I18nExtract` for a range) to detect hardcoded JSX text and open a two-pane floating window: left for candidates, right for diff preview.
+
+**Keymaps:**
+
+- **`q`** / **`<Esc>`**: Close
+- **`<Space>`**: Toggle current candidate selection
+- **`/`**: Filter candidates by key or source text (empty input clears)
+- **`a`**: Select all
+- **`A`**: Deselect all
+- **`r`**: Edit key name
+- **`u`**: Reuse existing key (for conflicting keys)
+- **`U`**: Switch back to new key mode
+- **`<CR>`**: Apply selected candidates
+- **`?`**: Toggle keymap help overlay
+
+Candidates are unselected by default. Select targets with `<Space>`, then use `<CR>`.
+The list pane keeps shortcut hints minimal (`?:help`, `q:quit`). Use `?` to view the full keymap.
+The diff preview shows both the source replacement and the resource file changes that will be written. When a key conflicts with an existing one, `u` lets you reuse it (source replacement only, no resource write).
 
 ## ⚡ Completion (blink.cmp)
 
