@@ -8,10 +8,11 @@ CONTENTS                                                    *i18n-status-content
      Configuration options                                 |i18n-status-config|
   3. Commands                                              |i18n-status-commands|
   4. Doctor                                                |i18n-status-doctor|
-  5. Completion (blink.cmp)                                |i18n-status-completion|
-  6. Highlights                                            |i18n-status-highlights|
-  7. Checkhealth                                           |i18n-status-checkhealth|
-  8. Notes / limitations                                   |i18n-status-notes|
+  5. Extract                                               |i18n-status-extract|
+  6. Completion (blink.cmp)                                |i18n-status-completion|
+  7. Highlights                                            |i18n-status-highlights|
+  8. Checkhealth                                           |i18n-status-checkhealth|
+  9. Notes / limitations                                   |i18n-status-notes|
 
 ==============================================================================
 1. i18n-status.nvim                                                     *i18n-status*
@@ -218,8 +219,9 @@ The plugin creates the following user commands:
                       Writes are performed per language file; when a write
                       fails mid-way, previously written languages remain.
 
-  :I18nExtract        Detect and extract hardcoded JSX text in current buffer.
+  :I18nExtract        Detect hardcoded JSX text and open the Extract Review UI.
                       Supports ranges (e.g. :'<,'>I18nExtract).
+                      See |i18n-status-extract| for Review UI details.
 
   :I18nRefresh        Force refresh for current buffer.
 
@@ -317,7 +319,51 @@ Review UI:
             I18nStatusReviewFocus, I18nStatusReviewStatusDefault
 
 ==============================================================================
-5. Completion (blink.cmp)                                   *i18n-status-completion*
+5. Extract                                                   *i18n-status-extract*
+
+Run:
+  :I18nExtract
+  :'<,'>I18nExtract      (range-restricted)
+
+Extract detects hardcoded JSX text in the current buffer and opens a
+two-pane floating Review UI (left: candidate list, right: diff preview).
+
+Candidates show selection state, line number, text preview, proposed key,
+status (ready / conflict_existing / invalid_key / error), and mode
+(new / reuse).
+
+Diff preview shows both the source replacement and the resource file
+changes per language.
+
+Keymaps:
+  q / <Esc>   Close (cancel)
+  <Space>     Toggle current candidate selection
+  /           Filter candidates by key or source text (empty input clears)
+  a           Select all
+  A           Deselect all
+  r           Edit key name
+  u           Reuse existing key (for conflicting keys)
+  U           Switch back to new key mode
+  <CR>        Apply selected candidates
+  ?           Toggle keymap help overlay
+
+Candidates are unselected by default. Select targets with <Space>, then
+apply using <CR>.
+The list pane keeps shortcut hints minimal (?:help, q:quit). Use ?
+to open the full keymap help.
+
+When applying, candidates with invalid_key or unresolved conflict_existing
+status are skipped. Results are reported as applied/skipped/failed counts.
+
+When a key conflicts with an existing one, pressing `u` lets you reuse
+the existing key: source text is replaced but no resource file is written.
+Press `U` to switch back to creating a new key.
+
+If resource file writes fail during apply, the source buffer replacement
+is rolled back automatically.
+
+==============================================================================
+6. Completion (blink.cmp)                                   *i18n-status-completion*
 
 Completion is provided via blink.cmp source module:
 
@@ -337,7 +383,7 @@ Notes:
   - Namespace is inferred from useTranslation/useTranslations/getTranslations scope.
 
 ==============================================================================
-6. Highlights                                               *i18n-status-highlights*
+7. Highlights                                               *i18n-status-highlights*
 
 Default highlight links (created with default=true):
   I18nStatusSame      -> DiagnosticHint
@@ -357,7 +403,7 @@ You can override via setup():
   }
 
 ==============================================================================
-7. Checkhealth                                           *i18n-status-checkhealth*
+8. Checkhealth                                           *i18n-status-checkhealth*
 
 Run:
   :checkhealth i18n-status
@@ -373,7 +419,7 @@ Health checks report:
 Note: checkhealth does NOT run :I18nDoctor.
 
 ==============================================================================
-8. Notes / limitations                                          *i18n-status-notes*
+9. Notes / limitations                                          *i18n-status-notes*
 
 Dynamic key support (no runtime evaluation).
 Supported:
