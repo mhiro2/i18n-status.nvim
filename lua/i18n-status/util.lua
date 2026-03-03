@@ -440,6 +440,21 @@ function M.shorten_path(path)
   return path
 end
 
+---@param full_key string
+---@return string|nil namespace
+---@return string|nil key_path
+function M.split_i18n_key(full_key)
+  if type(full_key) ~= "string" then
+    return nil, nil
+  end
+  local namespace = full_key:match("^(.-):")
+  local key_path = full_key:match("^[^:]+:(.+)$")
+  if not namespace or namespace == "" or not key_path or key_path == "" then
+    return nil, nil
+  end
+  return namespace, key_path
+end
+
 ---Normalize and validate a file path for security
 ---Checks for null bytes, resolves to real path, and ensures it's within base_dir
 ---@param path string The path to validate
