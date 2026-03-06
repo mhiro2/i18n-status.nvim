@@ -5,6 +5,7 @@ local core = require("i18n-status.core")
 local extract_diff = require("i18n-status.extract_diff")
 local key_write = require("i18n-status.key_write")
 local review_ui = require("i18n-status.review_ui")
+local review_shared_ui = require("i18n-status.review_shared_ui")
 local util = require("i18n-status.util")
 
 local EXTRACT_REVIEW_NS = vim.api.nvim_create_namespace("i18n-status-extract-review")
@@ -134,14 +135,21 @@ end
 ---@param query string|nil
 ---@return string|nil
 local function normalize_filter_query(query)
-  if type(query) ~= "string" then
-    return nil
-  end
-  local trimmed = vim.trim(query)
-  if trimmed == "" then
-    return nil
-  end
-  return trimmed:lower()
+  return review_shared_ui.normalize_filter_query(query, { lowercase = true })
+end
+
+---@param ctx I18nStatusExtractReviewCtx
+close_keymap_help = function(ctx)
+  review_shared_ui.close_help_window(ctx)
+end
+
+---@param ctx I18nStatusExtractReviewCtx
+local function toggle_keymap_help(ctx)
+  review_shared_ui.toggle_help_window(ctx, {
+    title = "I18nExtract keymaps",
+    keymaps = KEYMAP_HELP,
+    filetype = "i18n-status-extract-review-help",
+  })
 end
 
 ---@param candidate I18nStatusExtractCandidate
@@ -157,95 +165,6 @@ local function candidate_matches_filter(candidate, query)
   end
   local text = (candidate.text or ""):lower()
   return text:find(query, 1, true) ~= nil
-end
-
----@return string[]
-local function build_keymap_help_lines()
-  local title = "I18nExtract keymaps"
-  local divider = string.rep("-", #title)
-  local max_key = 0
-  for _, entry in ipairs(KEYMAP_HELP) do
-    max_key = math.max(max_key, vim.fn.strdisplaywidth(entry.keys))
-  end
-  local format = " %-" .. max_key .. "s  %s "
-  local lines = { " " .. title .. " ", " " .. divider .. " " }
-  for _, entry in ipairs(KEYMAP_HELP) do
-    lines[#lines + 1] = string.format(format, entry.keys, entry.desc)
-  end
-  return lines
-end
-
----@param ctx I18nStatusExtractReviewCtx
-close_keymap_help = function(ctx)
-  if not ctx then
-    return
-  end
-  if ctx.help_win and vim.api.nvim_win_is_valid(ctx.help_win) then
-    pcall(vim.api.nvim_win_close, ctx.help_win, true)
-  end
-  if ctx.help_buf and vim.api.nvim_buf_is_valid(ctx.help_buf) then
-    pcall(vim.api.nvim_buf_delete, ctx.help_buf, { force = true })
-  end
-  ctx.help_win = nil
-  ctx.help_buf = nil
-end
-
----@param ctx I18nStatusExtractReviewCtx
-local function open_keymap_help(ctx)
-  close_keymap_help(ctx)
-  local lines = build_keymap_help_lines()
-  local width = 0
-  for _, line in ipairs(lines) do
-    width = math.max(width, vim.fn.strdisplaywidth(line))
-  end
-
-  local max_width = math.max(math.floor(vim.o.columns * 0.6), 20)
-  local win_width = math.min(width + 4, max_width)
-  win_width = math.max(win_width, 20)
-  local max_height = math.max(math.floor(vim.o.lines * 0.5), #lines + 2)
-  local win_height = math.min(#lines + 2, max_height)
-  win_height = math.max(win_height, #lines)
-  local total_lines = math.max(vim.o.lines, win_height)
-  local total_cols = math.max(vim.o.columns, win_width)
-  local row = math.max(math.floor((total_lines - win_height) / 2), 0)
-  local col = math.max(math.floor((total_cols - win_width) / 2), 0)
-
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].modifiable = true
-  vim.bo[buf].filetype = "i18n-status-extract-review-help"
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
-
-  local win = vim.api.nvim_open_win(buf, false, {
-    relative = "editor",
-    width = win_width,
-    height = win_height,
-    row = row,
-    col = col,
-    border = "rounded",
-    style = "minimal",
-    focusable = false,
-    zindex = 100,
-  })
-
-  vim.wo[win].winhighlight = table.concat({
-    "Normal:I18nStatusReviewDetailNormal",
-    "NormalFloat:I18nStatusReviewDetailNormal",
-    "FloatBorder:I18nStatusReviewBorder",
-  }, ",")
-
-  ctx.help_win = win
-  ctx.help_buf = buf
-end
-
----@param ctx I18nStatusExtractReviewCtx
-local function toggle_keymap_help(ctx)
-  if ctx.help_win and vim.api.nvim_win_is_valid(ctx.help_win) then
-    close_keymap_help(ctx)
-    return
-  end
-  open_keymap_help(ctx)
 end
 
 local split_key = util.split_i18n_key
@@ -878,21 +797,14 @@ end
 
 ---@param ctx I18nStatusExtractReviewCtx
 local function prompt_filter(ctx)
-  vim.ui.input({
+  review_shared_ui.prompt_filter(ctx, {
     prompt = "Extract filter (/ to clear): ",
     default = ctx.filter_query or "",
-  }, function(input)
-    if input == nil then
-      return
-    end
-    local trimmed = vim.trim(input)
-    if trimmed == "" then
-      ctx.filter_query = nil
-    else
-      ctx.filter_query = trimmed
-    end
-    refresh_views(ctx, nil)
-  end)
+    on_confirm = function(current, normalized)
+      current.filter_query = normalized
+      refresh_views(current, nil)
+    end,
+  })
 end
 
 ---@param ctx I18nStatusExtractReviewCtx
@@ -1203,36 +1115,41 @@ end
 
 ---@param buf integer
 local function set_list_keymaps(buf)
-  local function map(lhs, handler)
-    vim.keymap.set("n", lhs, function()
-      local ctx = review_state[buf]
-      if not ctx then
-        return
-      end
-      handler(ctx)
-    end, { buffer = buf, silent = true, nowait = true })
-  end
-
-  map("q", function(ctx)
-    close_review(ctx, true)
-  end)
-  map("<Esc>", function(ctx)
-    close_review(ctx, true)
-  end)
-  map("<Space>", toggle_current_selection)
-  map("a", select_all)
-  map("A", select_none)
-  map("r", function(ctx)
-    local candidate = current_candidate(ctx)
-    if candidate then
-      edit_candidate_key(ctx, candidate)
-    end
-  end)
-  map("/", prompt_filter)
-  map("u", choose_reuse_mode)
-  map("U", choose_new_mode)
-  map("<CR>", apply_selected)
-  map("?", toggle_keymap_help)
+  review_shared_ui.bind_context_keymaps({
+    bufnr = buf,
+    state = review_state,
+    bindings = {
+      {
+        lhs = "q",
+        handler = function(ctx)
+          close_review(ctx, true)
+        end,
+      },
+      {
+        lhs = "<Esc>",
+        handler = function(ctx)
+          close_review(ctx, true)
+        end,
+      },
+      { lhs = "<Space>", handler = toggle_current_selection },
+      { lhs = "a", handler = select_all },
+      { lhs = "A", handler = select_none },
+      {
+        lhs = "r",
+        handler = function(ctx)
+          local candidate = current_candidate(ctx)
+          if candidate then
+            edit_candidate_key(ctx, candidate)
+          end
+        end,
+      },
+      { lhs = "/", handler = prompt_filter },
+      { lhs = "u", handler = choose_reuse_mode },
+      { lhs = "U", handler = choose_new_mode },
+      { lhs = "<CR>", handler = apply_selected },
+      { lhs = "?", handler = toggle_keymap_help },
+    },
+  })
 end
 
 ---@param bufnr integer
