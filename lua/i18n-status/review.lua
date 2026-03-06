@@ -6,6 +6,7 @@ local state = require("i18n-status.state")
 local util = require("i18n-status.util")
 local review_ui = require("i18n-status.review_ui")
 local review_actions_mod = require("i18n-status.review_actions")
+local review_shared_ui = require("i18n-status.review_shared_ui")
 
 local MODE_PROBLEMS = review_ui.MODE_PROBLEMS
 local MODE_OVERVIEW = review_ui.MODE_OVERVIEW
@@ -235,89 +236,18 @@ local function add_list_divider(buf, width)
   })
 end
 
----@return string[]
-local function build_keymap_help_lines()
-  local title = "I18nDoctor keymaps"
-  local divider = string.rep("-", #title)
-  local max_key = 0
-  for _, entry in ipairs(KEYMAP_HELP) do
-    max_key = math.max(max_key, vim.fn.strdisplaywidth(entry.keys))
-  end
-  local format = " %-" .. max_key .. "s  %s "
-  local lines = { " " .. title .. " ", " " .. divider .. " " }
-  for _, entry in ipairs(KEYMAP_HELP) do
-    table.insert(lines, string.format(format, entry.keys, entry.desc))
-  end
-  return lines
-end
-
----@param ctx table
+---@param ctx I18nStatusReviewCtx
 close_keymap_help = function(ctx)
-  if ctx.help_win and vim.api.nvim_win_is_valid(ctx.help_win) then
-    pcall(vim.api.nvim_win_close, ctx.help_win, true)
-  end
-  if ctx.help_buf and vim.api.nvim_buf_is_valid(ctx.help_buf) then
-    pcall(vim.api.nvim_buf_delete, ctx.help_buf, { force = true })
-  end
-  ctx.help_win = nil
-  ctx.help_buf = nil
+  review_shared_ui.close_help_window(ctx)
 end
 
----@param ctx table
-local function open_keymap_help(ctx)
-  close_keymap_help(ctx)
-  local lines = build_keymap_help_lines()
-  local width = 0
-  for _, line in ipairs(lines) do
-    width = math.max(width, vim.fn.strdisplaywidth(line))
-  end
-  local max_width = math.max(math.floor(vim.o.columns * 0.6), 20)
-  local win_width = math.min(width + 4, max_width)
-  win_width = math.max(win_width, 20)
-  local max_height = math.max(math.floor(vim.o.lines * 0.5), #lines + 2)
-  local win_height = math.min(#lines + 2, max_height)
-  win_height = math.max(win_height, #lines)
-  local total_lines = math.max(vim.o.lines, win_height)
-  local total_cols = math.max(vim.o.columns, win_width)
-  local row = math.max(math.floor((total_lines - win_height) / 2), 0)
-  local col = math.max(math.floor((total_cols - win_width) / 2), 0)
-
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].modifiable = true
-  vim.bo[buf].filetype = "i18n-status-review-help"
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
-
-  local win = vim.api.nvim_open_win(buf, false, {
-    relative = "editor",
-    width = win_width,
-    height = win_height,
-    row = row,
-    col = col,
-    border = "rounded",
-    style = "minimal",
-    focusable = false,
-    zindex = 100,
-  })
-
-  vim.wo[win].winhighlight = table.concat({
-    "Normal:I18nStatusReviewDetailNormal",
-    "NormalFloat:I18nStatusReviewDetailNormal",
-    "FloatBorder:I18nStatusReviewBorder",
-  }, ",")
-
-  ctx.help_win = win
-  ctx.help_buf = buf
-end
-
----@param ctx table
+---@param ctx I18nStatusReviewCtx
 local function toggle_keymap_help(ctx)
-  if ctx.help_win and vim.api.nvim_win_is_valid(ctx.help_win) then
-    close_keymap_help(ctx)
-  else
-    open_keymap_help(ctx)
-  end
+  review_shared_ui.toggle_help_window(ctx, {
+    title = "I18nDoctor keymaps",
+    keymaps = KEYMAP_HELP,
+    filetype = "i18n-status-review-help",
+  })
 end
 
 ---Groups items by their status symbol
@@ -408,14 +338,7 @@ end
 ---@param query string|nil
 ---@return string|nil
 local function normalize_filter_query(query)
-  if not query then
-    return nil
-  end
-  local normalized = vim.trim(query)
-  if normalized == "" then
-    return nil
-  end
-  return normalized
+  return review_shared_ui.normalize_filter_query(query)
 end
 
 ---@param items I18nStatusResolved[]|nil
@@ -1037,28 +960,31 @@ end
 
 ---@param ctx I18nStatusReviewCtx
 local function prompt_filter(ctx)
-  vim.ui.input({ prompt = "Filter keys (/): ", default = ctx.filter_query or "" }, function(input)
-    if input == nil or ctx.closing then
-      return
-    end
+  review_shared_ui.prompt_filter(ctx, {
+    prompt = "Filter keys (/): ",
+    default = ctx.filter_query or "",
+    skip = function(current)
+      return current.closing == true
+    end,
+    on_confirm = function(current, normalized)
+      current.filter_query = normalized
 
-    ctx.filter_query = normalize_filter_query(input)
+      local problems = current.views and current.views[MODE_PROBLEMS]
+      if problems and problems.all_items then
+        rebuild_view_sections(problems, MODE_PROBLEMS, current.filter_query)
+      end
 
-    local problems = ctx.views and ctx.views[MODE_PROBLEMS]
-    if problems and problems.all_items then
-      rebuild_view_sections(problems, MODE_PROBLEMS, ctx.filter_query)
-    end
+      local overview = current.views and current.views[MODE_OVERVIEW]
+      if overview and overview.all_items then
+        rebuild_view_sections(overview, MODE_OVERVIEW, current.filter_query)
+      end
 
-    local overview = ctx.views and ctx.views[MODE_OVERVIEW]
-    if overview and overview.all_items then
-      rebuild_view_sections(overview, MODE_OVERVIEW, ctx.filter_query)
-    end
-
-    local view = current_view(ctx)
-    apply_view(ctx, view)
-    render_list(ctx.list_buf, ctx)
-    update_detail(ctx)
-  end)
+      local view = current_view(current)
+      apply_view(current, view)
+      render_list(current.list_buf, current)
+      update_detail(current)
+    end,
+  })
 end
 
 ---Toggles section expansion/collapse
@@ -1100,36 +1026,33 @@ end
 local function set_list_keymaps(buf)
   local actions = get_action_handlers()
 
-  local function map(lhs, handler, opts)
-    opts = opts or {}
-    vim.keymap.set("n", lhs, function()
-      local ctx = review_state[buf]
-      if not ctx then
-        return
-      end
-      -- Close help window before executing action (except for help toggle and close actions)
-      if opts.close_help ~= false then
+  review_shared_ui.bind_context_keymaps({
+    bufnr = buf,
+    state = review_state,
+    before = function(ctx, binding)
+      -- Close help before actions except for explicit opt-out actions.
+      if binding.close_help ~= false then
         close_keymap_help(ctx)
       end
-      if opts.update ~= false then
+      if binding.update ~= false then
         update_detail(ctx)
       end
-      handler(ctx)
-    end, { buffer = buf, silent = true, nowait = true })
-  end
-
-  map("q", close_review, { update = false, close_help = false })
-  map("<Esc>", close_review, { update = false, close_help = false })
-  map("e", actions.edit_focus)
-  map("E", actions.edit_locale_select)
-  map("r", actions.rename_item)
-  map("a", actions.add_key)
-  map("gd", actions.jump_to_definition)
-  map("<Tab>", toggle_mode, { update = false })
-  map("/", prompt_filter, { update = false })
-  map("<Space>", toggle_section, { update = true })
-  map("<CR>", toggle_section, { update = true })
-  map("?", toggle_keymap_help, { update = false, close_help = false })
+    end,
+    bindings = {
+      { lhs = "q", handler = close_review, update = false, close_help = false },
+      { lhs = "<Esc>", handler = close_review, update = false, close_help = false },
+      { lhs = "e", handler = actions.edit_focus },
+      { lhs = "E", handler = actions.edit_locale_select },
+      { lhs = "r", handler = actions.rename_item },
+      { lhs = "a", handler = actions.add_key },
+      { lhs = "gd", handler = actions.jump_to_definition },
+      { lhs = "<Tab>", handler = toggle_mode, update = false },
+      { lhs = "/", handler = prompt_filter, update = false },
+      { lhs = "<Space>", handler = toggle_section, update = true },
+      { lhs = "<CR>", handler = toggle_section, update = true },
+      { lhs = "?", handler = toggle_keymap_help, update = false, close_help = false },
+    },
+  })
 end
 
 ---@param issues I18nStatusDoctorIssue[]
@@ -1336,6 +1259,7 @@ function M.open_doctor_results(issues, ctx, config)
   return review_ctx
 end
 
+---@return boolean
 M.is_doctor_open = is_doctor_open
 
 return M

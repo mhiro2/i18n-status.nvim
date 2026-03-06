@@ -34,7 +34,7 @@ end
 
 ---@param path string
 ---@return table|nil
----@return table
+---@return I18nStatusJsonStyle
 function M.read_json_table(path)
   if not util.file_exists(path) then
     return {}, { indent = "  ", newline = true }
@@ -75,7 +75,7 @@ end
 
 ---@param path string
 ---@param data table
----@param style table|nil
+---@param style I18nStatusJsonStyle|nil
 ---@param opts I18nStatusResourceWriteOpts|nil
 ---@return boolean ok
 ---@return string|nil err

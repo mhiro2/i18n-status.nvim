@@ -33,6 +33,18 @@ local rpc = require("i18n-status.rpc")
 ---@field path string
 ---@field kind "i18next"|"next_intl"
 
+---@class I18nStatusResourceInfo
+---@field kind "i18next"|"next-intl"|"next_intl"
+---@field root string
+---@field lang string
+---@field namespace string|nil
+---@field is_root boolean
+
+---@class I18nStatusJsonStyle
+---@field indent string
+---@field newline boolean
+---@field error string|nil
+
 ---@class I18nStatusCache
 ---@field key string|nil
 ---@field rpc_cache_key string|nil
@@ -90,7 +102,7 @@ local function contains(list, value)
   return false
 end
 
----@param roots table
+---@param roots I18nStatusRootInfo[]
 ---@param start_dir string
 ---@return string
 local function compute_cache_key(roots, start_dir)
@@ -113,8 +125,8 @@ local function compute_cache_key(roots, start_dir)
   return vim.json.encode(normalized)
 end
 
----@param roots table
----@return table
+---@param roots I18nStatusRootInfo[]
+---@return I18nStatusRootInfo[]
 local function normalize_roots(roots)
   local normalized = {}
   for _, root in ipairs(roots or {}) do
@@ -184,7 +196,7 @@ local function file_mtime_ns(path)
   return stat.mtime.sec * 1000000000 + nsec
 end
 
----@param roots table
+---@param roots I18nStatusRootInfo[]
 ---@return string[]
 local function collect_resource_files(roots)
   local files = {}
@@ -250,7 +262,7 @@ local function cache_files_unchanged(cache)
   return true
 end
 
----@param roots table
+---@param roots I18nStatusRootInfo[]
 ---@return string|nil
 local function roots_key(roots)
   if not roots or #roots == 0 then
@@ -264,7 +276,7 @@ local function roots_key(roots)
   return table.concat(parts, "|")
 end
 
----@param roots table
+---@param roots I18nStatusRootInfo[]
 ---@param opts? { force?: boolean }
 ---@return string[]
 local function watch_paths(roots, opts)
@@ -326,9 +338,9 @@ local function watch_paths(roots, opts)
   return paths
 end
 
----@param roots table
+---@param roots I18nStatusRootInfo[]
 ---@param path string
----@return table|nil
+---@return I18nStatusResourceInfo|nil
 local function resource_info_from_roots(roots, path)
   if not path or path == "" then
     return nil
@@ -405,7 +417,7 @@ function M.start_dir(bufnr)
 end
 
 ---@param start_dir string
----@param roots table|nil
+---@param roots I18nStatusRootInfo[]|nil
 ---@return string
 function M.project_root(start_dir, roots)
   if not start_dir or start_dir == "" then
@@ -482,15 +494,15 @@ end
 
 ---@param path string
 ---@return table|nil
----@return table
+---@return I18nStatusJsonStyle
 function M.read_json_table(path)
   return resource_io.read_json_table(path)
 end
 
 ---@param path string
 ---@param data table
----@param style table|nil
----@param opts table|nil
+---@param style I18nStatusJsonStyle|nil
+---@param opts I18nStatusResourceWriteOpts|nil
 ---@return boolean ok
 ---@return string|nil err
 function M.write_json_table(path, data, style, opts)
@@ -498,8 +510,8 @@ function M.write_json_table(path, data, style, opts)
   return resource_io.write_json_table(path, data, style, io_opts)
 end
 
----@param result table
----@return table
+---@param result I18nStatusCache
+---@return I18nStatusCache
 local function normalize_index_result(result)
   local normalized_files = {}
   for path, mtime in pairs(result.files or {}) do
@@ -530,7 +542,7 @@ local function normalize_index_result(result)
   return result
 end
 
----@return table
+---@return I18nStatusCache
 local function empty_index_result()
   return {
     index = {},
@@ -541,8 +553,8 @@ local function empty_index_result()
   }
 end
 
----@param roots table
----@return table
+---@param roots I18nStatusRootInfo[]
+---@return I18nStatusCache
 function M.build_index(roots)
   local result, err = rpc.request_sync("resource/buildIndex", {
     roots = roots,
@@ -553,8 +565,8 @@ function M.build_index(roots)
   return normalize_index_result(result)
 end
 
----@param roots table
----@param cb fun(result: table)
+---@param roots I18nStatusRootInfo[]
+---@param cb fun(result: I18nStatusCache)
 function M.build_index_async(roots, cb)
   rpc.request("resource/buildIndex", {
     roots = roots,
@@ -567,7 +579,7 @@ function M.build_index_async(roots, cb)
   end)
 end
 
----@param cache table
+---@param cache I18nStatusCache
 local function rebuild_aux_indexes(cache)
   cache.entries_by_key = {}
   cache.file_entries = {}
@@ -622,8 +634,8 @@ local function rebuild_aux_indexes(cache)
   cache.file_errors = new_file_errors
 end
 
----@param target table
----@param source table
+---@param target I18nStatusCache
+---@param source I18nStatusCache
 local function overwrite_table(target, source)
   for key in pairs(target) do
     target[key] = nil
@@ -634,8 +646,8 @@ local function overwrite_table(target, source)
 end
 
 ---@param key string
----@param cache table|nil
----@return table|nil
+---@param cache I18nStatusCache|nil
+---@return I18nStatusCache|nil
 local function cached_index_if_fresh(key, cache)
   if not cache or cache.dirty then
     return nil
@@ -663,8 +675,8 @@ end
 
 ---@param start_dir string
 ---@return string|nil
----@return table|nil
----@return table
+---@return I18nStatusCache|nil
+---@return I18nStatusRootInfo[]
 local function watching_cache_for_start_dir(start_dir)
   local normalized_start = util.normalize_path(start_dir) or start_dir
   local best_key = nil
@@ -695,7 +707,7 @@ local function watching_cache_for_start_dir(start_dir)
 end
 
 ---@param start_dir string
----@return table
+---@return I18nStatusRootInfo[]
 local function resolve_roots_sync(start_dir)
   local roots_result, roots_err = rpc.request_sync("resource/resolveRoots", {
     start_dir = start_dir,
@@ -707,10 +719,10 @@ local function resolve_roots_sync(start_dir)
 end
 
 ---@param key string
----@param cache table|nil
----@param roots table
----@param built table
----@return table
+---@param cache I18nStatusCache|nil
+---@param roots I18nStatusRootInfo[]
+---@param built I18nStatusCache
+---@return I18nStatusCache
 local function store_built_index(key, cache, roots, built)
   built.key = key
   built.rpc_cache_key = built.cache_key or key
@@ -733,7 +745,7 @@ end
 
 ---@param start_dir string
 ---@param opts? { cooperative?: boolean }
----@return table
+---@return I18nStatusCache
 function M.ensure_index(start_dir, opts)
   opts = opts or {}
   start_dir = start_dir or vim.fn.getcwd()
@@ -772,7 +784,7 @@ end
 
 ---@param start_dir string
 ---@param opts? { cooperative?: boolean }
----@param cb fun(cache: table)
+---@param cb fun(cache: I18nStatusCache)
 function M.ensure_index_async(start_dir, opts, cb)
   opts = opts or {}
   start_dir = start_dir or vim.fn.getcwd()
@@ -801,7 +813,7 @@ end
 
 ---@param cache_key string
 ---@param paths string[]
----@param opts table|nil
+---@param opts { force?: boolean }|nil
 ---@return boolean
 ---@return boolean|nil
 function M.apply_changes(cache_key, paths, opts)
@@ -898,58 +910,36 @@ function M.apply_changes(cache_key, paths, opts)
       paths = rpc_paths,
     })
 
+    ---@param built I18nStatusCache
+    ---@param rpc_key string
+    local function finalize_built(built, rpc_key)
+      built.key = cache_key
+      built.rpc_cache_key = rpc_key
+      built.roots = cache.roots or {}
+      built.checked_at = uv.now()
+      built.dirty = false
+      rebuild_aux_indexes(built)
+      for _, p in ipairs(rpc_paths) do
+        clear_file_error(p)
+      end
+      overwrite_table(cache, built)
+      M.caches[cache_key] = cache
+    end
+
     if not rpc_err and rpc_result and rpc_result.success and not rpc_result.needs_rebuild and rpc_result.result then
-      local built = normalize_index_result(rpc_result.result)
-      built.key = cache_key
-      built.rpc_cache_key = cache.rpc_cache_key or cache_key
-      built.roots = cache.roots or {}
-      built.checked_at = uv.now()
-      built.dirty = false
-      rebuild_aux_indexes(built)
-      for _, path in ipairs(rpc_paths) do
-        clear_file_error(path)
-      end
-      overwrite_table(cache, built)
-      M.caches[cache_key] = cache
+      finalize_built(normalize_index_result(rpc_result.result), cache.rpc_cache_key or cache_key)
       return true, false
     end
 
-    if rpc_result and rpc_result.needs_rebuild then
-      local built = M.build_index(cache.roots or {})
-      built.key = cache_key
-      built.rpc_cache_key = built.cache_key or cache.rpc_cache_key or cache_key
-      built.roots = cache.roots or {}
-      built.checked_at = uv.now()
-      built.dirty = false
-      rebuild_aux_indexes(built)
-      for _, path in ipairs(rpc_paths) do
-        clear_file_error(path)
-      end
-      overwrite_table(cache, built)
-      M.caches[cache_key] = cache
-      return true, false
-    end
-
-    -- Fallback path: if RPC incremental update is unavailable, rebuild from source.
     local built = M.build_index(cache.roots or {})
-    built.key = cache_key
-    built.rpc_cache_key = built.cache_key or cache.rpc_cache_key or cache_key
-    built.roots = cache.roots or {}
-    built.checked_at = uv.now()
-    built.dirty = false
-    rebuild_aux_indexes(built)
-    for _, path in ipairs(rpc_paths) do
-      clear_file_error(path)
-    end
-    overwrite_table(cache, built)
-    M.caches[cache_key] = cache
+    finalize_built(built, built.cache_key or cache.rpc_cache_key or cache_key)
   end
 
   return true, false
 end
 
 ---@param start_dir string
----@return table
+---@return I18nStatusRootInfo[]
 function M.roots(start_dir)
   local cache = M.ensure_index(start_dir)
   return cache.roots or {}
