@@ -1336,6 +1336,7 @@ function M.open_doctor_results(issues, ctx, config)
   return review_ctx
 end
 
+---@return boolean
 M.is_doctor_open = is_doctor_open
 
 return M
