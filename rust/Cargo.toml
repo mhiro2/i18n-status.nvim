@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 swc_ecma_parser = "34"
-swc_ecma_ast = "20"
+swc_ecma_ast = "21"
 swc_common = "18"
 swc_atoms = "9"
 serde = { version = "1", features = ["derive"] }
