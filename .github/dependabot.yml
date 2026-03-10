@@ -12,6 +12,10 @@ updates:
     directory: /rust
     schedule:
       interval: weekly
+    groups:
+      swc:
+        patterns:
+          - "swc_*"
     open-pull-requests-limit: 10
     cooldown:
       default-days: 7
