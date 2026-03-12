@@ -3,7 +3,9 @@ local M = {}
 
 local resolve = require("i18n-status.resolve")
 local state = require("i18n-status.state")
-local util = require("i18n-status.util")
+local review_buffers = require("i18n-status.review_buffers")
+local review_filters = require("i18n-status.review_filters")
+local review_sections = require("i18n-status.review_sections")
 local review_ui = require("i18n-status.review_ui")
 local review_actions_mod = require("i18n-status.review_actions")
 local review_shared_ui = require("i18n-status.review_shared_ui")
@@ -109,13 +111,6 @@ local KEYMAP_HELP = {
 local close_keymap_help
 
 ---@param ctx table
-local function update_winbar(ctx)
-  if ctx.list_win and vim.api.nvim_win_is_valid(ctx.list_win) then
-    vim.wo[ctx.list_win].winbar = review_ui.build_review_winbar(ctx.list_width or 0, ctx.mode, ctx.filter_query)
-  end
-end
-
----@param ctx table
 local function close_review(ctx)
   if not ctx or ctx.closing then
     return
@@ -190,52 +185,6 @@ local function close_review(ctx)
   end
 end
 
----@param buf integer
----@param lines string[]
-local function set_lines(buf, lines)
-  if not buf or not vim.api.nvim_buf_is_valid(buf) then
-    return
-  end
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
-end
-
----@param buf integer
----@param decorations { line: integer, group: string, col_start?: integer, col_end?: integer }[]
-local function apply_decorations(buf, decorations)
-  if not buf or not vim.api.nvim_buf_is_valid(buf) then
-    return
-  end
-  vim.api.nvim_buf_clear_namespace(buf, REVIEW_NS, 0, -1)
-  for _, deco in ipairs(decorations or {}) do
-    if deco.group and deco.line then
-      vim.api.nvim_buf_add_highlight(buf, REVIEW_NS, deco.group, deco.line, deco.col_start or 0, deco.col_end or -1)
-    end
-  end
-end
-
----@param buf integer
----@param width integer|nil
-local function add_list_divider(buf, width)
-  if not buf or not vim.api.nvim_buf_is_valid(buf) then
-    return
-  end
-  if not width or width <= 0 then
-    return
-  end
-  local divider = string.rep("─", math.max(width, 10))
-  vim.api.nvim_buf_set_extmark(buf, REVIEW_NS, 0, 0, {
-    virt_lines_above = true,
-    virt_lines = {
-      {
-        { divider, "I18nStatusReviewDivider" },
-      },
-    },
-    priority = 200,
-  })
-end
-
 ---@param ctx I18nStatusReviewCtx
 close_keymap_help = function(ctx)
   review_shared_ui.close_help_window(ctx)
@@ -248,433 +197,6 @@ local function toggle_keymap_help(ctx)
     keymaps = KEYMAP_HELP,
     filetype = "i18n-status-review-help",
   })
-end
-
----Groups items by their status symbol
----@param items I18nStatusResolved[]
----@return table<string, I18nStatusResolved[]>
-local function group_items_by_status(items)
-  local groups = {}
-  for _, status in ipairs(STATUS_SECTION_ORDER) do
-    groups[status] = {}
-  end
-
-  for _, item in ipairs(items) do
-    local status = item.status or "="
-    if groups[status] then
-      table.insert(groups[status], item)
-    else
-      table.insert(groups["="], item)
-    end
-  end
-
-  return groups
-end
-
----Groups items by unused or status (problems view)
----@param items I18nStatusResolved[]
----@return table<string, I18nStatusResolved[]>
-local function group_items_for_problems(items)
-  local groups = { unused = {} }
-  for _, status in ipairs(STATUS_SECTION_ORDER) do
-    groups[status] = {}
-  end
-
-  for _, item in ipairs(items) do
-    if item.unused then
-      table.insert(groups.unused, item)
-    else
-      local status = item.status or "="
-      if groups[status] then
-        table.insert(groups[status], item)
-      else
-        table.insert(groups["="], item)
-      end
-    end
-  end
-
-  return groups
-end
-
----@return table<string, { expanded: boolean, count?: integer }>
-local function new_section_state(section_order)
-  local sections = {}
-  for _, section in ipairs(section_order or STATUS_SECTION_ORDER) do
-    sections[section] = { expanded = true }
-  end
-  return sections
-end
-
----Calculates summary line with total count and per-status breakdown
----@param section_items table<string, I18nStatusResolved[]>
----@param section_order string[]|nil
----@param summary_labels table<string, string>|nil
----@return string
-local function calculate_summary(section_items, section_order, summary_labels)
-  local total = 0
-
-  for _, items in pairs(section_items) do
-    total = total + #items
-  end
-
-  local parts = {}
-  local order = section_order or STATUS_SECTION_ORDER
-  local labels = summary_labels or STATUS_SUMMARY_LABELS
-  for _, status in ipairs(order) do
-    local count = #(section_items[status] or {})
-    if count > 0 then
-      local label = labels[status] or status
-      table.insert(parts, label .. ": " .. count)
-    end
-  end
-
-  if #parts == 0 then
-    return "Total: 0 keys"
-  end
-
-  return string.format("Total: %d keys  (%s)", total, table.concat(parts, "  "))
-end
-
----@param query string|nil
----@return string|nil
-local function normalize_filter_query(query)
-  return review_shared_ui.normalize_filter_query(query)
-end
-
----@param items I18nStatusResolved[]|nil
----@param query string|nil
----@return I18nStatusResolved[]
-local function filter_items_by_key(items, query)
-  local source = items or {}
-  local normalized = normalize_filter_query(query)
-  if not normalized then
-    return source
-  end
-  local query_lower = string.lower(normalized)
-  local filtered = {}
-  for _, item in ipairs(source) do
-    local key = string.lower(item.key or "")
-    if key:find(query_lower, 1, true) then
-      table.insert(filtered, item)
-    end
-  end
-  return filtered
-end
-
----@param buf integer
----@param ctx table
-local function render_list(buf, ctx)
-  local section_items = ctx.section_items or {}
-  local section_state = ctx.section_state or {}
-
-  local lines = {}
-  local decorations = {}
-  local line_to_item = {}
-  local line_to_section = {}
-
-  local section_order = ctx.section_order or STATUS_SECTION_ORDER
-  local section_labels = ctx.section_labels or STATUS_SECTION_LABELS
-  local summary = calculate_summary(section_items, section_order, ctx.summary_labels or STATUS_SUMMARY_LABELS)
-  table.insert(lines, summary)
-  table.insert(decorations, { line = 0, group = "I18nStatusReviewHeader" })
-
-  for _, status in ipairs(section_order) do
-    local items = section_items[status] or {}
-    local count = #items
-
-    if count > 0 then
-      table.insert(lines, "")
-
-      local sect = section_state[status] or { expanded = true }
-      local indicator = sect.expanded and "▼" or "▶"
-      local label = section_labels[status] or status
-      local header = string.format("%s %s (%d)", indicator, label, count)
-      local header_line = #lines
-      table.insert(lines, header)
-
-      line_to_section[header_line + 1] = status
-
-      table.insert(decorations, {
-        line = header_line,
-        group = "I18nStatusReviewSectionHeader",
-      })
-
-      if sect.expanded then
-        for _, item in ipairs(items) do
-          local item_line = #lines
-          table.insert(lines, "  " .. item.key .. " [" .. item.status .. "]")
-
-          line_to_item[item_line + 1] = item
-
-          local key_len = 2 + #(item.key or "")
-          local status_group = review_ui.highlight_for_status(item.status)
-          table.insert(decorations, {
-            line = item_line,
-            group = "I18nStatusReviewKey",
-            col_start = 2,
-            col_end = key_len,
-          })
-          table.insert(decorations, {
-            line = item_line,
-            group = status_group,
-            col_start = key_len + 1,
-          })
-        end
-      end
-    end
-  end
-
-  if #lines == 1 then
-    table.insert(lines, "")
-    table.insert(lines, "(no items)")
-    table.insert(decorations, { line = 2, group = "I18nStatusReviewMeta" })
-  end
-
-  ctx.line_to_item = line_to_item
-  ctx.line_to_section = line_to_section
-
-  local view_items = {}
-  for line = 1, #lines do
-    local item = line_to_item[line]
-    if item then
-      table.insert(view_items, item)
-    end
-  end
-  ctx.view_items = view_items
-
-  set_lines(buf, lines)
-  apply_decorations(buf, decorations)
-
-  local width = math.max(math.min((ctx.list_width or 0) - 2, 160), 12)
-  add_list_divider(buf, width)
-  update_winbar(ctx)
-end
-
----@param value string|nil
----@param max_width integer
----@return string
-local function sanitize_value(value, max_width)
-  local text = type(value) == "string" and value or ""
-  text = text:gsub("\r", " "):gsub("\n", " ")
-  text = text:gsub("%s+", " ")
-  if text == "" then
-    return "(empty)"
-  end
-  local width = vim.fn.strdisplaywidth(text)
-  local limit = math.max(max_width or 60, 10)
-  if width > limit then
-    text = vim.fn.strcharpart(text, 0, limit - 1) .. "…"
-  end
-  return text
-end
-
----@param list string[]|nil
----@return table<string, boolean>
-local function list_to_set(list)
-  local set = {}
-  for _, lang in ipairs(list or {}) do
-    set[lang] = true
-  end
-  return set
-end
-
----@param order string[]
----@param lang string|nil
-local function ensure_lang(order, lang)
-  if not lang or lang == "" then
-    return
-  end
-  if not vim.tbl_contains(order, lang) then
-    table.insert(order, lang)
-  end
-end
-
----@param ctx table
----@param hover table
----@return string[]
-local function build_lang_order(ctx, hover)
-  local order = {}
-  for _, lang in ipairs(hover.lang_order or {}) do
-    ensure_lang(order, lang)
-  end
-  if hover.values then
-    for lang, _ in pairs(hover.values) do
-      ensure_lang(order, lang)
-    end
-  end
-  if ctx.cache and ctx.cache.languages then
-    for _, lang in ipairs(ctx.cache.languages) do
-      ensure_lang(order, lang)
-    end
-  end
-  return order
-end
-
----@param ctx table
-local function render_detail(ctx)
-  local buf = ctx.detail_buf
-  if not buf or not vim.api.nvim_buf_is_valid(buf) then
-    return
-  end
-  local item = ctx.detail_item
-  if not item then
-    set_lines(buf, { "(no selection)" })
-    apply_decorations(buf, { { line = 0, group = "I18nStatusReviewMeta" } })
-    return
-  end
-
-  local hover = item.hover or {}
-  local lines = {}
-  local decorations = {}
-
-  local function append(text, group, col_start, col_end)
-    table.insert(lines, text)
-    if group then
-      table.insert(decorations, {
-        line = #lines - 1,
-        group = group,
-        col_start = col_start,
-        col_end = col_end,
-      })
-    end
-  end
-
-  local function locale_highlight(lang, info, missing, localized, mismatch)
-    if info.missing or missing[lang] then
-      return "I18nStatusReviewStatusMissing"
-    end
-    if mismatch[lang] then
-      return "I18nStatusReviewStatusMismatch"
-    end
-    if localized[lang] then
-      return "I18nStatusReviewStatusLocalized"
-    end
-    if lang == ctx.primary_lang then
-      return "I18nStatusReviewPrimary"
-    end
-    if hover.focus_lang and lang == hover.focus_lang then
-      return "I18nStatusReviewFocus"
-    end
-    return "I18nStatusReviewStatusOk"
-  end
-
-  local function pad_to_width(str, target_width)
-    local current_width = vim.fn.strdisplaywidth(str)
-    local padding_needed = target_width - current_width
-    if padding_needed <= 0 then
-      return str
-    end
-    return str .. string.rep(" ", padding_needed)
-  end
-
-  local key = item.key or "(unknown)"
-  local divider_width = math.max(math.min(vim.fn.strdisplaywidth(key), 80), 8)
-  append(key, "I18nStatusReviewHeader")
-  append(string.rep("-", divider_width), "I18nStatusReviewDivider")
-
-  local status_symbol = hover.status or item.status or "="
-  append("status: [" .. status_symbol .. "]", review_ui.highlight_for_status(status_symbol))
-  if hover.namespace then
-    append("namespace: " .. hover.namespace, "I18nStatusReviewMeta")
-  end
-  if hover.reason then
-    append("reason: " .. hover.reason, "I18nStatusReviewMeta")
-  end
-  if item.unused then
-    append("usage: unused", "I18nStatusReviewMeta")
-  end
-
-  local meta = {}
-  if ctx.primary_lang and ctx.primary_lang ~= "" then
-    table.insert(meta, "primary=" .. ctx.primary_lang)
-  end
-  if hover.focus_lang and hover.focus_lang ~= ctx.primary_lang then
-    table.insert(meta, "focus=" .. hover.focus_lang)
-  end
-  if #meta > 0 then
-    append(table.concat(meta, ", "), "I18nStatusReviewMeta")
-  end
-
-  local function append_lang_list(label, values, group)
-    if values and #values > 0 then
-      append(label .. ": " .. table.concat(values, ", "), group)
-    end
-  end
-
-  append_lang_list("missing locales", hover.missing_langs, "I18nStatusReviewStatusMissing")
-  append_lang_list("localized languages", hover.localized_langs, "I18nStatusReviewStatusLocalized")
-  append_lang_list("placeholder mismatch", hover.mismatch_langs, "I18nStatusReviewStatusMismatch")
-
-  append("", nil)
-
-  local lang_order = build_lang_order(ctx, hover)
-  local missing = list_to_set(hover.missing_langs)
-  local localized = list_to_set(hover.localized_langs)
-  local mismatch = list_to_set(hover.mismatch_langs)
-
-  if #lang_order == 0 then
-    append("(no translation data)", "I18nStatusReviewMeta")
-  else
-    local max_locale_width = 6 -- Minimum to match "Locale" header
-    local max_value_width = 5 -- Minimum to match "Value" header
-    local max_source_width = 6 -- Minimum to match "Source" header
-    local row_data = {}
-
-    for _, lang in ipairs(lang_order) do
-      local info = (hover.values and hover.values[lang]) or {}
-      local source = info.file and util.shorten_path(info.file) or "-"
-
-      local value
-      if info.value and info.value ~= "" then
-        value = sanitize_value(info.value, 60)
-      elseif info.missing or missing[lang] then
-        value = "(missing)"
-      else
-        value = "(empty)"
-      end
-      local row_group = locale_highlight(lang, info, missing, localized, mismatch)
-
-      -- Measure display widths
-      local locale_width = vim.fn.strdisplaywidth(lang)
-      local value_width = vim.fn.strdisplaywidth(value)
-      local source_width = vim.fn.strdisplaywidth(source)
-
-      -- Update maximum widths
-      max_locale_width = math.max(max_locale_width, locale_width)
-      max_value_width = math.max(max_value_width, value_width)
-      max_source_width = math.max(max_source_width, source_width)
-
-      -- Store row data
-      table.insert(row_data, {
-        lang = lang,
-        value = value,
-        source = source,
-        row_group = row_group,
-      })
-    end
-
-    -- Render header and divider with dynamic widths
-    local header_locale = pad_to_width("Locale", max_locale_width)
-    local header_value = pad_to_width("Value", max_value_width)
-    local header_source = pad_to_width("Source", max_source_width)
-    append(header_locale .. " | " .. header_value .. " | " .. header_source, "I18nStatusReviewTableHeader")
-
-    local divider_locale = string.rep("-", max_locale_width)
-    local divider_value = string.rep("-", max_value_width)
-    local divider_source = string.rep("-", max_source_width)
-    append(divider_locale .. " | " .. divider_value .. " | " .. divider_source, "I18nStatusReviewDivider")
-
-    -- Second pass: render aligned rows
-    for _, row in ipairs(row_data) do
-      local padded_locale = pad_to_width(row.lang, max_locale_width)
-      local padded_value = pad_to_width(row.value, max_value_width)
-      local padded_source = pad_to_width(row.source, max_source_width)
-      append(padded_locale .. " | " .. padded_value .. " | " .. padded_source, row.row_group)
-    end
-  end
-
-  set_lines(buf, lines)
-  apply_decorations(buf, decorations)
 end
 
 ---@param ctx table
@@ -701,7 +223,7 @@ local function update_detail(ctx)
   end
 
   ctx.detail_item = item
-  render_detail(ctx)
+  review_buffers.render_doctor_detail(ctx, REVIEW_NS)
 end
 
 -- Forward declarations
@@ -834,45 +356,19 @@ function M.add_key_command(cfg)
 end
 
 ---@param view I18nStatusReviewView|nil
-local function update_section_counts(view)
-  if not view or not view.section_state or not view.section_items then
-    return
-  end
-  for status, items in pairs(view.section_items) do
-    if view.section_state[status] then
-      view.section_state[status].count = #items
-    end
-  end
-end
-
----@param ctx table
-local function apply_view(ctx, view)
-  if not view then
-    return
-  end
-  ctx.items = view.items or {}
-  ctx.section_items = view.section_items or {}
-  ctx.section_state = view.section_state or {}
-  ctx.section_order = view.section_order
-  ctx.section_labels = view.section_labels
-  ctx.summary_labels = view.summary_labels
-end
-
----@param view I18nStatusReviewView|nil
 ---@param mode "problems"|"overview"
 ---@param filter_query string|nil
 local function rebuild_view_sections(view, mode, filter_query)
-  if not view then
-    return
-  end
-  local filtered = filter_items_by_key(view.all_items, filter_query)
-  view.items = filtered
-  if mode == MODE_OVERVIEW then
-    view.section_items = group_items_by_status(filtered)
-  else
-    view.section_items = group_items_for_problems(filtered)
-  end
-  update_section_counts(view)
+  review_sections.rebuild_view(view, mode, filter_query, {
+    mode_overview = MODE_OVERVIEW,
+    filter = review_filters.filter_items_by_key,
+    group_overview = function(items)
+      return review_sections.group_items_by_status(items, STATUS_SECTION_ORDER, "=")
+    end,
+    group_problems = function(items)
+      return review_sections.group_problem_items(items, PROBLEMS_SECTION_ORDER, STATUS_SECTION_ORDER, "=")
+    end,
+  })
 end
 
 ---@param ctx table
@@ -934,8 +430,8 @@ refresh_doctor_items = function(ctx)
   end
 
   local view = current_view(ctx)
-  apply_view(ctx, view)
-  render_list(ctx.list_buf, ctx)
+  review_sections.apply_view(ctx, view)
+  review_buffers.render_doctor_list(ctx, REVIEW_NS)
   update_detail(ctx)
 end
 
@@ -953,8 +449,8 @@ local function toggle_mode(ctx)
     refresh_overview(ctx)
   end
   local view = current_view(ctx)
-  apply_view(ctx, view)
-  render_list(ctx.list_buf, ctx)
+  review_sections.apply_view(ctx, view)
+  review_buffers.render_doctor_list(ctx, REVIEW_NS)
   update_detail(ctx)
 end
 
@@ -980,8 +476,8 @@ local function prompt_filter(ctx)
       end
 
       local view = current_view(current)
-      apply_view(current, view)
-      render_list(current.list_buf, current)
+      review_sections.apply_view(current, view)
+      review_buffers.render_doctor_list(current, REVIEW_NS)
       update_detail(current)
     end,
   })
@@ -1005,7 +501,7 @@ local function toggle_section(ctx)
   local section_state = ctx.section_state and ctx.section_state[status]
   if section_state then
     section_state.expanded = not section_state.expanded
-    render_list(ctx.list_buf, ctx)
+    review_buffers.render_doctor_list(ctx, REVIEW_NS)
 
     -- Keep cursor on same section header
     if vim.api.nvim_win_is_valid(ctx.list_win) and ctx.line_to_section then
@@ -1061,82 +557,12 @@ end
 function M.open_doctor_results(issues, ctx, config)
   -- Save the current window to return to when closing
   local source_win = vim.api.nvim_get_current_win()
-
-  local list_buf = vim.api.nvim_create_buf(false, true)
-  local detail_buf = vim.api.nvim_create_buf(false, true)
-
-  review_ui.ensure_review_highlights()
-
-  for _, buf in ipairs({ list_buf, detail_buf }) do
-    vim.bo[buf].buftype = "nofile"
-    vim.bo[buf].bufhidden = "wipe"
-    vim.bo[buf].modifiable = false
-    vim.bo[buf].filetype = "i18n-status-review"
-    vim.b[buf].i18n_status_review = true
-
-    -- Disable LSP and Treesitter to prevent unnecessary attachment and cleanup
-    vim.b[buf].lsp_enabled = false
-    vim.b[buf].treesitter_enabled = false
-  end
-
-  local float_config = (config and config.doctor and config.doctor.float)
-    or {
-      width = 0.8,
-      height = 0.8,
-      border = "rounded",
-    }
-
-  local win_width, win_height, row, col = review_ui.calculate_float_dimensions(float_config)
-
-  -- Split the width: 40% for list, 60% for detail
-  local list_width = math.floor(win_width * 0.4)
-  local detail_width = win_width - list_width
-
-  local border = float_config.border or "rounded"
-
-  -- Calculate border offset (most border styles use 2 chars for left+right borders)
-  local border_offset = (border == "none" or border == "shadow") and 0 or 2
-
-  local list_win = review_ui.create_float_win(
-    list_buf,
-    list_width,
-    win_height,
-    row,
-    col,
-    border,
-    true,
-    "I18nDoctor - Key List",
-    "center"
-  )
-  local detail_win = review_ui.create_float_win(
-    detail_buf,
-    detail_width - border_offset,
-    win_height,
-    row,
-    col + list_width + border_offset,
-    border,
-    false,
-    "I18nDoctor - Preview",
-    "center"
-  )
-
-  vim.wo[list_win].winhighlight = table.concat({
-    "Normal:I18nStatusReviewListNormal",
-    "NormalFloat:I18nStatusReviewListNormal",
-    "FloatBorder:I18nStatusReviewBorder",
-    "FloatTitle:I18nStatusReviewTitle",
-    "CursorLine:I18nStatusReviewListCursorLine",
-  }, ",")
-  vim.wo[list_win].cursorline = true
-  vim.wo[list_win].winbar = review_ui.build_review_winbar(list_width, MODE_PROBLEMS, nil)
-
-  vim.wo[detail_win].winhighlight = table.concat({
-    "Normal:I18nStatusReviewDetailNormal",
-    "NormalFloat:I18nStatusReviewDetailNormal",
-    "FloatBorder:I18nStatusReviewBorder",
-    "FloatTitle:I18nStatusReviewTitle",
-  }, ",")
-  vim.wo[detail_win].cursorline = false
+  local layout = review_buffers.open_doctor_layout(config, MODE_PROBLEMS, nil)
+  local list_buf = layout.list_buf
+  local detail_buf = layout.detail_buf
+  local list_win = layout.list_win
+  local detail_win = layout.detail_win
+  local list_width = layout.list_width
 
   state.set_languages(ctx.cache.key, ctx.cache.languages)
   local project = state.project_for_key(ctx.cache.key)
@@ -1145,10 +571,11 @@ function M.open_doctor_results(issues, ctx, config)
     or (ctx.cache.languages[1] or "")
   local display_lang = (project and project.current_lang) or primary
   local problems_all_items = aggregate_issues_by_key(issues, ctx.cache, primary, display_lang)
-  local problems_items = filter_items_by_key(problems_all_items, nil)
-  local problems_section_items = group_items_for_problems(problems_items)
-  local problems_section_state = new_section_state(PROBLEMS_SECTION_ORDER)
-  local overview_section_state = new_section_state(STATUS_SECTION_ORDER)
+  local problems_items = review_filters.filter_items_by_key(problems_all_items, nil)
+  local problems_section_items =
+    review_sections.group_problem_items(problems_items, PROBLEMS_SECTION_ORDER, STATUS_SECTION_ORDER, "=")
+  local problems_section_state = review_sections.new_section_state(PROBLEMS_SECTION_ORDER)
+  local overview_section_state = review_sections.new_section_state(STATUS_SECTION_ORDER)
   local views = {
     [MODE_PROBLEMS] = {
       all_items = problems_all_items,
@@ -1220,8 +647,8 @@ function M.open_doctor_results(issues, ctx, config)
   review_state[list_buf] = review_ctx
   review_state[detail_buf] = review_ctx
 
-  render_list(list_buf, review_ctx)
-  render_detail(review_ctx)
+  review_buffers.render_doctor_list(review_ctx, REVIEW_NS)
+  review_buffers.render_doctor_detail(review_ctx, REVIEW_NS)
 
   set_list_keymaps(list_buf)
 
@@ -1244,12 +671,10 @@ function M.open_doctor_results(issues, ctx, config)
   vim.api.nvim_create_autocmd("WinResized", {
     group = augroup,
     callback = function()
-      if vim.api.nvim_win_is_valid(list_win) then
-        local current_width = vim.api.nvim_win_get_width(list_win)
-        local current = review_state[list_buf]
-        local mode = current and current.mode or MODE_PROBLEMS
-        local query = current and current.filter_query or nil
-        vim.wo[list_win].winbar = review_ui.build_review_winbar(current_width, mode, query)
+      local current = review_state[list_buf]
+      if current and vim.api.nvim_win_is_valid(current.list_win) then
+        current.list_width = vim.api.nvim_win_get_width(current.list_win)
+        review_buffers.update_review_winbar(current)
       end
     end,
   })
