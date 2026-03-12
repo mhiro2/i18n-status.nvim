@@ -88,6 +88,21 @@ function MyComponent() {
 }
 
 #[test]
+fn get_translations_server_style() {
+    let source = r#"
+async function loadMessages() {
+  const t = await getTranslations("dashboard");
+  return t("title");
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "dashboard:title");
+    assert_eq!(items[0]["namespace"], "dashboard");
+}
+
+#[test]
 fn member_call_i18n_t() {
     let source = r#"
 i18n.t("greeting");
@@ -415,4 +430,33 @@ fn extract_resource_preserves_source_line_locations() {
     assert_eq!(lnums.get("common:login.title"), Some(&2));
     assert_eq!(lnums.get("common:login.desc"), Some(&3));
     assert_eq!(lnums.get("common:plain"), Some(&5));
+}
+
+#[test]
+fn extract_root_resource_uses_top_level_namespace() {
+    let source = r#"{
+  "common": {
+    "login": {
+      "title": "Login"
+    }
+  },
+  "admin": {
+    "save": "Save"
+  }
+}"#;
+    let params = scan::ExtractResourceParams {
+        source: source.to_string(),
+        namespace: "ignored".to_string(),
+        is_root: true,
+        range: None,
+    };
+
+    let result = scan::extract_resource(params).expect("extract_resource should succeed");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["key"], "common:login.title");
+    assert_eq!(items[0]["namespace"], "common");
+    assert_eq!(items[1]["key"], "admin:save");
+    assert_eq!(items[1]["namespace"], "admin");
 }
