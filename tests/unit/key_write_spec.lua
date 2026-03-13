@@ -1,8 +1,8 @@
 local stub = require("luassert.stub")
 
+local fs = require("i18n-status.fs")
 local key_write = require("i18n-status.key_write")
 local resources = require("i18n-status.resources")
-local util = require("i18n-status.util")
 
 describe("key_write", function()
   local stubs = {}
@@ -46,13 +46,13 @@ describe("key_write", function()
     add_stub(resources, "project_root", function(_start_dir, _roots)
       return project_root
     end)
-    add_stub(util, "sanitize_path", function(path, base_dir)
+    add_stub(fs, "sanitize_path", function(path, base_dir)
       if path == base_dir or path:sub(1, #base_dir + 1) == (base_dir .. "/") then
         return path, nil
       end
       return nil, "path is outside base directory"
     end)
-    add_stub(util, "ensure_dir", function()
+    add_stub(fs, "ensure_dir", function()
       return true
     end)
     add_stub(resources, "read_json_table", function(path)

@@ -1,0 +1,22 @@
+local filetypes = require("i18n-status.filetypes")
+
+describe("filetypes", function()
+  it("maps source filetypes to parser languages", function()
+    assert.are.equal("javascript", filetypes.lang_for_filetype("javascript"))
+    assert.are.equal("jsx", filetypes.lang_for_filetype("javascriptreact"))
+    assert.are.equal("typescript", filetypes.lang_for_filetype("typescript"))
+    assert.are.equal("tsx", filetypes.lang_for_filetype("typescriptreact"))
+    assert.are.equal("", filetypes.lang_for_filetype("lua"))
+    assert.are.equal("", filetypes.lang_for_filetype(nil))
+  end)
+
+  it("classifies source and resource filetypes", function()
+    assert.is_true(filetypes.is_source_filetype("typescript"))
+    assert.is_true(filetypes.is_source_filetype("javascriptreact"))
+    assert.is_false(filetypes.is_source_filetype("json"))
+
+    assert.is_true(filetypes.is_resource_filetype("json"))
+    assert.is_true(filetypes.is_resource_filetype("jsonc"))
+    assert.is_false(filetypes.is_resource_filetype("typescript"))
+  end)
+end)

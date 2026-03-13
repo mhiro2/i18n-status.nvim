@@ -1,7 +1,8 @@
 ---@class I18nStatusUI
 local M = {}
 
-local util = require("i18n-status.util")
+local fs = require("i18n-status.fs")
+local text = require("i18n-status.text")
 
 ---@alias UiMenuItem { label: string, action: string }|string
 
@@ -143,7 +144,7 @@ function M.format_hover_lines(item, opts)
       end
       local file = ""
       if info.file then
-        local shortened_path = util.shorten_path(info.file)
+        local shortened_path = fs.shorten_path(info.file)
         file = " (`" .. shortened_path .. "`)"
       end
       table.insert(lines, "- " .. md_escape(lang) .. ": " .. value .. suffix .. file)
@@ -154,7 +155,7 @@ function M.format_hover_lines(item, opts)
     local primary = item.hover.primary_lang
     local primary_info = item.hover.values and item.hover.values[primary]
     if primary_info then
-      local base = util.extract_placeholders(primary_info.value or "")
+      local base = text.extract_placeholders(primary_info.value or "")
       local base_list = {}
       for name, _ in pairs(base) do
         table.insert(base_list, name)
@@ -166,8 +167,8 @@ function M.format_hover_lines(item, opts)
       for _, lang in ipairs(order) do
         if lang ~= primary then
           local info = item.hover.values and item.hover.values[lang]
-          local current = util.extract_placeholders(info and info.value or "")
-          if not util.placeholder_equal(base, current) then
+          local current = text.extract_placeholders(info and info.value or "")
+          if not text.placeholder_equal(base, current) then
             local list = {}
             for name, _ in pairs(current) do
               table.insert(list, name)

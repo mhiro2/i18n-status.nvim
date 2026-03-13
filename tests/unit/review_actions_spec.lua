@@ -1,11 +1,11 @@
 local stub = require("luassert.stub")
 
 local core = require("i18n-status.core")
+local fs = require("i18n-status.fs")
 local key_write = require("i18n-status.key_write")
 local ops = require("i18n-status.ops")
 local resources = require("i18n-status.resources")
 local review_actions = require("i18n-status.review_actions")
-local util = require("i18n-status.util")
 
 describe("review actions", function()
   local stubs = {}
@@ -43,10 +43,10 @@ describe("review actions", function()
     add_stub(resources, "project_root", function(start_dir)
       return start_dir
     end)
-    add_stub(util, "sanitize_path", function(path)
+    add_stub(fs, "sanitize_path", function(path)
       return path, nil
     end)
-    add_stub(util, "ensure_dir", function() end)
+    add_stub(fs, "ensure_dir", function() end)
     add_stub(resources, "read_json_table", function()
       return {}, { indent = 2 }
     end)
@@ -103,10 +103,10 @@ describe("review actions", function()
     add_stub(resources, "project_root", function(start_dir)
       return start_dir
     end)
-    add_stub(util, "sanitize_path", function(path)
+    add_stub(fs, "sanitize_path", function(path)
       return path, nil
     end)
-    add_stub(util, "ensure_dir", function() end)
+    add_stub(fs, "ensure_dir", function() end)
     add_stub(resources, "read_json_table", function()
       return {}, {}
     end)
@@ -246,7 +246,7 @@ describe("review actions", function()
     add_stub(resources, "project_root", function(start_dir)
       return start_dir
     end)
-    add_stub(util, "sanitize_path", function(path)
+    add_stub(fs, "sanitize_path", function(path)
       return path, nil
     end)
     add_stub(vim.api, "nvim_cmd", function(cmd)

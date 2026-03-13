@@ -2,8 +2,8 @@
 local M = {}
 
 local config_mod = require("i18n-status.config")
+local fs = require("i18n-status.fs")
 local resources = require("i18n-status.resources")
-local util = require("i18n-status.util")
 
 local health = vim.health
 
@@ -165,7 +165,7 @@ function M.check()
   info("resource_watch.enabled: " .. tostring(cfg.resource_watch and cfg.resource_watch.enabled ~= false))
   if start_dir == "" then
     warn("start_dir is empty")
-  elseif util.is_dir(start_dir) then
+  elseif fs.is_dir(start_dir) then
     ok("start_dir exists: " .. start_dir)
   else
     warn("start_dir does not exist: " .. start_dir)

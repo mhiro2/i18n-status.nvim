@@ -1,19 +1,20 @@
 ---@class I18nStatusExtractDiff
 local M = {}
 
+local fs = require("i18n-status.fs")
 local resources = require("i18n-status.resources")
-local util = require("i18n-status.util")
+local text_utils = require("i18n-status.text")
 
-local split_key = util.split_i18n_key
+local split_key = text_utils.split_i18n_key
 
 ---@param candidate I18nStatusExtractCandidate
 ---@return string[]
 function M.source_diff_lines(candidate)
-  local text = candidate.text or ""
+  local source_text = candidate.text or ""
   local replacement = string.format('{%s("%s")}', candidate.t_func or "t", candidate.proposed_key or "")
   return {
     "Source diff:",
-    "- " .. text,
+    "- " .. source_text,
     "+ " .. replacement,
   }
 end
@@ -32,7 +33,7 @@ local function display_resource_path(start_dir, lang, namespace)
     return string.format("%s/%s.json", lang, namespace)
   end
 
-  return util.shorten_path(path) or path
+  return fs.shorten_path(path) or path
 end
 
 ---@param candidate I18nStatusExtractCandidate
@@ -99,7 +100,7 @@ function M.build_preview_lines(candidate, languages, primary_lang, start_dir)
 end
 
 M._test = {
-  split_key = util.split_i18n_key,
+  split_key = text_utils.split_i18n_key,
 }
 
 return M

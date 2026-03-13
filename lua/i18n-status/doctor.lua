@@ -1,9 +1,10 @@
 ---@class I18nStatusDoctor
 local M = {}
 
+local filetypes = require("i18n-status.filetypes")
+local fs = require("i18n-status.fs")
 local rpc = require("i18n-status.rpc")
 local resources = require("i18n-status.resources")
-local util = require("i18n-status.util")
 local uv = vim.uv
 
 ---@class I18nStatusDoctorIssue
@@ -193,7 +194,7 @@ end
 ---@param ft string
 ---@return string|nil
 local function doctor_lang_for_filetype(ft)
-  local lang = util.lang_for_filetype(ft)
+  local lang = filetypes.lang_for_filetype(ft)
   if lang ~= "" then
     return lang
   end
@@ -321,7 +322,7 @@ local function prepare_context(bufnr, config)
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(buf) then
       local ft = vim.bo[buf].filetype
-      if util.is_source_filetype(ft) then
+      if filetypes.is_source_filetype(ft) then
         table.insert(buffers, buf)
       end
     end
@@ -375,7 +376,7 @@ local function signal_cancel(path)
   end
   local dir = vim.fs.dirname(path)
   if type(dir) == "string" and dir ~= "" then
-    util.ensure_dir(dir)
+    fs.ensure_dir(dir)
   end
   local fd = uv.fs_open(path, "w", 384)
   if not fd then
@@ -388,7 +389,7 @@ end
 ---@return string
 local function next_cancel_token_path()
   cancel_token_seq = cancel_token_seq + 1
-  util.ensure_dir(CANCEL_TOKEN_DIR)
+  fs.ensure_dir(CANCEL_TOKEN_DIR)
   local token = string.format("%d-%d-%d", vim.fn.getpid(), uv.hrtime(), cancel_token_seq)
   return vim.fs.joinpath(CANCEL_TOKEN_DIR, token .. ".cancel")
 end

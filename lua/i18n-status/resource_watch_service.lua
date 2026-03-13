@@ -1,7 +1,7 @@
 ---@class I18nStatusResourceWatchService
 local M = {}
 
-local util = require("i18n-status.util")
+local fs = require("i18n-status.fs")
 local watcher = require("i18n-status.watcher")
 
 local uv = vim.uv
@@ -76,7 +76,7 @@ function M.new(resources, roots)
     for _, root in ipairs(root_list or {}) do
       add(root.path)
       for _, dir in ipairs(roots.list_dirs(root.path)) do
-        local lang_root = util.path_join(root.path, dir)
+        local lang_root = fs.path_join(root.path, dir)
         add(lang_root)
         if watched_files < WATCH_MAX_FILES then
           for _, file in ipairs(roots.list_json_files(lang_root)) do
@@ -172,7 +172,7 @@ function M.new(resources, roots)
     if not start_dir or start_dir == "" then
       return nil, {}
     end
-    local normalized_start = util.normalize_path(start_dir) or start_dir
+    local normalized_start = fs.normalize_path(start_dir) or start_dir
     local root_list = roots.resolve_roots_sync(normalized_start)
     if #root_list == 0 then
       return nil, root_list

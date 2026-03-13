@@ -1,10 +1,10 @@
 ---@class I18nStatusActions
 local M = {}
 
+local fs = require("i18n-status.fs")
 local ui = require("i18n-status.ui")
 local state = require("i18n-status.state")
 local resources = require("i18n-status.resources")
-local util = require("i18n-status.util")
 
 ---@param bufnr integer
 ---@return integer|nil
@@ -86,7 +86,7 @@ function M.jump_to_definition(item, opts)
       seen[lang] = true
       local info = item.hover.values[lang]
       if info and info.file then
-        local path = util.sanitize_path(info.file, base_dir)
+        local path = fs.sanitize_path(info.file, base_dir)
         if path then
           edit_file(path)
           return true

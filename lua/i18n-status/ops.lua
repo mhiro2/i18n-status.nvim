@@ -1,7 +1,9 @@
 ---@class I18nStatusOps
 local M = {}
 
-local util = require("i18n-status.util")
+local filetypes = require("i18n-status.filetypes")
+local fs = require("i18n-status.fs")
+local json = require("i18n-status.json")
 local resources = require("i18n-status.resources")
 local state = require("i18n-status.state")
 local core = require("i18n-status.core")
@@ -28,7 +30,7 @@ local function is_target_rename_buf(bufnr)
   if not vim.bo[bufnr].modifiable then
     return false
   end
-  return util.is_source_filetype(vim.bo[bufnr].filetype)
+  return filetypes.is_source_filetype(vim.bo[bufnr].filetype)
 end
 
 ---@param tbl table
@@ -236,7 +238,7 @@ function M.rename(opts)
   ---@return string|nil
   ---@return string|nil
   local function sanitize_resource_path(path, lang)
-    local sanitized_path, sanitize_err = util.sanitize_path(path, base_dir)
+    local sanitized_path, sanitize_err = fs.sanitize_path(path, base_dir)
     if not sanitized_path then
       return nil,
         string.format("resource path for language '%s' is outside project root: %s", lang, sanitize_err or "unknown")
@@ -275,9 +277,9 @@ function M.rename(opts)
     if not new_file then
       return false, new_file_err
     end
-    local same_file = util.normalize_path(old_file, root) == util.normalize_path(new_file, root)
+    local same_file = fs.normalize_path(old_file, root) == fs.normalize_path(new_file, root)
 
-    util.ensure_dir(util.dirname(new_file))
+    fs.ensure_dir(fs.dirname(new_file))
 
     local old_state, old_err = file_state(old_file)
     if not old_state then
@@ -324,7 +326,7 @@ function M.rename(opts)
       if old_value == nil then
         old_value = ""
       end
-      util.set_nested(new_state.data, new_path_in_file, old_value)
+      json.set_nested(new_state.data, new_path_in_file, old_value)
       new_state.dirty = true
     end
     if same_file then
@@ -340,7 +342,7 @@ function M.rename(opts)
 
   for path, entry in pairs(file_cache) do
     if entry.dirty then
-      util.ensure_dir(util.dirname(path))
+      fs.ensure_dir(fs.dirname(path))
       local write_ok, write_err = resources.write_json_table(path, entry.data, entry.style, { start_dir = root })
       if not write_ok then
         return false, string.format("failed to write %s: %s", path, write_err or "unknown")

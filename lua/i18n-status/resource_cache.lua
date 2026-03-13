@@ -1,10 +1,9 @@
 ---@class I18nStatusResourceCache
 local M = {}
 
-local util = require("i18n-status.util")
+local fs = require("i18n-status.fs")
 local watcher = require("i18n-status.watcher")
 local rpc = require("i18n-status.rpc")
-
 local uv = vim.uv
 
 local CACHE_VALIDATE_INTERVAL_MS = 1000
@@ -14,17 +13,6 @@ local CACHE_VALIDATE_INTERVAL_MS = 1000
 ---@return I18nStatusResourceCache
 function M.new(resources, roots)
   local service = {}
-
-  ---@param path string
-  ---@return integer|nil
-  local function file_mtime_ns(path)
-    local stat = uv.fs_stat(path)
-    if not stat or not stat.mtime then
-      return nil
-    end
-    local nsec = stat.mtime.nsec or 0
-    return stat.mtime.sec * 1000000000 + nsec
-  end
 
   ---@param cache I18nStatusCache
   ---@return boolean
@@ -37,7 +25,7 @@ function M.new(resources, roots)
       if cached_mtime == nil then
         return false
       end
-      local current_mtime = file_mtime_ns(file)
+      local current_mtime = fs.file_mtime(file)
       if current_mtime == nil or current_mtime ~= cached_mtime then
         return false
       end
@@ -57,7 +45,7 @@ function M.new(resources, roots)
   local function normalize_index_result(result)
     local normalized_files = {}
     for path, mtime in pairs(result.files or {}) do
-      local normalized = util.normalize_path(path) or path
+      local normalized = fs.normalize_path(path) or path
       normalized_files[normalized] = mtime
     end
     result.files = normalized_files
@@ -71,14 +59,14 @@ function M.new(resources, roots)
           if entry.file == vim.NIL then
             entry.file = nil
           else
-            entry.file = util.normalize_path(entry.file) or entry.file
+            entry.file = fs.normalize_path(entry.file) or entry.file
           end
         end
       end
     end
     for _, entry in ipairs(result.errors or {}) do
       if entry.file and entry.file ~= vim.NIL then
-        entry.file = util.normalize_path(entry.file) or entry.file
+        entry.file = fs.normalize_path(entry.file) or entry.file
       end
     end
     return result
@@ -131,7 +119,7 @@ function M.new(resources, roots)
     for lang, entries in pairs(cache.index or {}) do
       cache.entries_by_key[lang] = cache.entries_by_key[lang] or {}
       for key, entry in pairs(entries or {}) do
-        local file = util.normalize_path(entry and entry.file)
+        local file = fs.normalize_path(entry and entry.file)
         if file then
           cache.entries_by_key[lang][key] = cache.entries_by_key[lang][key] or {}
           table.insert(cache.entries_by_key[lang][key], {
@@ -219,7 +207,7 @@ function M.new(resources, roots)
   ---@return I18nStatusCache|nil
   ---@return I18nStatusRootInfo[]
   local function watching_cache_for_start_dir(start_dir)
-    local normalized_start = util.normalize_path(start_dir) or start_dir
+    local normalized_start = fs.normalize_path(start_dir) or start_dir
     local best_key = nil
     local best_cache = nil
     local best_roots = {}
@@ -228,9 +216,9 @@ function M.new(resources, roots)
     for key, cache in pairs(resources.caches) do
       if cache and watcher.is_watching(key) and cache.roots and #cache.roots > 0 then
         for _, root in ipairs(cache.roots) do
-          local root_path = util.normalize_path(root.path)
+          local root_path = fs.normalize_path(root.path)
           if
-            root_path and (util.path_under(normalized_start, root_path) or util.path_under(root_path, normalized_start))
+            root_path and (fs.path_under(normalized_start, root_path) or fs.path_under(root_path, normalized_start))
           then
             local root_len = #root_path
             if root_len > best_len then
@@ -279,7 +267,7 @@ function M.new(resources, roots)
   function service.ensure_index(start_dir, opts)
     opts = opts or {}
     start_dir = start_dir or vim.fn.getcwd()
-    start_dir = util.normalize_path(start_dir) or start_dir
+    start_dir = fs.normalize_path(start_dir) or start_dir
 
     local key = nil
     local cache = nil
@@ -316,7 +304,7 @@ function M.new(resources, roots)
   function service.ensure_index_async(start_dir, opts, cb)
     opts = opts or {}
     start_dir = start_dir or vim.fn.getcwd()
-    start_dir = util.normalize_path(start_dir) or start_dir
+    start_dir = fs.normalize_path(start_dir) or start_dir
 
     rpc.request("resource/resolveRoots", {
       start_dir = start_dir,
@@ -347,7 +335,7 @@ function M.new(resources, roots)
     cache.file_errors = cache.file_errors or {}
     cache.file_errors[path] = {
       error = err,
-      mtime = util.file_mtime(path) or 0,
+      mtime = fs.file_mtime(path) or 0,
     }
     local file_meta = cache.file_meta and cache.file_meta[path]
     local lang = (file_meta and file_meta.lang) or "unknown"
@@ -401,7 +389,7 @@ function M.new(resources, roots)
     local rpc_paths = {}
 
     for _, raw_path in ipairs(paths or {}) do
-      local path = util.normalize_path(raw_path) or raw_path
+      local path = fs.normalize_path(raw_path) or raw_path
 
       local stat = uv.fs_stat(path)
       if stat and stat.type == "directory" then
@@ -410,8 +398,8 @@ function M.new(resources, roots)
 
       local within_root = false
       for _, root in ipairs(cache.roots or {}) do
-        local root_path = util.normalize_path(root.path)
-        if root_path and util.path_under(path, root_path) then
+        local root_path = fs.normalize_path(root.path)
+        if root_path and fs.path_under(path, root_path) then
           within_root = true
           break
         end

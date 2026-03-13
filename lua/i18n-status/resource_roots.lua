@@ -1,7 +1,7 @@
 ---@class I18nStatusResourceRoots
 local M = {}
 
-local util = require("i18n-status.util")
+local fs = require("i18n-status.fs")
 local rpc = require("i18n-status.rpc")
 
 local uv = vim.uv
@@ -40,7 +40,7 @@ end
 function M.normalize_roots(roots)
   local normalized = {}
   for _, root in ipairs(roots or {}) do
-    local root_path = util.normalize_path(root.path) or root.path
+    local root_path = fs.normalize_path(root.path) or root.path
     normalized[#normalized + 1] = {
       kind = root.kind,
       path = root_path,
@@ -89,7 +89,7 @@ function M.list_json_files(root)
       break
     end
     if typ == "file" and name:sub(-5) == ".json" then
-      files[#files + 1] = util.path_join(root, name)
+      files[#files + 1] = fs.path_join(root, name)
     end
   end
   return files
@@ -102,7 +102,7 @@ function M.collect_resource_files(roots)
   local seen = {}
 
   local function add(path)
-    local normalized = util.normalize_path(path) or path
+    local normalized = fs.normalize_path(path) or path
     if normalized and normalized ~= "" and not seen[normalized] then
       seen[normalized] = true
       files[#files + 1] = normalized
@@ -110,10 +110,10 @@ function M.collect_resource_files(roots)
   end
 
   for _, root in ipairs(roots or {}) do
-    local root_path = util.normalize_path(root.path) or root.path
+    local root_path = fs.normalize_path(root.path) or root.path
     if root.kind == "i18next" then
       for _, dir in ipairs(M.list_dirs(root_path)) do
-        local lang_root = util.path_join(root_path, dir)
+        local lang_root = fs.path_join(root_path, dir)
         for _, file in ipairs(M.list_json_files(lang_root)) do
           add(file)
         end
@@ -123,7 +123,7 @@ function M.collect_resource_files(roots)
         add(file)
       end
       for _, dir in ipairs(M.list_dirs(root_path)) do
-        local lang_root = util.path_join(root_path, dir)
+        local lang_root = fs.path_join(root_path, dir)
         for _, file in ipairs(M.list_json_files(lang_root)) do
           add(file)
         end
@@ -194,15 +194,15 @@ function M.start_dir(bufnr)
   local target = bufnr or vim.api.nvim_get_current_buf()
   local name = vim.api.nvim_buf_get_name(target)
   if name and name ~= "" then
-    local dir = util.dirname(name)
-    while dir and dir ~= "" and dir ~= "/" and not util.is_dir(dir) do
-      local parent = util.dirname(dir)
+    local dir = fs.dirname(name)
+    while dir and dir ~= "" and dir ~= "/" and not fs.is_dir(dir) do
+      local parent = fs.dirname(dir)
       if parent == dir then
         break
       end
       dir = parent
     end
-    if dir and dir ~= "" and util.is_dir(dir) then
+    if dir and dir ~= "" and fs.is_dir(dir) then
       return dir
     end
   end
@@ -228,13 +228,13 @@ function M.project_root(start_dir, roots)
   if not start_dir or start_dir == "" then
     return ""
   end
-  start_dir = util.normalize_path(start_dir) or start_dir
+  start_dir = fs.normalize_path(start_dir) or start_dir
 
   if not roots or #roots == 0 then
     roots = M.resolve_roots_sync(start_dir)
   end
 
-  local git_root = util.find_git_root(start_dir)
+  local git_root = fs.find_git_root(start_dir)
   if git_root then
     return git_root
   end
@@ -252,14 +252,14 @@ function M.project_root(start_dir, roots)
     local dir = start_dir
     while dir and dir ~= "" and dir ~= "/" do
       if
-        util.is_dir(util.path_join(dir, "locales"))
-        or util.is_dir(util.path_join(dir, "messages"))
-        or util.is_dir(util.path_join(dir, "public", "locales"))
-        or util.is_dir(util.path_join(dir, "public", "messages"))
+        fs.is_dir(fs.path_join(dir, "locales"))
+        or fs.is_dir(fs.path_join(dir, "messages"))
+        or fs.is_dir(fs.path_join(dir, "public", "locales"))
+        or fs.is_dir(fs.path_join(dir, "public", "messages"))
       then
         return dir
       end
-      local parent = util.dirname(dir)
+      local parent = fs.dirname(dir)
       if parent == dir then
         break
       end

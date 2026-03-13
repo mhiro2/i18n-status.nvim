@@ -3,9 +3,9 @@ local M = {}
 
 local core = require("i18n-status.core")
 local key_write = require("i18n-status.key_write")
-local util = require("i18n-status.util")
+local text = require("i18n-status.text")
 
-local split_key = util.split_i18n_key
+local split_key = text.split_i18n_key
 
 ---@class I18nStatusExtractApplyDeps
 ---@field candidate_range fun(ctx: I18nStatusExtractReviewCtx, candidate: I18nStatusExtractCandidate): integer|nil, integer|nil, integer|nil, integer|nil

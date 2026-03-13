@@ -1,8 +1,9 @@
 ---@class I18nStatusKeyWrite
 local M = {}
 
+local fs = require("i18n-status.fs")
+local json = require("i18n-status.json")
 local resources = require("i18n-status.resources")
-local util = require("i18n-status.util")
 
 ---@class I18nStatusKeyWriteEntry
 ---@field lang string
@@ -34,12 +35,12 @@ local function prepare_entry(namespace, key_path, translations, start_dir, base_
     return nil
   end
 
-  local sanitized_path = util.sanitize_path(path, base_dir)
+  local sanitized_path = fs.sanitize_path(path, base_dir)
   if not sanitized_path then
     return nil
   end
 
-  if not util.ensure_dir(util.dirname(sanitized_path)) then
+  if not fs.ensure_dir(fs.dirname(sanitized_path)) then
     return nil
   end
 
@@ -50,7 +51,7 @@ local function prepare_entry(namespace, key_path, translations, start_dir, base_
 
   local original_data = vim.deepcopy(data)
   local path_in_file = resources.key_path_for_file(namespace, key_path, start_dir, lang, sanitized_path)
-  util.set_nested(data, path_in_file, translations[lang] or "")
+  json.set_nested(data, path_in_file, translations[lang] or "")
   return {
     lang = lang,
     path = sanitized_path,

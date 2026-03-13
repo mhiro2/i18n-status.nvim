@@ -8,6 +8,7 @@ local state
 local actions
 local resources
 local doctor
+local filetypes
 local util
 local extract
 local rpc
@@ -28,6 +29,7 @@ local function ensure_modules()
   actions = actions or require("i18n-status.actions")
   resources = resources or require("i18n-status.resources")
   doctor = doctor or require("i18n-status.doctor")
+  filetypes = filetypes or require("i18n-status.filetypes")
   util = util or require("i18n-status.util")
   extract = extract or require("i18n-status.extract")
   rpc = rpc or require("i18n-status.rpc")
@@ -204,7 +206,7 @@ function M.setup(opts)
           -- the file watcher handles those on save.
           if args.event == "TextChanged" or args.event == "TextChangedI" then
             local ft = vim.bo[args.buf].filetype
-            if util.is_resource_filetype(ft) then
+            if filetypes.is_resource_filetype(ft) then
               return
             end
           end
