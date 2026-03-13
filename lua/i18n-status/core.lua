@@ -1,12 +1,13 @@
 ---@class I18nStatusCore
 local M = {}
 
+local filetypes = require("i18n-status.filetypes")
 local resources = require("i18n-status.resources")
 local render = require("i18n-status.render")
 local resolve = require("i18n-status.resolve")
 local scan = require("i18n-status.scan")
 local state = require("i18n-status.state")
-local util = require("i18n-status.util")
+local window = require("i18n-status.window")
 local uv = vim.uv
 local refresh_seq_by_buf = {}
 
@@ -40,10 +41,10 @@ function M.should_refresh(bufnr)
     return false
   end
   local ft = vim.bo[bufnr].filetype
-  if util.is_source_filetype(ft) then
+  if filetypes.is_source_filetype(ft) then
     return true
   end
-  if util.is_resource_filetype(ft) then
+  if filetypes.is_resource_filetype(ft) then
     return resources.resource_info_for_buf(bufnr) ~= nil
   end
   return false
@@ -56,7 +57,7 @@ local function visible_range_unchanged(bufnr)
   if not prev then
     return false
   end
-  local top, bottom = util.visible_range(bufnr)
+  local top, bottom = window.visible_range(bufnr)
   return prev.top == top and prev.bottom == bottom
 end
 
@@ -77,7 +78,7 @@ local function refresh_now_async(bufnr, config)
   local visible_top = nil
   local visible_bottom = nil
   if config.inline.visible_only then
-    local top, bottom = util.visible_range(bufnr)
+    local top, bottom = window.visible_range(bufnr)
     local line_count = math.max(1, vim.api.nvim_buf_line_count(bufnr))
     top = math.max(1, math.min(top, line_count))
     bottom = math.max(top, math.min(bottom, line_count))
@@ -125,7 +126,7 @@ local function refresh_now_async(bufnr, config)
     end
 
     local ft = vim.bo[bufnr].filetype
-    if not util.is_source_filetype(ft) then
+    if not filetypes.is_source_filetype(ft) then
       return
     end
     scan.extract_async(bufnr, {
@@ -151,7 +152,7 @@ function M.refresh_now(bufnr, config)
   local visible_top = nil
   local visible_bottom = nil
   if config.inline.visible_only then
-    local top, bottom = util.visible_range(bufnr)
+    local top, bottom = window.visible_range(bufnr)
     local line_count = math.max(1, vim.api.nvim_buf_line_count(bufnr))
     top = math.max(1, math.min(top, line_count))
     bottom = math.max(top, math.min(bottom, line_count))
@@ -174,7 +175,7 @@ function M.refresh_now(bufnr, config)
     items = scan.extract_resource(bufnr, info, { range = scan_range })
   else
     local ft = vim.bo[bufnr].filetype
-    if not util.is_source_filetype(ft) then
+    if not filetypes.is_source_filetype(ft) then
       return
     end
     items = scan.extract(bufnr, {

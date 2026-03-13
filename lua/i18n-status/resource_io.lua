@@ -3,7 +3,8 @@ local M = {
   reader = nil,
 }
 
-local util = require("i18n-status.util")
+local fs = require("i18n-status.fs")
+local json = require("i18n-status.json")
 
 local uv = vim.uv
 local FILE_PERMISSION_RW = 420 -- 0644 (rw-r--r--)
@@ -14,7 +15,7 @@ local function read_file(path)
   if M.reader then
     return M.reader(path)
   end
-  return util.read_file(path)
+  return fs.read_file(path)
 end
 
 ---@param path string
@@ -25,7 +26,7 @@ function M.read_json(path)
   if not content then
     return nil, "read failed"
   end
-  local decoded, err = util.json_decode(content)
+  local decoded, err = json.json_decode(content)
   if not decoded then
     return nil, err
   end
@@ -36,16 +37,16 @@ end
 ---@return table|nil
 ---@return I18nStatusJsonStyle
 function M.read_json_table(path)
-  if not util.file_exists(path) then
+  if not fs.file_exists(path) then
     return {}, { indent = "  ", newline = true }
   end
   local content = read_file(path)
   if not content then
     return {}, { indent = "  ", newline = true }
   end
-  local decoded, err = util.json_decode(content)
+  local decoded, err = json.json_decode(content)
   local style = {
-    indent = util.detect_indent(content),
+    indent = json.detect_indent(content),
     newline = content:sub(-1) == "\n",
   }
   if not decoded then
@@ -82,7 +83,7 @@ end
 function M.write_json_table(path, data, style, opts)
   local indent = (style and style.indent) or "  "
   local newline = style and style.newline
-  local encoded = util.json_encode_pretty(data, indent)
+  local encoded = json.json_encode_pretty(data, indent)
   if newline then
     encoded = encoded .. "\n"
   end

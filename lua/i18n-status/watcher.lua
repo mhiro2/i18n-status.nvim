@@ -6,7 +6,7 @@ local M = {
   refcounts = {},
 }
 
-local util = require("i18n-status.util")
+local fs = require("i18n-status.fs")
 
 local uv = vim.uv
 
@@ -312,7 +312,7 @@ function M.start(key, opts)
   end
 
   for _, path in ipairs(paths) do
-    if util.file_exists(path) then
+    if fs.file_exists(path) then
       local handle = uv.new_fs_event()
       if handle then
         local start_ok, start_result = pcall(function()
@@ -328,7 +328,7 @@ function M.start(key, opts)
             if filename and filename ~= "" then
               local stat = uv.fs_stat(path)
               if stat and stat.type == "directory" then
-                changed_path_resolved = util.path_join(path, filename)
+                changed_path_resolved = fs.path_join(path, filename)
               end
             end
             schedule_change(watch.rescan_paths[path] == true, changed_path_resolved)

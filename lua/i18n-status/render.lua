@@ -1,8 +1,8 @@
 ---@class I18nStatusRender
 local M = {}
 
-local util = require("i18n-status.util")
 local state = require("i18n-status.state")
+local window = require("i18n-status.window")
 
 local ns_id = vim.api.nvim_create_namespace("i18n-status")
 
@@ -97,7 +97,7 @@ function M.apply(bufnr, items, resolved, config)
 
   local top, bottom = 1, vim.api.nvim_buf_line_count(bufnr)
   if config.inline.visible_only then
-    top, bottom = util.visible_range(bufnr)
+    top, bottom = window.visible_range(bufnr)
   end
 
   -- Force eol position for JSON files to maintain readability

@@ -1,7 +1,7 @@
 ---@class I18nStatusResourceQueries
 local M = {}
 
-local util = require("i18n-status.util")
+local fs = require("i18n-status.fs")
 
 ---@param resources I18nStatusResources
 ---@param roots I18nStatusResourceRoots
@@ -38,14 +38,14 @@ function M.new(resources, roots)
     local root_list = resources.roots(start_dir)
     for _, root in ipairs(root_list) do
       if root.kind == "i18next" then
-        return util.path_join(root.path, lang, namespace .. ".json")
+        return fs.path_join(root.path, lang, namespace .. ".json")
       end
       if roots.is_next_intl_kind(root.kind) then
-        local root_file = util.path_join(root.path, lang .. ".json")
-        if util.file_exists(root_file) then
+        local root_file = fs.path_join(root.path, lang .. ".json")
+        if fs.file_exists(root_file) then
           return root_file
         end
-        return util.path_join(root.path, lang, namespace .. ".json")
+        return fs.path_join(root.path, lang, namespace .. ".json")
       end
     end
     return nil
@@ -139,7 +139,7 @@ function M.new(resources, roots)
   function service.is_next_intl_root_file(start_dir, lang, path)
     for _, root in ipairs(resources.roots(start_dir)) do
       if roots.is_next_intl_kind(root.kind) then
-        local candidate = util.path_join(root.path, lang .. ".json")
+        local candidate = fs.path_join(root.path, lang .. ".json")
         if candidate == path then
           return true
         end

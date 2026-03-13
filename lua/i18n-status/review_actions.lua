@@ -2,9 +2,10 @@
 local M = {}
 
 local core = require("i18n-status.core")
+local fs = require("i18n-status.fs")
+local json = require("i18n-status.json")
 local resources = require("i18n-status.resources")
 local state = require("i18n-status.state")
-local util = require("i18n-status.util")
 local ops = require("i18n-status.ops")
 local key_write = require("i18n-status.key_write")
 
@@ -200,13 +201,13 @@ local function edit_lang(deps, ctx, lang)
     end
 
     local base_dir = review_base_dir(ctx)
-    local sanitized_path, err = util.sanitize_path(path, base_dir)
+    local sanitized_path, err = fs.sanitize_path(path, base_dir)
     if err then
       vim.notify("i18n-status review: invalid file path (" .. err .. ")", vim.log.levels.WARN)
       return
     end
 
-    util.ensure_dir(util.dirname(sanitized_path))
+    fs.ensure_dir(fs.dirname(sanitized_path))
     local data, style = resources.read_json_table(sanitized_path)
     if not data then
       vim.notify("i18n-status review: failed to read json (" .. (style.error or "unknown") .. ")", vim.log.levels.WARN)
@@ -214,7 +215,7 @@ local function edit_lang(deps, ctx, lang)
     end
 
     local path_in_file = resources.key_path_for_file(namespace, key_path, root, lang, sanitized_path)
-    util.set_nested(data, path_in_file, input)
+    json.set_nested(data, path_in_file, input)
     local write_ok, write_err = resources.write_json_table(sanitized_path, data, style)
     if not write_ok then
       vim.notify("i18n-status review: failed to write (" .. (write_err or "unknown") .. ")", vim.log.levels.WARN)
@@ -489,7 +490,7 @@ local function jump_to_definition(deps, ctx)
     end
 
     local base_dir = review_base_dir(ctx)
-    local sanitized_path, err = util.sanitize_path(info.file, base_dir)
+    local sanitized_path, err = fs.sanitize_path(info.file, base_dir)
     if err then
       vim.notify("i18n-status review: invalid file path (" .. err .. ")", vim.log.levels.WARN)
       return
@@ -515,7 +516,7 @@ local function jump_to_definition(deps, ctx)
   end
 
   local base_dir = review_base_dir(ctx)
-  local sanitized_path, err = util.sanitize_path(info.file, base_dir)
+  local sanitized_path, err = fs.sanitize_path(info.file, base_dir)
   if err then
     vim.notify("i18n-status review: invalid file path (" .. err .. ")", vim.log.levels.WARN)
     return

@@ -2,10 +2,10 @@
 local M = {}
 
 local extract_diff = require("i18n-status.extract_diff")
+local fs = require("i18n-status.fs")
 local review_filters = require("i18n-status.review_filters")
 local review_sections = require("i18n-status.review_sections")
 local review_ui = require("i18n-status.review_ui")
-local util = require("i18n-status.util")
 
 ---@class I18nStatusBufferDecoration
 ---@field line integer
@@ -398,7 +398,7 @@ function M.render_doctor_detail(ctx, namespace)
 
     for _, lang in ipairs(lang_order) do
       local info = (hover.values and hover.values[lang]) or {}
-      local source = info.file and util.shorten_path(info.file) or "-"
+      local source = info.file and fs.shorten_path(info.file) or "-"
       local value = "(empty)"
       if info.value and info.value ~= "" then
         value = sanitize_value(info.value, 60)

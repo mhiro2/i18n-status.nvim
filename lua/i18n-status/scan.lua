@@ -1,8 +1,8 @@
 ---@class I18nStatusScan
 local M = {}
 
+local filetypes = require("i18n-status.filetypes")
 local rpc = require("i18n-status.rpc")
-local util = require("i18n-status.util")
 
 ---@class I18nStatusScanSnapshot
 ---@field tick integer
@@ -50,7 +50,7 @@ end
 ---@param bufnr integer
 ---@return string
 local function lang_for_buf(bufnr)
-  return util.lang_for_filetype(vim.bo[bufnr].filetype)
+  return filetypes.lang_for_filetype(vim.bo[bufnr].filetype)
 end
 
 ---@param value string

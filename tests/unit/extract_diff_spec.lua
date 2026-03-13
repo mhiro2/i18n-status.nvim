@@ -1,8 +1,8 @@
 local stub = require("luassert.stub")
 
 local extract_diff = require("i18n-status.extract_diff")
+local fs = require("i18n-status.fs")
 local resources = require("i18n-status.resources")
-local util = require("i18n-status.util")
 
 describe("extract diff", function()
   local stubs = {}
@@ -82,7 +82,7 @@ describe("extract diff", function()
     add_stub(resources, "key_path_for_file", function(namespace, key_path, _start_dir, _lang, _path)
       return namespace .. "." .. key_path
     end)
-    add_stub(util, "shorten_path", function(path)
+    add_stub(fs, "shorten_path", function(path)
       return path:match("messages/.+$")
     end)
 
