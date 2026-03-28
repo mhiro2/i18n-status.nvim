@@ -55,6 +55,34 @@ local function find_line(buf, needle)
   return nil
 end
 
+---@param ctx I18nStatusExtractReviewCtx
+---@param text string
+---@return integer|nil line number (1-based)
+local function find_candidate_line(ctx, text)
+  for _, candidate in ipairs(ctx.candidates) do
+    if candidate.text == text then
+      for line, id in pairs(ctx.line_to_candidate) do
+        if id == candidate.id then
+          return line
+        end
+      end
+    end
+  end
+  return nil
+end
+
+---@param ctx I18nStatusExtractReviewCtx
+---@param text string
+---@return boolean
+local function has_view_candidate(ctx, text)
+  for _, c in ipairs(ctx.view_candidates or {}) do
+    if c.text == text then
+      return true
+    end
+  end
+  return false
+end
+
 describe("extract review integration", function()
   local stubs = {}
 
@@ -136,7 +164,7 @@ describe("extract review integration", function()
         if not vim.api.nvim_win_is_valid(ctx.list_win) then
           return false
         end
-        local first_line = find_line(ctx.list_buf, "First text")
+        local first_line = find_candidate_line(ctx, "First text")
         if not first_line then
           return false
         end
@@ -240,7 +268,7 @@ describe("extract review integration", function()
       vim.api.nvim_feedkeys("/", "x", false)
 
       local filtered = vim.wait(500, function()
-        return find_line(ctx.list_buf, "Second text") ~= nil and find_line(ctx.list_buf, "First text") == nil
+        return has_view_candidate(ctx, "Second text") and not has_view_candidate(ctx, "First text")
       end, 10)
 
       vim.ui.input = original_input
@@ -306,7 +334,7 @@ describe("extract review integration", function()
       local ctx = extract.run(buf, cfg, {})
       assert.is_not_nil(ctx)
 
-      local first_line = find_line(ctx.list_buf, "First text")
+      local first_line = find_candidate_line(ctx, "First text")
       assert.is_not_nil(first_line)
 
       vim.api.nvim_set_current_win(ctx.list_win)
