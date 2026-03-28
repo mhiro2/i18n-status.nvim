@@ -70,10 +70,12 @@ describe("extract review integration", function()
     end
     stubs = {}
     for _, win in ipairs(vim.api.nvim_list_wins()) do
-      local buf = vim.api.nvim_win_get_buf(win)
-      local ft = vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].filetype or ""
-      if ft == "i18n-status-extract-review" or ft == "i18n-status-extract-review-help" then
-        pcall(vim.api.nvim_win_close, win, true)
+      if vim.api.nvim_win_is_valid(win) then
+        local buf = vim.api.nvim_win_get_buf(win)
+        local ft = vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].filetype or ""
+        if ft == "i18n-status-extract-review" or ft == "i18n-status-extract-review-help" then
+          pcall(vim.api.nvim_win_close, win, true)
+        end
       end
     end
   end)
