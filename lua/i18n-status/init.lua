@@ -9,6 +9,7 @@ local actions
 local resources
 local doctor
 local filetypes
+local treesitter
 local util
 local extract
 local rpc
@@ -30,6 +31,7 @@ local function ensure_modules()
   resources = resources or require("i18n-status.resources")
   doctor = doctor or require("i18n-status.doctor")
   filetypes = filetypes or require("i18n-status.filetypes")
+  treesitter = treesitter or require("i18n-status.treesitter")
   util = util or require("i18n-status.util")
   extract = extract or require("i18n-status.extract")
   rpc = rpc or require("i18n-status.rpc")
@@ -161,6 +163,7 @@ end
 ---@param opts I18nStatusConfig|nil
 function M.setup(opts)
   ensure_modules()
+  treesitter.register_language_aliases()
   local need_refresh_all = false
   if not config then
     config = config_mod.setup(opts)

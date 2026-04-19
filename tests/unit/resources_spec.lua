@@ -80,7 +80,7 @@ describe("resources", function()
     assert.are.equal("A", cache.index.ja["common:login.title"].value)
 
     -- Sleep to ensure mtime changes on filesystems with second-level precision
-    vim.loop.sleep(1000)
+    vim.uv.sleep(1000)
     write(root .. "/locales/ja/common.json", '{"login":{"title":"C"}}')
     cache = resources.ensure_index(root)
     assert.are.equal("C", cache.index.ja["common:login.title"].value)
@@ -497,7 +497,7 @@ describe("resources", function()
   end)
 
   describe("incremental scan", function()
-    local uv = vim.uv or vim.loop
+    local uv = vim.uv
 
     it("builds cache with entries_by_key and file_entries", function()
       local root = helpers.tmpdir()
@@ -532,7 +532,7 @@ describe("resources", function()
       assert.are.equal("ログイン", cache.index.ja["common:login.title"].value)
 
       -- Update the file
-      vim.loop.sleep(10)
+      vim.uv.sleep(10)
       write(root .. "/locales/ja/common.json", '{"login":{"title":"サインイン"}}')
 
       -- Apply incremental change
@@ -694,7 +694,7 @@ describe("resources", function()
       local ja_file = uv.fs_realpath(root .. "/locales/ja/common.json")
 
       -- Update file
-      vim.loop.sleep(10)
+      vim.uv.sleep(10)
       write(ja_file, '{"login":{"title":"サインイン"}}')
 
       -- Apply incremental change

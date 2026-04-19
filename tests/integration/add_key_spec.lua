@@ -85,9 +85,9 @@ describe("add_key from Doctor UI", function()
       assert.are.equal(3, input_count)
 
       -- Verify files were written correctly
-      local en_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/en/common.json"))
-      local ja_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
-      local zh_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/zh/common.json"))
+      local en_data = vim.json.decode(helpers.read_file(root .. "/locales/en/common.json"))
+      local ja_data = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local zh_data = vim.json.decode(helpers.read_file(root .. "/locales/zh/common.json"))
 
       assert.are.equal("New Key", en_data.newkey)
       assert.are.equal("新しいキー", ja_data.newkey)
@@ -212,8 +212,8 @@ describe("add_key from Doctor UI", function()
       vim.ui.input = original_input
 
       -- Verify files were not modified
-      local en_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/en/common.json"))
-      local ja_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local en_data = vim.json.decode(helpers.read_file(root .. "/locales/en/common.json"))
+      local ja_data = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
 
       assert.is_nil(en_data.newkey)
       assert.is_nil(ja_data.newkey)
@@ -275,8 +275,8 @@ describe("add_key from Doctor UI", function()
 
       vim.ui.input = original_input
 
-      local en_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/en/common.json"))
-      local ja_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local en_data = vim.json.decode(helpers.read_file(root .. "/locales/en/common.json"))
+      local ja_data = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
 
       assert.are.equal("Login Title", en_data.form.login.title)
       assert.are.equal("ログインタイトル", ja_data.form.login.title)
@@ -332,8 +332,8 @@ describe("I18nAddKey command", function()
 
       assert.are.equal(3, input_index)
 
-      local en_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/en/common.json"))
-      local ja_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local en_data = vim.json.decode(helpers.read_file(root .. "/locales/en/common.json"))
+      local ja_data = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
 
       assert.are.equal("Hello World", en_data.hello.world)
       assert.are.equal("こんにちは世界", ja_data.hello.world)
@@ -381,8 +381,8 @@ describe("I18nAddKey command", function()
       -- Should have asked for key name + 2 languages
       assert.are.equal(3, input_index)
 
-      local en_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/en/common.json"))
-      local ja_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local en_data = vim.json.decode(helpers.read_file(root .. "/locales/en/common.json"))
+      local ja_data = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
 
       assert.are.equal("Test", en_data.test.key)
       assert.are.equal("テスト", ja_data.test.key)
@@ -491,8 +491,8 @@ describe("I18nAddKey command", function()
       assert.are.equal(3, input_index)
 
       -- But files should not be written due to empty value
-      local en_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/en/common.json"))
-      local ja_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local en_data = vim.json.decode(helpers.read_file(root .. "/locales/en/common.json"))
+      local ja_data = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
 
       -- Should still be empty because validation failed
       assert.is_nil(en_data.test)
@@ -535,8 +535,8 @@ describe("I18nAddKey command", function()
       vim.ui.input = original_input
 
       -- Files should remain empty
-      local en_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/en/common.json"))
-      local ja_data = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local en_data = vim.json.decode(helpers.read_file(root .. "/locales/en/common.json"))
+      local ja_data = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
 
       assert.are.same({}, en_data)
       assert.are.same({}, ja_data)

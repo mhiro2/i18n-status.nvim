@@ -1,7 +1,7 @@
 ---@class TestHelpers
 local M = {}
 
-local uv = vim.uv or vim.loop
+local uv = vim.uv
 
 ---@return string
 function M.tmpdir()

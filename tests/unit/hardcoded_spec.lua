@@ -7,21 +7,6 @@ local function make_buf(lines, ft)
   return buf
 end
 
-local function skip_if_no_parser(buf, lang, fallback_lang)
-  local ok = pcall(vim.treesitter.get_parser, buf, lang)
-  if ok then
-    return false
-  end
-  if fallback_lang then
-    local ok_fallback = pcall(vim.treesitter.get_parser, buf, fallback_lang)
-    if ok_fallback then
-      return false
-    end
-  end
-  pending("treesitter parser not available: " .. lang)
-  return true
-end
-
 describe("hardcoded", function()
   it("detects jsx_text and jsx literal", function()
     local buf = make_buf({
@@ -29,9 +14,6 @@ describe("hardcoded", function()
       '  return <div>Hello {"World"}</div>',
       "}",
     }, "typescriptreact")
-    if skip_if_no_parser(buf, "tsx", "typescript") then
-      return
-    end
     local items = hardcoded.extract(buf, { min_length = 2 })
     local found = {}
     for _, item in ipairs(items) do
@@ -45,9 +27,6 @@ describe("hardcoded", function()
     local buf = make_buf({
       'export function Page() { return <><Trans i18nKey="auth.title">Login</Trans><p>Signup</p></> }',
     }, "typescriptreact")
-    if skip_if_no_parser(buf, "tsx", "typescript") then
-      return
-    end
     local items = hardcoded.extract(buf, {
       min_length = 2,
       exclude_components = { "Trans", "Translation" },
@@ -67,9 +46,6 @@ describe("hardcoded", function()
       "  )",
       "}",
     }, "typescriptreact")
-    if skip_if_no_parser(buf, "tsx", "typescript") then
-      return
-    end
     local items = hardcoded.extract(buf, { min_length = 2 })
     assert.are.equal(1, #items)
     assert.are.equal("This is a very long multiline text", items[1].text)
@@ -82,9 +58,6 @@ describe("hardcoded", function()
       "  return <p>{`Hello ${name}`}</p>",
       "}",
     }, "typescriptreact")
-    if skip_if_no_parser(buf, "tsx", "typescript") then
-      return
-    end
     local items = hardcoded.extract(buf, { min_length = 2 })
     assert.are.equal(0, #items)
   end)
@@ -100,9 +73,6 @@ describe("hardcoded", function()
       "  )",
       "}",
     }, "typescriptreact")
-    if skip_if_no_parser(buf, "tsx", "typescript") then
-      return
-    end
     local items = hardcoded.extract(buf, {
       min_length = 3,
       range = { start_line = 3, end_line = 3 },
