@@ -22,6 +22,11 @@ code that uses i18next / next-intl. It does NOT translate text.
 When you open a translation JSON file, it can show another language inline
 (`:I18nLang` controls the display language).
 
+Requirements:
+  - Neovim 0.12+
+  - optional Tree-sitter parser for json/jsonc resource editing
+  - optional blink.cmp for completion
+
 Inline markers:
   [=] all languages have identical values
        All languages exist and values match.
@@ -52,8 +57,8 @@ Supported filetypes:
   javascript, typescript, javascriptreact, typescriptreact
   json/jsonc (only for detected translation resource files)
   Note: resource indexing and cross-file resolve target strict *.json files.
-  jsonc is supported for editor UX, but JSONC comments/trailing commas are
-  not indexed.
+  jsonc is supported for editor UX via the json parser alias, but JSONC
+  comments/trailing commas are not indexed.
 
 ==============================================================================
 2. Setup                                                        *i18n-status-setup*
@@ -413,7 +418,7 @@ Health checks report:
   - core process status
   - configuration (primary_lang)
   - resource roots / languages / parse errors
-  - optional Tree-sitter parsers (json / jsonc)
+  - optional Tree-sitter parser availability for json / jsonc
   - blink.cmp integration status
 
 Note: checkhealth does NOT run :I18nDoctor.

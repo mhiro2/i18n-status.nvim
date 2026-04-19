@@ -4,6 +4,7 @@ local M = {}
 local config_mod = require("i18n-status.config")
 local fs = require("i18n-status.fs")
 local resources = require("i18n-status.resources")
+local treesitter = require("i18n-status.treesitter")
 
 local health = vim.health
 
@@ -236,22 +237,21 @@ function M.check()
 
   health.start("Treesitter")
   info("JS/TS parsing is handled by the Rust core (swc); treesitter parsers are optional")
-  if vim.treesitter and type(vim.treesitter.get_parser) == "function" then
-    local langs = {
-      { name = "json", note = "useful for JSON resource file highlighting" },
-      { name = "jsonc", note = "useful for JSONC resource file highlighting" },
-    }
-    for _, entry in ipairs(langs) do
-      local lang = entry.name
-      local buf = vim.api.nvim_create_buf(false, true)
-      local ok_lang = pcall(vim.treesitter.get_parser, buf, lang)
-      pcall(vim.api.nvim_buf_delete, buf, { force = true })
-      if ok_lang then
-        ok("parser installed: " .. lang)
+  local langs = {
+    { filetype = "json", lang = "json", note = "useful for JSON resource file highlighting" },
+    { filetype = "jsonc", lang = "json", note = "useful for JSONC resource file highlighting" },
+  }
+  for _, entry in ipairs(langs) do
+    local parser_ok = treesitter.has_parser(entry.lang)
+    if parser_ok then
+      if entry.filetype == entry.lang then
+        ok("parser installed: " .. entry.filetype)
       else
-        local note = entry.note and (" (" .. entry.note .. ")") or ""
-        info("parser not installed: " .. lang .. note)
+        ok("parser installed: " .. entry.filetype .. " (via " .. entry.lang .. ")")
       end
+    else
+      local note = entry.note and (" (" .. entry.note .. ")") or ""
+      info("parser not installed: " .. entry.filetype .. note)
     end
   end
 

@@ -426,7 +426,7 @@ describe("doctor review edit", function()
       vim.ui.input = original_input
       vim.ui.select = original_select
 
-      local data = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local data = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
       assert.are.equal("New", data.login.title)
 
       -- Clean up
@@ -479,8 +479,8 @@ describe("doctor review edit", function()
 
       vim.ui.input = original_input
 
-      local ja = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
-      local en = vim.fn.json_decode(helpers.read_file(root .. "/locales/en/common.json"))
+      local ja = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local en = vim.json.decode(helpers.read_file(root .. "/locales/en/common.json"))
       assert.is_nil(ja.rename.title)
       assert.is_nil(en.rename.title)
       assert.are.equal("ログイン", ja.rename.heading)
@@ -548,7 +548,7 @@ describe("doctor review edit", function()
 
       assert.are.equal(0, setup_calls)
 
-      local data = vim.fn.json_decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local data = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
       assert.are.equal("New", data.login.title)
 
       pcall(vim.api.nvim_win_close, ctx.list_win, true)

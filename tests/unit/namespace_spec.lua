@@ -7,21 +7,6 @@ local function make_buf(lines, ft)
   return buf
 end
 
-local function skip_if_no_parser(buf, lang, fallback_lang)
-  local ok = pcall(vim.treesitter.get_parser, buf, lang)
-  if ok then
-    return false
-  end
-  if fallback_lang then
-    local ok_fallback = pcall(vim.treesitter.get_parser, buf, fallback_lang)
-    if ok_fallback then
-      return false
-    end
-  end
-  pending("treesitter parser not available: " .. lang)
-  return true
-end
-
 describe("namespace resolver", function()
   it("uses nearest namespace scope", function()
     local buf = make_buf({
@@ -32,9 +17,6 @@ describe("namespace resolver", function()
       "}",
       't("outside")',
     }, "typescript")
-    if skip_if_no_parser(buf, "typescript") then
-      return
-    end
     local items = scan.extract(buf, { fallback_namespace = "common" })
     local by_raw = {}
     for _, item in ipairs(items) do

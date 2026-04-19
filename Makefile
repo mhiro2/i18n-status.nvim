@@ -1,27 +1,20 @@
-.PHONY: deps deps-plenary deps-treesitter deps-grammars treesitter-build treesitter-install fmt lint stylua stylua-check selene rustfmt rustfmt-check rust-lint license-check test rust-build rust-test lua-test
+.PHONY: deps deps-plenary deps-grammars treesitter-build treesitter-install fmt lint stylua stylua-check selene rustfmt rustfmt-check rust-lint license-check test rust-build rust-test lua-test
 
 CC ?= cc
 NVIM ?= nvim
 GIT ?= git
 PLENARY_PATH ?= deps/plenary.nvim
-TREESITTER_PATH ?= deps/nvim-treesitter
 TREESITTER_INSTALL_DIR ?= deps/treesitter
 TS_GRAMMAR_JS ?= deps/tree-sitter-javascript
 TS_GRAMMAR_TS ?= deps/tree-sitter-typescript
 TS_GRAMMAR_JSON ?= deps/tree-sitter-json
 
-deps: deps-plenary deps-treesitter treesitter-install
+deps: deps-plenary treesitter-install
 
 deps-plenary:
 	@if [ ! -d "$(PLENARY_PATH)" ]; then \
 		mkdir -p "$$(dirname "$(PLENARY_PATH)")"; \
 		$(GIT) clone --depth 1 https://github.com/nvim-lua/plenary.nvim "$(PLENARY_PATH)"; \
-	fi
-
-deps-treesitter:
-	@if [ ! -d "$(TREESITTER_PATH)" ]; then \
-		mkdir -p "$$(dirname "$(TREESITTER_PATH)")"; \
-		$(GIT) clone --depth 1 https://github.com/nvim-treesitter/nvim-treesitter "$(TREESITTER_PATH)"; \
 	fi
 
 deps-grammars:
@@ -93,6 +86,6 @@ rust-test:
 test: lua-test rust-test
 
 lua-test: deps rust-build
-	PLENARY_PATH="$(PLENARY_PATH)" TREESITTER_INSTALL_DIR="$(TREESITTER_INSTALL_DIR)" TREESITTER_PATH="$(TREESITTER_PATH)" \
+	PLENARY_PATH="$(PLENARY_PATH)" TREESITTER_INSTALL_DIR="$(TREESITTER_INSTALL_DIR)" \
 		$(NVIM) --headless -u tests/minimal_init.lua \
 		-c "lua require('plenary.test_harness').test_directory('tests', {minimal_init = 'tests/minimal_init.lua'})"

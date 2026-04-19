@@ -5,6 +5,7 @@ local extract_diff = require("i18n-status.extract_diff")
 local fs = require("i18n-status.fs")
 local review_filters = require("i18n-status.review_filters")
 local review_sections = require("i18n-status.review_sections")
+local treesitter = require("i18n-status.treesitter")
 local review_ui = require("i18n-status.review_ui")
 
 ---@class I18nStatusBufferDecoration
@@ -801,8 +802,13 @@ local function ensure_source_preview_treesitter(ctx)
     return
   end
 
-  local lang = vim.treesitter.language.get_lang(src_ft)
+  local lang = treesitter.parser_lang_for_filetype(src_ft)
   if not lang then
+    return
+  end
+
+  local parser_ok = treesitter.has_parser(lang)
+  if not parser_ok then
     return
   end
 

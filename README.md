@@ -94,7 +94,7 @@ Examples:
 
 ## 🧰 Requirements
 
-- **Neovim** >= 0.10
+- **Neovim** >= 0.12
 - **Tree-sitter** (optional): `json` / `jsonc` parsers for better resource editing UX
 - **[blink.cmp](https://github.com/saghen/blink.cmp)** (optional): i18n key completion
 

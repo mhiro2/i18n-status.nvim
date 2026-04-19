@@ -15,21 +15,6 @@ local function make_buf(lines, ft, name)
   return buf
 end
 
-local function skip_if_no_parser(buf, lang, fallback_lang)
-  local ok = pcall(vim.treesitter.get_parser, buf, lang)
-  if ok then
-    return false
-  end
-  if fallback_lang then
-    local ok_fallback = pcall(vim.treesitter.get_parser, buf, fallback_lang)
-    if ok_fallback then
-      return false
-    end
-  end
-  pending("treesitter parser not available: " .. lang)
-  return true
-end
-
 ---@param ft string
 ---@return integer|nil
 local function find_review_window(ft)
@@ -120,9 +105,6 @@ describe("extract review integration", function()
         "  return <p>Hello world</p>",
         "}",
       }, "typescriptreact", root .. "/src/page.tsx")
-      if skip_if_no_parser(buf, "tsx", "typescript") then
-        return
-      end
 
       local cfg = config_mod.setup({ primary_lang = "ja" })
       local ctx = extract.run(buf, cfg, {})
@@ -152,9 +134,6 @@ describe("extract review integration", function()
         "  </>",
         "}",
       }, "typescriptreact", root .. "/src/page.tsx")
-      if skip_if_no_parser(buf, "tsx", "typescript") then
-        return
-      end
 
       local cfg = config_mod.setup({ primary_lang = "ja" })
       local ctx = extract.run(buf, cfg, {})
@@ -187,9 +166,6 @@ describe("extract review integration", function()
         "  return <p>Hello world</p>",
         "}",
       }, "typescriptreact", root .. "/src/page.tsx")
-      if skip_if_no_parser(buf, "tsx", "typescript") then
-        return
-      end
 
       local cfg = config_mod.setup({ primary_lang = "ja" })
       local ctx = extract.run(buf, cfg, {})
@@ -212,9 +188,6 @@ describe("extract review integration", function()
         "  return <p>Hello world</p>",
         "}",
       }, "typescriptreact", root .. "/src/page.tsx")
-      if skip_if_no_parser(buf, "tsx", "typescript") then
-        return
-      end
 
       local cfg = config_mod.setup({ primary_lang = "ja" })
       local ctx = extract.run(buf, cfg, {})
@@ -251,9 +224,6 @@ describe("extract review integration", function()
         "  </>",
         "}",
       }, "typescriptreact", root .. "/src/page.tsx")
-      if skip_if_no_parser(buf, "tsx", "typescript") then
-        return
-      end
 
       local cfg = config_mod.setup({ primary_lang = "ja" })
       local ctx = extract.run(buf, cfg, {})
@@ -288,9 +258,6 @@ describe("extract review integration", function()
         "  return <p>Hello world</p>",
         "}",
       }, "typescriptreact", root .. "/src/page.tsx")
-      if skip_if_no_parser(buf, "tsx", "typescript") then
-        return
-      end
 
       local cfg = config_mod.setup({ primary_lang = "ja" })
       local ctx = extract.run(buf, cfg, {})
@@ -326,9 +293,6 @@ describe("extract review integration", function()
         "  </>",
         "}",
       }, "typescriptreact", root .. "/src/page.tsx")
-      if skip_if_no_parser(buf, "tsx", "typescript") then
-        return
-      end
 
       local cfg = config_mod.setup({ primary_lang = "ja" })
       local ctx = extract.run(buf, cfg, {})
@@ -372,9 +336,6 @@ describe("extract review integration", function()
         "  return <p>Hello world</p>",
         "}",
       }, "typescriptreact", root .. "/src/page.tsx")
-      if skip_if_no_parser(buf, "tsx", "typescript") then
-        return
-      end
 
       local cfg = config_mod.setup({ primary_lang = "ja" })
       local ctx = extract.run(buf, cfg, {})
@@ -421,9 +382,6 @@ describe("extract review integration", function()
         "  </>",
         "}",
       }, "typescriptreact", root .. "/src/page.tsx")
-      if skip_if_no_parser(buf, "tsx", "typescript") then
-        return
-      end
 
       local cfg = config_mod.setup({ primary_lang = "ja" })
       local ctx = extract.run(buf, cfg, {
@@ -462,9 +420,6 @@ describe("extract review integration", function()
         "  return <p>Hello world</p>",
         "}",
       }, "typescriptreact", root .. "/src/page.tsx")
-      if skip_if_no_parser(buf, "tsx", "typescript") then
-        return
-      end
 
       local cfg = config_mod.setup({ primary_lang = "ja" })
       local ctx = extract.run(buf, cfg, {})
@@ -509,9 +464,6 @@ describe("extract review integration", function()
         "  return <p>Hello world</p>",
         "}",
       }, "typescriptreact", root .. "/src/page.tsx")
-      if skip_if_no_parser(buf, "tsx", "typescript") then
-        return
-      end
 
       local cfg = config_mod.setup({ primary_lang = "ja" })
       local ctx = extract.run(buf, cfg, {})
