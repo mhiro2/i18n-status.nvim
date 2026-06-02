@@ -375,6 +375,7 @@ require("i18n-status").setup({
 >   2. `next-intl` root file (`messages/{lang}.json`, priority 40)
 >   3. `next-intl` namespace file (`messages/{lang}/{namespace}.json`, priority 50)
 > - Resource indexing and cross-file resolve target strict `*.json` files. `jsonc` is supported as an editor filetype UX improvement, but JSONC comments/trailing commas are not indexed.
+> - Nested keys are always split on `.` (i18next's default nested layout). `keySeparator: false` or custom separators are not supported for resolution or writing. When a write would turn an existing scalar into a nested branch (e.g. adding `login.title` where `login` is already a string), the write is refused rather than silently overwriting the existing value.
 
 ## 🧩 Dynamic i18n key support
 

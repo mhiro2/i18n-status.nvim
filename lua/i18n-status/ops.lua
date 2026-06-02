@@ -326,7 +326,10 @@ function M.rename(opts)
       if old_value == nil then
         old_value = ""
       end
-      json.set_nested(new_state.data, new_path_in_file, old_value)
+      local set_ok, set_err = json.set_nested(new_state.data, new_path_in_file, old_value)
+      if not set_ok then
+        return false, string.format("%s (%s)", set_err or "failed to set key", lang)
+      end
       new_state.dirty = true
     end
     if same_file then

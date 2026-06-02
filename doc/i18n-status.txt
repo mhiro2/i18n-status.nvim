@@ -442,6 +442,14 @@ Not supported:
   - conditional const bindings (const K = cond ? "a" : "b"; t(K))
     Use t(cond ? "a" : "b") directly instead.
 
+Key path separator (always ".").
+  Nested keys are always split on ".", matching i18next's default nested
+  JSON layout. i18next setups that disable nesting (keySeparator: false) or
+  use a custom separator are not supported for resolution or writing. When a
+  write would turn an existing scalar value into a nested branch (for example
+  adding "login.title" where "login" is already a string), the write is
+  refused instead of silently overwriting the existing value.
+
 next-intl root file priority:
   When both messages/{lang}.json (root file) and
   messages/{lang}/{namespace}.json exist, the root file is prioritized.

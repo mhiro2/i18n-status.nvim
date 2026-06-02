@@ -215,7 +215,11 @@ local function edit_lang(deps, ctx, lang)
     end
 
     local path_in_file = resources.key_path_for_file(namespace, key_path, root, lang, sanitized_path)
-    json.set_nested(data, path_in_file, input)
+    local set_ok, set_err = json.set_nested(data, path_in_file, input)
+    if not set_ok then
+      vim.notify("i18n-status review: " .. (set_err or "failed to set key"), vim.log.levels.WARN)
+      return
+    end
     local write_ok, write_err = resources.write_json_table(sanitized_path, data, style)
     if not write_ok then
       vim.notify("i18n-status review: failed to write (" .. (write_err or "unknown") .. ")", vim.log.levels.WARN)
