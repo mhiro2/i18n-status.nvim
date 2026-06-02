@@ -1,6 +1,10 @@
 ---@class I18nStatusJson
 local M = {}
 
+-- `vim.json.decode` tags empty JSON objects (`{}`) with this metatable so they
+-- can be told apart from empty arrays (`[]`), which decode to a plain table.
+local empty_dict_mt = getmetatable(vim.empty_dict())
+
 ---@param json string
 ---@return table|nil
 ---@return string|nil
@@ -54,12 +58,39 @@ local function is_array(tbl)
   return true, max
 end
 
+-- Whether a value is a JSON object we can safely descend into to create a
+-- nested key. Empty objects decoded from `{}` carry the dict metatable;
+-- everything array-shaped (including `[]` and freshly created Lua tables)
+-- is rejected so we never silently convert a list into an object.
+---@param value any
+---@return boolean
+local function is_object(value)
+  if type(value) ~= "table" then
+    return false
+  end
+  if empty_dict_mt ~= nil and getmetatable(value) == empty_dict_mt then
+    return true
+  end
+  return not is_array(value)
+end
+
 ---@param value any
 ---@param indent_unit string
 ---@param level integer
 ---@return string
 local function encode_pretty(value, indent_unit, level)
   if type(value) == "table" then
+    -- Only empty tables are ambiguous between `{}` and `[]`. The JSON decoder
+    -- tags empty objects with a metatable so they round-trip as `{}`; an empty
+    -- table without it (or a freshly created Lua table) is encoded as `[]`.
+    -- Non-empty tables are disambiguated by `is_array` below. Note the
+    -- metatable survives mutation, so this check must be gated on emptiness.
+    if next(value) == nil then
+      if empty_dict_mt ~= nil and getmetatable(value) == empty_dict_mt then
+        return "{}"
+      end
+      return "[]"
+    end
     local array, length = is_array(value)
     local indent = string.rep(indent_unit, level)
     local next_indent = string.rep(indent_unit, level + 1)
@@ -114,20 +145,37 @@ function M.json_encode_pretty(value, indent_unit)
   return encode_pretty(value, unit, 0)
 end
 
+-- Key paths are always split on ".". This matches i18next's default nested
+-- layout but not `keySeparator: false` / custom-separator setups; see the
+-- limitations section of the docs.
 ---@param tbl table
 ---@param key_path string
 ---@param value any
+---@return boolean ok
+---@return string? err
 function M.set_nested(tbl, key_path, value)
   local parts = vim.split(key_path, ".", { plain = true })
   local current = tbl
   for i = 1, #parts - 1 do
     local key = parts[i]
-    if type(current[key]) ~= "table" then
+    local existing = current[key]
+    if existing == nil then
       current[key] = {}
+    elseif not is_object(existing) then
+      -- A scalar or list already occupies this position. Turning it into a
+      -- branch would silently destroy the existing data, so refuse instead.
+      return false,
+        string.format(
+          "cannot create nested key '%s': '%s' is already a %s",
+          key_path,
+          table.concat(parts, ".", 1, i),
+          type(existing) == "table" and "list" or "value"
+        )
     end
     current = current[key]
   end
   current[parts[#parts]] = value
+  return true
 end
 
 return M

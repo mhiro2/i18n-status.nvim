@@ -51,7 +51,9 @@ local function prepare_entry(namespace, key_path, translations, start_dir, base_
 
   local original_data = vim.deepcopy(data)
   local path_in_file = resources.key_path_for_file(namespace, key_path, start_dir, lang, sanitized_path)
-  json.set_nested(data, path_in_file, translations[lang] or "")
+  if not json.set_nested(data, path_in_file, translations[lang] or "") then
+    return nil
+  end
   return {
     lang = lang,
     path = sanitized_path,

@@ -35,17 +35,50 @@ describe("json", function()
     it("creates nested tables as needed", function()
       local data = {}
 
-      json.set_nested(data, "a.b.c", "value")
+      local ok = json.set_nested(data, "a.b.c", "value")
 
+      assert.is_true(ok)
       assert.are.same({ a = { b = { c = "value" } } }, data)
     end)
 
-    it("replaces non-table nodes on the path", function()
-      local data = { a = "leaf" }
+    it("refuses to overwrite an existing scalar with a branch", function()
+      local data = { login = "Login" }
 
-      json.set_nested(data, "a.b", "value")
+      local ok, err = json.set_nested(data, "login.title", "Title")
 
-      assert.are.same({ a = { b = "value" } }, data)
+      assert.is_false(ok)
+      assert.is_truthy(err)
+      -- The existing scalar must be left untouched.
+      assert.are.same({ login = "Login" }, data)
+    end)
+
+    it("refuses to turn an existing list into a branch", function()
+      local data = { login = { "a", "b" } }
+
+      local ok, err = json.set_nested(data, "login.title", "Title")
+
+      assert.is_false(ok)
+      assert.is_truthy(err)
+      -- The existing list must be left untouched.
+      assert.are.same({ login = { "a", "b" } }, data)
+    end)
+
+    it("descends into a decoded empty object", function()
+      local data = vim.json.decode('{"login":{}}')
+
+      local ok = json.set_nested(data, "login.title", "Title")
+
+      assert.is_true(ok)
+      assert.are.equal('{\n  "login": {\n    "title": "Title"\n  }\n}', json.json_encode_pretty(data))
+    end)
+
+    it("overwrites an existing leaf value", function()
+      local data = { a = { b = "old" } }
+
+      local ok = json.set_nested(data, "a.b", "new")
+
+      assert.is_true(ok)
+      assert.are.same({ a = { b = "new" } }, data)
     end)
   end)
 
@@ -58,6 +91,21 @@ describe("json", function()
       })
 
       assert.are.equal('{\n  "a": [\n    1,\n    2\n  ],\n  "b": 1,\n  "c": {\n    "nested": true\n  }\n}', encoded)
+    end)
+
+    it("encodes an empty object as {} rather than []", function()
+      assert.are.equal("{}", json.json_encode_pretty(vim.empty_dict()))
+      assert.are.equal("{}", json.json_encode_pretty(vim.json.decode("{}")))
+    end)
+
+    it("keeps an empty array as []", function()
+      assert.are.equal("[]", json.json_encode_pretty(vim.json.decode("[]")))
+    end)
+
+    it("preserves nested empty objects when round-tripping", function()
+      local decoded = vim.json.decode('{"a":{},"b":"x"}')
+
+      assert.are.equal('{\n  "a": {},\n  "b": "x"\n}', json.json_encode_pretty(decoded))
     end)
   end)
 end)
