@@ -4,7 +4,7 @@ use serde_json::Value;
 
 mod call_extract;
 mod const_eval;
-mod parser;
+pub(crate) mod parser;
 mod resource_json;
 mod scope;
 

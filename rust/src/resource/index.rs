@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
@@ -62,21 +62,28 @@ impl IndexCache {
         }
     }
 
-    fn lock_entries(&self) -> Result<MutexGuard<'_, HashMap<String, IndexResult>>> {
-        self.entries
-            .lock()
-            .map_err(|e| anyhow!("index cache lock poisoned: {e}"))
+    fn lock_entries(&self) -> MutexGuard<'_, HashMap<String, IndexResult>> {
+        match self.entries.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                // A handler panicked while holding the lock. Clear the poison so
+                // future locks succeed, then drop the possibly half-updated state
+                // so the cache keeps serving (rebuilding as needed) instead of
+                // erroring on every call until the server restarts.
+                self.entries.clear_poison();
+                let mut entries = poisoned.into_inner();
+                entries.clear();
+                entries
+            }
+        }
     }
 
-    fn get(&self, key: &str) -> Result<Option<IndexResult>> {
-        let entries = self.lock_entries()?;
-        Ok(entries.get(key).cloned())
+    fn get(&self, key: &str) -> Option<IndexResult> {
+        self.lock_entries().get(key).cloned()
     }
 
-    fn set(&self, key: String, value: IndexResult) -> Result<()> {
-        let mut entries = self.lock_entries()?;
-        entries.insert(key, value);
-        Ok(())
+    fn set(&self, key: String, value: IndexResult) {
+        self.lock_entries().insert(key, value);
     }
 }
 
@@ -344,7 +351,7 @@ pub fn build_index(params: BuildIndexParams, cache: &IndexCache) -> Result<Value
         namespaces: namespaces.into_iter().collect(),
     };
 
-    cache.set(cache_key.clone(), result.clone())?;
+    cache.set(cache_key.clone(), result.clone());
 
     let mut value = serde_json::to_value(result)?;
     if let Some(obj) = value.as_object_mut() {
@@ -385,7 +392,7 @@ fn refresh_languages_and_namespaces(result: &mut IndexResult) {
 }
 
 pub fn apply_changes(params: ApplyChangesParams, cache: &IndexCache) -> Result<Value> {
-    let cached = match cache.get(&params.cache_key)? {
+    let cached = match cache.get(&params.cache_key) {
         Some(c) => c,
         None => {
             return Ok(serde_json::json!({
@@ -541,7 +548,7 @@ pub fn apply_changes(params: ApplyChangesParams, cache: &IndexCache) -> Result<V
     refresh_languages_and_namespaces(&mut updated);
 
     // Update cache
-    cache.set(params.cache_key, updated.clone())?;
+    cache.set(params.cache_key, updated.clone());
 
     Ok(serde_json::json!({
         "success": true,
@@ -555,31 +562,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn index_cache_returns_error_when_lock_is_poisoned() {
+    fn index_cache_recovers_from_poisoned_lock() {
         let cache = IndexCache::new();
+        let sample = IndexResult {
+            index: HashMap::new(),
+            files: HashMap::new(),
+            languages: vec![],
+            errors: vec![],
+            namespaces: vec![],
+        };
+        cache.set("k".to_string(), sample.clone());
 
+        // Poison the lock by panicking while it is held.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = cache.entries.lock().expect("failed to lock cache");
             panic!("poison cache lock");
         }));
 
-        let get_err = cache
-            .get("missing")
-            .expect_err("get should fail on poisoned lock");
-        assert!(get_err.to_string().contains("lock poisoned"));
-
-        let set_err = cache
-            .set(
-                "k".to_string(),
-                IndexResult {
-                    index: HashMap::new(),
-                    files: HashMap::new(),
-                    languages: vec![],
-                    errors: vec![],
-                    namespaces: vec![],
-                },
-            )
-            .expect_err("set should fail on poisoned lock");
-        assert!(set_err.to_string().contains("lock poisoned"));
+        // The cache recovers: the possibly half-updated state is cleared and it
+        // keeps serving requests instead of erroring until the server restarts.
+        assert!(cache.get("k").is_none());
+        cache.set("k2".to_string(), sample);
+        assert!(cache.get("k2").is_some());
     }
 }
