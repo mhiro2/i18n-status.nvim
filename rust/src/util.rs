@@ -1,6 +1,25 @@
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// Maximum nesting depth for our hand-written recursive descent over untrusted input
+/// (the resource JSON scanner). Pathologically deep structures are turned into errors
+/// instead of overflowing the stack, which would abort the whole server process.
+pub const MAX_RECURSION_DEPTH: usize = 256;
+
+/// Stack size for the thread the server runs on. The swc parser recurses on syntactic
+/// nesting and even drops its AST recursively, so deeply nested *source* (e.g. long
+/// operator/member chains or nested parens) can overflow the default stack and abort
+/// the process. A guard on our own visitors cannot help because the overflow happens
+/// inside swc's parse/drop before/around them, so we give the whole server a large
+/// stack to absorb realistic-to-very-deep inputs instead.
+pub const SERVER_STACK_SIZE: usize = 256 * 1024 * 1024;
+
+/// Upper bound on source size handed to the swc parser. Nesting depth is bounded by
+/// input length, so capping the size keeps the worst-case parse/drop recursion within
+/// `SERVER_STACK_SIZE`, turning absurdly large inputs into a graceful error instead of
+/// a stack overflow. Hand-written i18n source is far smaller than this.
+pub const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+
 /// Flatten a nested JSON object into dot-separated keys.
 /// e.g. {"a": {"b": "c"}} -> {"a.b": "c"}
 pub fn flatten_table(value: &Value, prefix: &str) -> BTreeMap<String, String> {

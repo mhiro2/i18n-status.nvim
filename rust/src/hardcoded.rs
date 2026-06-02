@@ -2,9 +2,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
-use swc_common::{FileName, SourceMap, Spanned, input::SourceFileInput, sync::Lrc};
+use swc_common::{SourceMap, Spanned};
 use swc_ecma_ast::*;
-use swc_ecma_parser::{EsSyntax, Parser, Syntax, TsSyntax, lexer::Lexer};
 
 /// Convert a Wtf8Atom (string literal value) to a Rust String
 fn wtf8_to_string(atom: &swc_atoms::Wtf8Atom) -> String {
@@ -40,46 +39,6 @@ pub struct HardcodedItem {
     pub end_col: u32,
     pub text: String,
     pub kind: String, // "jsx_text" or "jsx_literal"
-}
-
-fn parse_module(source: &str, lang: &str) -> Result<(Module, Lrc<SourceMap>)> {
-    let cm: Lrc<SourceMap> = Default::default();
-    let fm = cm.new_source_file(
-        Lrc::new(FileName::Custom("input".into())),
-        source.to_string(),
-    );
-
-    let syntax = match lang {
-        "tsx" => Syntax::Typescript(TsSyntax {
-            tsx: true,
-            ..Default::default()
-        }),
-        "typescript" => Syntax::Typescript(TsSyntax {
-            tsx: false,
-            ..Default::default()
-        }),
-        "jsx" => Syntax::Es(EsSyntax {
-            jsx: true,
-            ..Default::default()
-        }),
-        _ => Syntax::Es(EsSyntax {
-            jsx: true,
-            ..Default::default()
-        }),
-    };
-
-    let lexer = Lexer::new(
-        syntax,
-        Default::default(),
-        SourceFileInput::from(&*fm),
-        None,
-    );
-    let mut parser = Parser::new_from(lexer);
-    let module = parser
-        .parse_module()
-        .map_err(|e| anyhow::anyhow!("parse error: {:?}", e.into_kind().msg()))?;
-
-    Ok((module, cm))
 }
 
 fn span_to_loc(cm: &SourceMap, span: swc_common::Span) -> (u32, u32, u32, u32) {
@@ -465,7 +424,7 @@ fn jsx_object_name(obj: &JSXObject) -> String {
 }
 
 pub fn extract(params: ExtractParams) -> Result<Value> {
-    let (module, cm) = parse_module(&params.source, &params.lang)?;
+    let (module, cm) = crate::scan::parser::parse_module(&params.source, &params.lang)?;
 
     let exclude_set: HashSet<String> = params.exclude_components.into_iter().collect();
 

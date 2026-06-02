@@ -67,7 +67,19 @@ impl Server {
             }
 
             let id = request.id.clone();
-            let response = self.dispatch(&request.method, request.params, id.clone());
+            // A panic inside a handler must not take down the long-running
+            // server. Catch it and downgrade it to a JSON-RPC error so the
+            // editor's i18n features keep working without a restart.
+            let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.dispatch(&request.method, request.params, id.clone())
+            }))
+            .unwrap_or_else(|_| {
+                Response::error(
+                    id.clone(),
+                    INTERNAL_ERROR,
+                    "internal error: request handler panicked".to_string(),
+                )
+            });
             if let Err(e) = self.transport.send_response(&response) {
                 eprintln!("i18n-status-core: send error: {}", e);
             }
@@ -185,10 +197,35 @@ impl Server {
     }
 }
 
-fn main() {
+fn run_server() -> Result<()> {
     let mut server = Server::new();
-    if let Err(e) = server.run() {
-        eprintln!("i18n-status-core: fatal error: {}", e);
-        process::exit(1);
+    server.run()
+}
+
+fn main() {
+    // Log handler panics with our prefix; the run loop catches them and keeps
+    // the server alive (see catch_unwind above).
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("i18n-status-core: handler panic: {}", info);
+    }));
+
+    // Run the server on a thread with a large stack. swc recurses on syntactic
+    // nesting and drops its AST recursively, so deeply nested source can overflow
+    // the default stack and abort the process before catch_unwind can intervene.
+    let worker = std::thread::Builder::new()
+        .stack_size(util::SERVER_STACK_SIZE)
+        .spawn(run_server)
+        .expect("failed to spawn server thread");
+
+    match worker.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            eprintln!("i18n-status-core: fatal error: {}", e);
+            process::exit(1);
+        }
+        Err(_) => {
+            eprintln!("i18n-status-core: server thread panicked");
+            process::exit(1);
+        }
     }
 }

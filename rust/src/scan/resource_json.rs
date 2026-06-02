@@ -33,7 +33,7 @@ impl<'a> JsonLeafScanner<'a> {
     fn parse(mut self) -> Result<Vec<JsonLeaf>> {
         self.skip_ws();
         let mut path = Vec::new();
-        self.parse_object(&mut path, false)?;
+        self.parse_object(&mut path, false, 0)?;
         self.skip_ws();
         if self.peek_char().is_some() {
             return Err(anyhow::anyhow!("unexpected trailing characters"));
@@ -222,7 +222,18 @@ impl<'a> JsonLeafScanner<'a> {
         });
     }
 
-    fn parse_object(&mut self, path: &mut Vec<String>, skip_emit: bool) -> Result<()> {
+    fn parse_object(
+        &mut self,
+        path: &mut Vec<String>,
+        skip_emit: bool,
+        depth: usize,
+    ) -> Result<()> {
+        if depth >= crate::util::MAX_RECURSION_DEPTH {
+            return Err(anyhow::anyhow!(
+                "maximum nesting depth {} exceeded",
+                crate::util::MAX_RECURSION_DEPTH
+            ));
+        }
         self.expect_char('{')?;
         self.skip_ws();
         if self.consume_char('}') {
@@ -236,7 +247,7 @@ impl<'a> JsonLeafScanner<'a> {
             self.skip_ws();
 
             path.push(key);
-            self.parse_object_value(path, skip_emit, key_line, key_col, key_end_col)?;
+            self.parse_object_value(path, skip_emit, key_line, key_col, key_end_col, depth)?;
             let _ = path.pop();
 
             self.skip_ws();
@@ -258,10 +269,11 @@ impl<'a> JsonLeafScanner<'a> {
         key_line: u32,
         key_col: u32,
         key_end_col: u32,
+        depth: usize,
     ) -> Result<()> {
         match self.peek_char() {
-            Some('{') => self.parse_object(path, skip_emit),
-            Some('[') => self.parse_array(path),
+            Some('{') => self.parse_object(path, skip_emit, depth + 1),
+            Some('[') => self.parse_array(path, depth + 1),
             Some('"') => {
                 let _ = self.parse_string()?;
                 if !skip_emit {
@@ -305,14 +317,20 @@ impl<'a> JsonLeafScanner<'a> {
         }
     }
 
-    fn parse_array(&mut self, path: &mut Vec<String>) -> Result<()> {
+    fn parse_array(&mut self, path: &mut Vec<String>, depth: usize) -> Result<()> {
+        if depth >= crate::util::MAX_RECURSION_DEPTH {
+            return Err(anyhow::anyhow!(
+                "maximum nesting depth {} exceeded",
+                crate::util::MAX_RECURSION_DEPTH
+            ));
+        }
         self.expect_char('[')?;
         self.skip_ws();
         if self.consume_char(']') {
             return Ok(());
         }
         loop {
-            self.parse_array_value(path)?;
+            self.parse_array_value(path, depth)?;
             self.skip_ws();
             if self.consume_char(',') {
                 self.skip_ws();
@@ -324,10 +342,10 @@ impl<'a> JsonLeafScanner<'a> {
         Ok(())
     }
 
-    fn parse_array_value(&mut self, path: &mut Vec<String>) -> Result<()> {
+    fn parse_array_value(&mut self, path: &mut Vec<String>, depth: usize) -> Result<()> {
         match self.peek_char() {
-            Some('{') => self.parse_object(path, true),
-            Some('[') => self.parse_array(path),
+            Some('{') => self.parse_object(path, true, depth + 1),
+            Some('[') => self.parse_array(path, depth + 1),
             Some('"') => {
                 let _ = self.parse_string()?;
                 Ok(())
@@ -433,6 +451,31 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].key, "common:login.title");
         assert_eq!(items[1].key, "admin:save");
+    }
+
+    #[test]
+    fn rejects_deeply_nested_input_instead_of_overflowing() {
+        let depth = crate::util::MAX_RECURSION_DEPTH + 50;
+        let mut source = String::new();
+        for i in 0..depth {
+            source.push_str(&format!("{{\"k{}\":", i));
+        }
+        source.push_str("\"v\"");
+        for _ in 0..depth {
+            source.push('}');
+        }
+
+        let result = extract_resource(ExtractResourceParams {
+            source,
+            namespace: "ns".to_string(),
+            is_root: false,
+            range: None,
+        });
+
+        assert!(
+            result.is_err(),
+            "deep nesting should be rejected as an error"
+        );
     }
 
     #[test]
