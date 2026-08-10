@@ -14,8 +14,8 @@ name = "i18n_status_core"
 path = "src/lib.rs"
 
 [dependencies]
-swc_ecma_parser = "42"
-swc_ecma_ast = "26"
+swc_ecma_parser = "43"
+swc_ecma_ast = "27"
 swc_common = "24"
 swc_atoms = "10"
 serde = { version = "1", features = ["derive"] }
