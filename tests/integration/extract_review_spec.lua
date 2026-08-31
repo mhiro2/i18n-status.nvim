@@ -324,6 +324,40 @@ describe("extract review integration", function()
     end)
   end)
 
+  it("applies byte ranges after multibyte source without shifting JSX text", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", "{}")
+    helpers.write_file(root .. "/locales/en/common.json", "{}")
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf({
+        'const { t } = useTranslation("common")',
+        "export function Page() {",
+        '  const 前置き = "😀"; return <p>Hello world</p>',
+        "}",
+      }, "typescriptreact", root .. "/src/page.tsx")
+
+      local cfg = config_mod.setup({ primary_lang = "ja" })
+      local ctx = extract.run(buf, cfg, {})
+      assert.is_not_nil(ctx)
+
+      local candidate_line = find_candidate_line(ctx, "Hello world")
+      assert.is_not_nil(candidate_line)
+      vim.api.nvim_set_current_win(ctx.list_win)
+      vim.api.nvim_win_set_cursor(ctx.list_win, { candidate_line, 0 })
+      vim.api.nvim_feedkeys(" ", "x", false)
+      vim.api.nvim_feedkeys("\r", "x", false)
+
+      local applied = vim.wait(1000, function()
+        return vim.api.nvim_buf_get_lines(buf, 2, 3, false)[1]
+          == '  const 前置き = "😀"; return <p>{t("common:hello-world")}</p>'
+      end, 10)
+      assert.is_true(applied)
+      local ja_data = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      assert.are.equal("Hello world", ja_data["hello-world"])
+    end)
+  end)
+
   it("rolls back source replacement when resource writes fail", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", "{}")

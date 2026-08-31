@@ -88,6 +88,37 @@ describe("render", function()
     end)
   end)
 
+  it("renders multiline references at eol when after-key placement is unsafe", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"first":"最初","second":"次"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"first":"First","second":"Second"}')
+    helpers.with_cwd(root, function()
+      local buf = make_buf({
+        "t(",
+        "  enabled",
+        '    ? "first"',
+        '    : "second"',
+        ")",
+      }, "typescript")
+      local config = config_mod.setup({
+        primary_lang = "ja",
+        inline = {
+          position = "after_key",
+          max_len = 40,
+          visible_only = false,
+        },
+      })
+
+      core.refresh_now(buf, config)
+
+      local marks = vim.api.nvim_buf_get_extmarks(buf, render.namespace(), 0, -1, { details = true })
+      assert.are.equal(2, #marks)
+      for _, mark in ipairs(marks) do
+        assert.are.equal("eol", mark[4].virt_text_pos)
+      end
+    end)
+  end)
+
   it("updates position after config change", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')

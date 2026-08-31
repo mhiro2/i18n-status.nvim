@@ -119,6 +119,36 @@ describe("extract orchestrator", function()
     assert.is_false(open_opts.candidates[2].selected)
   end)
 
+  it("passes byte position and blocks ambiguous translation contexts", function()
+    local received_opts = nil
+    add_stub(scan, "translation_context_at", function(_bufnr, _row, opts)
+      received_opts = opts
+      return {
+        namespace = "common",
+        t_func = "t",
+        found_hook = false,
+        has_any_hook = true,
+        ambiguous = true,
+        shadowed = false,
+      }
+    end)
+
+    local candidates = extract._test.build_candidates(1, {
+      {
+        lnum = 2,
+        col = 17,
+        end_lnum = 2,
+        end_col = 22,
+        text = "Hello",
+      },
+    }, "common", { key_separator = "-" }, {})
+
+    assert.are.equal(17, received_opts.col)
+    assert.are.equal(1, #candidates)
+    assert.are.equal("error", candidates[1].status)
+    assert.is_truthy(candidates[1].context_error:find("multiple", 1, true))
+  end)
+
   it("notifies when hardcoded scan fails", function()
     local buf = make_buf({ "Hello" }, "typescriptreact", "/tmp/project/src/page_err.tsx")
 

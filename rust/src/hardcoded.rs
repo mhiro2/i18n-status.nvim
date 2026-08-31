@@ -41,17 +41,6 @@ pub struct HardcodedItem {
     pub kind: String, // "jsx_text" or "jsx_literal"
 }
 
-fn span_to_loc(cm: &SourceMap, span: swc_common::Span) -> (u32, u32, u32, u32) {
-    let lo = cm.lookup_char_pos(span.lo);
-    let hi = cm.lookup_char_pos(span.hi);
-    (
-        lo.line as u32 - 1,
-        lo.col_display as u32,
-        hi.line as u32 - 1,
-        hi.col_display as u32,
-    )
-}
-
 fn normalize_whitespace(text: &str) -> String {
     let result: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     result.trim().to_string()
@@ -343,7 +332,8 @@ impl<'a> HardcodedVisitor<'a> {
     }
 
     fn check_jsx_text(&mut self, text: &JSXText) {
-        let (start_line, start_col, end_line, end_col) = span_to_loc(self.cm, text.span);
+        let (start_line, start_col, end_line, end_col) =
+            crate::scan::parser::span_to_byte_range(self.cm, text.span);
 
         if !in_range(start_line, end_line, self.range) {
             return;
@@ -371,7 +361,7 @@ impl<'a> HardcodedVisitor<'a> {
     }
 
     fn check_jsx_literal(&mut self, expr: &Expr, span: swc_common::Span) {
-        let (start_line, _, end_line, _) = span_to_loc(self.cm, span);
+        let (start_line, _, end_line, _) = crate::scan::parser::span_to_byte_range(self.cm, span);
 
         if !in_range(start_line, end_line, self.range) {
             return;
@@ -388,7 +378,8 @@ impl<'a> HardcodedVisitor<'a> {
         if let Some(literal) = eval_literal(expr) {
             let trimmed = literal.trim().to_string();
             if trimmed.len() >= self.min_length {
-                let (lnum, col, end_lnum, end_col) = span_to_loc(self.cm, expr.span());
+                let (lnum, col, end_lnum, end_col) =
+                    crate::scan::parser::span_to_byte_range(self.cm, expr.span());
                 self.items.push(HardcodedItem {
                     lnum,
                     col,

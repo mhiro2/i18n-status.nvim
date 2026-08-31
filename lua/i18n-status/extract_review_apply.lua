@@ -57,6 +57,11 @@ end
 ---@param existing_keys table<string, boolean>
 ---@return string|nil
 local function refresh_candidate_status(candidate, existing_keys)
+  if candidate.context_error then
+    candidate.status = "error"
+    candidate.error = candidate.context_error
+    return nil
+  end
   local normalized, err = M.normalize_key_input(candidate.proposed_key, candidate.namespace)
   if not normalized then
     candidate.status = "invalid_key"

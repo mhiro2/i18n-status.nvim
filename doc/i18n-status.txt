@@ -442,6 +442,13 @@ Not supported:
   - conditional const bindings (const K = cond ? "a" : "b"; t(K))
     Use t(cond ? "a" : "b") directly instead.
 
+Rename safety:
+  Rename rewrites only direct string literals and template literals without
+  substitutions. Const references, concatenations, interpolated templates,
+  and conditional expressions remain visible to inline status and Doctor but
+  Rename refuses them rather than replacing a larger expression or another
+  conditional branch.
+
 Key path separator (always ".").
   Nested keys are always split on ".", matching i18next's default nested
   JSON layout. i18next setups that disable nesting (keySeparator: false) or
