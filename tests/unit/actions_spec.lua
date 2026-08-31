@@ -120,7 +120,7 @@ describe("actions (unit)", function()
     vim.api.nvim_cmd = original_cmd
 
     assert.is_true(ok)
-    assert.are.equal("/tmp/ja.json", opened)
+    assert.are.equal((vim.uv.fs_realpath("/tmp") or "/tmp") .. "/ja.json", opened)
   end)
 
   it("falls back to any available file", function()
@@ -144,7 +144,7 @@ describe("actions (unit)", function()
     vim.api.nvim_cmd = original_cmd
 
     assert.is_true(ok)
-    assert.are.equal("/tmp/fr.json", opened)
+    assert.are.equal((vim.uv.fs_realpath("/tmp") or "/tmp") .. "/fr.json", opened)
   end)
 
   it("skips paths outside project root when jumping to definition", function()
@@ -173,7 +173,7 @@ describe("actions (unit)", function()
     vim.api.nvim_cmd = original_cmd
 
     assert.is_true(ok)
-    assert.are.equal(root .. "/locales/en/common.json", opened)
+    assert.are.equal((vim.uv.fs_realpath(root) or root) .. "/locales/en/common.json", opened)
   end)
 
   it("returns false when all candidate paths are outside project root", function()

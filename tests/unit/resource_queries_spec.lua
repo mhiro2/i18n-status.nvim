@@ -62,6 +62,36 @@ describe("resource queries", function()
     assert.are.equal(root .. "/messages/en.json", queries.namespace_path(root, "en", "common"))
   end)
 
+  it("resolves exact roots when none are supplied", function()
+    local root = helpers.tmpdir()
+    local resources = stub_resources(root)
+    local requested_opts
+    local original_ensure_index = resources.ensure_index
+    resources.ensure_index = function(start_dir, opts)
+      requested_opts = opts
+      return original_ensure_index(start_dir, opts)
+    end
+    local queries = resource_queries.new(resources, resource_roots)
+
+    queries.namespace_path(root, "en", "common")
+
+    assert.is_true(requested_opts.exact)
+  end)
+
+  it("selects namespace paths from the requested framework root", function()
+    local root = helpers.tmpdir()
+    write(root .. "/messages/en.json", '{"common":{"title":"Hello"}}')
+    local resources = stub_resources(root)
+    local queries = resource_queries.new(resources, resource_roots)
+    local roots = {
+      { kind = "next-intl", path = root .. "/messages" },
+      { kind = "i18next", path = root .. "/locales" },
+    }
+
+    assert.are.equal(root .. "/locales/en/common.json", queries.namespace_path(root, "en", "common", "i18next", roots))
+    assert.are.equal(root .. "/messages/en.json", queries.namespace_path(root, "en", "common", "next_intl", roots))
+  end)
+
   it("uses translation as the fallback namespace when ambiguous", function()
     local queries = resource_queries.new(stub_resources("/tmp"), resource_roots)
     local namespace, reason = queries.fallback_namespace("/tmp")

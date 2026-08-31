@@ -563,4 +563,137 @@ describe("ops.rename", function()
       assert.is_nil(en.rename.heading)
     end)
   end)
+
+  it("rejects rename while a target resource buffer has unsaved changes", function()
+    local root = helpers.tmpdir()
+    local ja_path = root .. "/locales/ja/common.json"
+    local en_path = root .. "/locales/en/common.json"
+    helpers.write_file(ja_path, '{"rename":{"title":"ログイン"}}')
+    helpers.write_file(en_path, '{"rename":{"title":"Login"}}')
+    vim.fn.mkdir(root .. "/src", "p")
+
+    helpers.with_cwd(root, function()
+      local source_buf = make_buf(root .. "/src/app.ts", 't("rename.title")')
+      local resource_buf = vim.api.nvim_create_buf(true, false)
+      vim.bo[resource_buf].swapfile = false
+      vim.api.nvim_buf_set_name(resource_buf, ja_path)
+      vim.api.nvim_buf_set_lines(resource_buf, 0, -1, false, { '{"rename":{"title":"未保存"}}' })
+      vim.bo[resource_buf].modified = true
+      local config = config_mod.setup({ primary_lang = "ja" })
+      resources.ensure_index(root)
+
+      local col, end_col = literal_range(source_buf, "rename.title")
+      scan.extract = function(bufnr)
+        if bufnr ~= source_buf then
+          return {}
+        end
+        return {
+          {
+            key = "common:rename.title",
+            raw = "rename.title",
+            namespace = "common",
+            lnum = 0,
+            col = col,
+            end_lnum = 0,
+            end_col = end_col,
+            refactorable = true,
+          },
+        }
+      end
+
+      local ok, err = ops.rename({
+        item = {
+          key = "common:rename.title",
+          namespace = "common",
+          hover = {
+            values = {
+              ja = { file = ja_path, value = "ログイン" },
+              en = { file = en_path, value = "Login" },
+            },
+          },
+        },
+        source_buf = source_buf,
+        new_key = "common:rename.heading",
+        config = config,
+      })
+
+      assert.is_false(ok)
+      assert.is_truthy(err and err:find("unsaved changes", 1, true))
+      assert.are.equal("ログイン", vim.json.decode(helpers.read_file(ja_path)).rename.title)
+      assert.are.equal("Login", vim.json.decode(helpers.read_file(en_path)).rename.title)
+      assert.are.equal('t("rename.title")', vim.api.nvim_buf_get_lines(source_buf, 0, 1, false)[1])
+      vim.api.nvim_buf_delete(resource_buf, { force = true })
+    end)
+  end)
+
+  it("rejects a namespace file symlinked outside the project", function()
+    local root = helpers.tmpdir()
+    local outside_root = helpers.tmpdir()
+    local ja_path = root .. "/locales/ja/common.json"
+    local en_path = root .. "/locales/en/common.json"
+    local outside_ja = outside_root .. "/ja.json"
+    local outside_en = outside_root .. "/en.json"
+    local outside_ja_bytes = '{"sentinel":"ja"}'
+    local outside_en_bytes = '{"sentinel":"en"}'
+    helpers.write_file(ja_path, '{"rename":{"title":"ログイン"}}')
+    helpers.write_file(en_path, '{"rename":{"title":"Login"}}')
+    helpers.write_file(outside_ja, outside_ja_bytes)
+    helpers.write_file(outside_en, outside_en_bytes)
+    vim.fn.mkdir(root .. "/src", "p")
+
+    local ja_link_ok, ja_link_err = vim.uv.fs_symlink(outside_ja, root .. "/locales/ja/escape.json")
+    assert.is_truthy(ja_link_ok, ja_link_err)
+    local en_link_ok, en_link_err = vim.uv.fs_symlink(outside_en, root .. "/locales/en/escape.json")
+    assert.is_truthy(en_link_ok, en_link_err)
+
+    helpers.with_cwd(root, function()
+      local source_buf = make_buf(root .. "/src/app.ts", 't("rename.title")')
+      local config = config_mod.setup({ primary_lang = "ja" })
+      resources.ensure_index(root)
+
+      local col, end_col = literal_range(source_buf, "rename.title")
+      scan.extract = function(bufnr)
+        if bufnr ~= source_buf then
+          return {}
+        end
+        return {
+          {
+            key = "common:rename.title",
+            raw = "rename.title",
+            namespace = "common",
+            lnum = 0,
+            col = col,
+            end_lnum = 0,
+            end_col = end_col,
+            refactorable = true,
+          },
+        }
+      end
+
+      local ok, err = ops.rename({
+        item = {
+          key = "common:rename.title",
+          namespace = "common",
+          hover = {
+            values = {
+              ja = { file = ja_path, value = "ログイン" },
+              en = { file = en_path, value = "Login" },
+            },
+          },
+        },
+        source_buf = source_buf,
+        new_key = "escape:rename.heading",
+        config = config,
+      })
+
+      assert.is_false(ok)
+      assert.is_truthy(err and err:find("outside project root", 1, true))
+      assert.are.equal("ログイン", vim.json.decode(helpers.read_file(ja_path)).rename.title)
+      assert.are.equal("Login", vim.json.decode(helpers.read_file(en_path)).rename.title)
+      assert.are.equal(outside_ja_bytes, helpers.read_file(outside_ja))
+      assert.are.equal(outside_en_bytes, helpers.read_file(outside_en))
+    end)
+
+    vim.fn.delete(outside_root, "rf")
+  end)
 end)

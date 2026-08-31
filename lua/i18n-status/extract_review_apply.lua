@@ -189,7 +189,7 @@ local function apply_candidate(ctx, candidate, deps)
     for _, lang in ipairs(ctx.languages) do
       translations[lang] = lang == ctx.primary_lang and source_text or ""
     end
-    local success_count, failed_langs =
+    local success_count, failed_langs, write_err =
       key_write.write_translations(namespace, key_path, translations, ctx.start_dir, ctx.languages)
     if success_count == 0 then
       local rollback_lines = vim.split(source_text, "\n", { plain = true })
@@ -205,6 +205,9 @@ local function apply_candidate(ctx, candidate, deps)
         candidate.error = "failed to write resource files (" .. table.concat(failed_langs, ", ") .. ")"
       else
         candidate.error = "failed to write resource files"
+      end
+      if write_err then
+        candidate.error = candidate.error .. ": " .. write_err
       end
       return false
     end

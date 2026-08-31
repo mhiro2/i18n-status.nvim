@@ -221,7 +221,7 @@ If none is found, a best-effort fallback is used and `:checkhealth` will warn.
 - **`:I18nGotoDefinition`**: Jump to the translation file for the i18n key under cursor
 - **`:I18nDoctor`**: Diagnose i18n issues across the entire project and open Review UI
 - **`:I18nDoctorCancel`**: Cancel a running doctor scan
-- **`:I18nAddKey`**: Add a new i18n key to all language files interactively (writes per language; when a write fails mid-way, successful languages remain written)
+- **`:I18nAddKey`**: Add a new i18n key to all language files interactively (create-only, with all targets preflighted and earlier writes rolled back if a later write fails)
 - **`:I18nExtract`**: Detect hardcoded JSX text and open the Extract Review UI (supports `:'<,'>I18nExtract` for range extraction)
 - **`:I18nRefresh`**: Force refresh current buffer
 
@@ -377,7 +377,11 @@ require("i18n-status").setup({
 >   2. `next-intl` root file (`messages/{lang}.json`, priority 40)
 >   3. `next-intl` namespace file (`messages/{lang}/{namespace}.json`, priority 50)
 > - Resource indexing and cross-file resolve target strict `*.json` files. `jsonc` is supported as an editor filetype UX improvement, but JSONC comments/trailing commas are not indexed.
-> - Nested keys are always split on `.` (i18next's default nested layout). `keySeparator: false` or custom separators are not supported for resolution or writing. When a write would turn an existing scalar into a nested branch (e.g. adding `login.title` where `login` is already a string), the write is refused rather than silently overwriting the existing value.
+> - Nested keys are always split on `.` (i18next's default nested layout). `keySeparator: false` or custom separators are not supported for resolution or writing. A write is refused if it would replace an existing scalar or branch. Add missing and `:I18nAddKey` are create-only and also refuse an exact key that appeared after their initial check.
+> - Resource mutations require a readable, valid JSON object at the file root. They are refused for arrays, scalar roots, modified resource buffers, files changed on disk after reading, and symlink-resolved targets outside the project root.
+> - Atomic resource mutations require LuaJIT plus `openat`/`mkdirat`/`unlinkat` and `renameat2` on Linux or `renameatx_np` on macOS. Other runtimes keep read-only features, but Add, Extract, and resource edits fail closed; `:checkhealth i18n-status` reports symbol availability. A filesystem that does not implement atomic exchange is rejected when the write is attempted.
+> - Resource parent directories must already exist. The plugin does not create nested locale directories during a mutation because doing so cannot be secured against path replacement with the supported filesystem APIs.
+> - A concurrent writer is never overwritten during conflict recovery. If its version cannot be restored to the requested path safely, the error reports a protected `.i18n-status-*` recovery file that must be inspected and removed manually.
 
 ## 🧩 Dynamic i18n key support
 

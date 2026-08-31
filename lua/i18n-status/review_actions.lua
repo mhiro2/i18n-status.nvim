@@ -33,10 +33,12 @@ end
 ---@param root string Project root directory
 ---@param languages string[] List of languages
 ---@param full_key string Full key name for notification
+---@param opts? I18nStatusKeyWriteOpts
 ---@return integer success_count
 ---@return string[] failed_langs
-local function write_translations_to_files(namespace, key_path, translations, root, languages, full_key)
-  local success_count, failed_langs = key_write.write_translations(namespace, key_path, translations, root, languages)
+local function write_translations_to_files(namespace, key_path, translations, root, languages, full_key, opts)
+  local success_count, failed_langs, write_err =
+    key_write.write_translations(namespace, key_path, translations, root, languages, opts)
 
   if success_count == #languages then
     vim.notify("Successfully added key: " .. full_key, vim.log.levels.INFO)
@@ -51,7 +53,7 @@ local function write_translations_to_files(namespace, key_path, translations, ro
       vim.log.levels.WARN
     )
   else
-    vim.notify("Failed to add key", vim.log.levels.ERROR)
+    vim.notify("Failed to add key: " .. (write_err or "unknown"), vim.log.levels.ERROR)
   end
 
   return success_count, failed_langs
@@ -207,10 +209,20 @@ local function edit_lang(deps, ctx, lang)
       return
     end
 
-    fs.ensure_dir(fs.dirname(sanitized_path))
+    local dir_ok, dir_err = fs.ensure_dir_within(fs.dirname(sanitized_path), base_dir)
+    if not dir_ok then
+      vim.notify(
+        "i18n-status review: failed to prepare resource directory (" .. (dir_err or "unknown") .. ")",
+        vim.log.levels.WARN
+      )
+      return
+    end
     local data, style = resources.read_json_table(sanitized_path)
     if not data then
-      vim.notify("i18n-status review: failed to read json (" .. (style.error or "unknown") .. ")", vim.log.levels.WARN)
+      vim.notify(
+        "i18n-status review: failed to read json (" .. ((style and style.error) or "unknown") .. ")",
+        vim.log.levels.WARN
+      )
       return
     end
 
@@ -220,7 +232,7 @@ local function edit_lang(deps, ctx, lang)
       vim.notify("i18n-status review: " .. (set_err or "failed to set key"), vim.log.levels.WARN)
       return
     end
-    local write_ok, write_err = resources.write_json_table(sanitized_path, data, style)
+    local write_ok, write_err = resources.write_json_table(sanitized_path, data, style, { base_dir = base_dir })
     if not write_ok then
       vim.notify("i18n-status review: failed to write (" .. (write_err or "unknown") .. ")", vim.log.levels.WARN)
       return
@@ -446,7 +458,9 @@ local function add_key(deps, ctx)
   local key_path = item.key:match("^[^:]+:(.+)$") or ""
 
   collect_translations(item.key, languages, function(translations)
-    write_translations_to_files(namespace, key_path, translations, root, languages, item.key)
+    write_translations_to_files(namespace, key_path, translations, root, languages, item.key, {
+      create_only = true,
+    })
 
     if ctx.config then
       core.refresh_all(ctx.config)
@@ -567,7 +581,7 @@ function M.add_key_command(cfg)
 
   local bufnr = vim.api.nvim_get_current_buf()
   local root = resources.start_dir(bufnr)
-  local cache = resources.ensure_index(root)
+  local cache = resources.ensure_index(root, { exact = true })
   local languages = cache and cache.languages or {}
 
   if #languages == 0 then
@@ -595,12 +609,14 @@ function M.add_key_command(cfg)
     local namespace = full_key:match("^(.-):")
     local key_path = full_key:match("^[^:]+:(.+)$") or ""
 
-    local function do_add_key()
+    local function do_add_key(overwrite)
       collect_translations(full_key, languages, function(translations)
         if not validate_translations_non_empty(translations, languages) then
           return
         end
-        write_translations_to_files(namespace, key_path, translations, root, languages, full_key)
+        write_translations_to_files(namespace, key_path, translations, root, languages, full_key, {
+          create_only = not overwrite,
+        })
         core.refresh_all(cfg)
       end)
     end
@@ -612,10 +628,10 @@ function M.add_key_command(cfg)
           vim.notify("i18n-status: add key cancelled", vim.log.levels.INFO)
           return
         end
-        do_add_key()
+        do_add_key(true)
       end)
     else
-      do_add_key()
+      do_add_key(false)
     end
   end)
 end

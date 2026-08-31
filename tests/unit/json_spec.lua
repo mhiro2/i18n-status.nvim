@@ -107,5 +107,14 @@ describe("json", function()
 
       assert.are.equal('{\n  "a": {},\n  "b": "x"\n}', json.json_encode_pretty(decoded))
     end)
+
+    it("preserves object identity after deleting the last decoded keys", function()
+      local decoded = assert(json.json_decode('{"only":{"leaf":"value"}}'))
+
+      decoded.only.leaf = nil
+      assert.are.equal('{\n  "only": {}\n}', json.json_encode_pretty(decoded))
+      decoded.only = nil
+      assert.are.equal("{}", json.json_encode_pretty(decoded))
+    end)
   end)
 end)

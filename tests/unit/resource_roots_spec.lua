@@ -81,4 +81,38 @@ describe("resource roots", function()
 
     assert.are.equal(uv.fs_realpath(root) or root, project_root)
   end)
+
+  it("does not expand the project boundary to a symlinked resource target", function()
+    local root = helpers.tmpdir()
+    local outside = helpers.tmpdir()
+    write(outside .. "/ja/common.json", '{"title":"ja"}')
+    vim.fn.mkdir(root .. "/src/app", "p")
+    local link_ok, link_err = uv.fs_symlink(outside, root .. "/locales", { dir = true })
+    assert.is_truthy(link_ok, link_err)
+
+    local project_root = resource_roots.project_root(
+      root .. "/src/app",
+      resource_roots.normalize_roots({
+        { kind = "i18next", path = root .. "/locales" },
+      })
+    )
+
+    assert.are.equal(uv.fs_realpath(root) or root, project_root)
+  end)
+
+  it("fails closed when a supplied resource root has no project-relative owner", function()
+    local root = helpers.tmpdir()
+    local outside = helpers.tmpdir()
+    write(outside .. "/ja/common.json", '{"title":"ja"}')
+    vim.fn.mkdir(root .. "/src/app", "p")
+
+    local project_root = resource_roots.project_root(
+      root .. "/src/app",
+      resource_roots.normalize_roots({
+        { kind = "i18next", path = outside },
+      })
+    )
+
+    assert.are.equal(uv.fs_realpath(root .. "/src/app") or (root .. "/src/app"), project_root)
+  end)
 end)

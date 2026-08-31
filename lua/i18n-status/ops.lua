@@ -298,7 +298,7 @@ function M.rename(opts)
     if not file_cache[path] then
       local data, style = resources.read_json_table(path)
       if not data then
-        return nil, style.error or "unknown"
+        return nil, (style and style.error) or "unknown"
       end
       file_cache[path] = { data = data, style = style, dirty = false }
     end
@@ -351,7 +351,11 @@ function M.rename(opts)
     end
     local same_file = fs.normalize_path(old_file, root) == fs.normalize_path(new_file, root)
 
-    fs.ensure_dir(fs.dirname(new_file))
+    local dir_ok, dir_err = fs.ensure_dir_within(fs.dirname(new_file), base_dir)
+    if not dir_ok then
+      return false,
+        string.format("failed to prepare resource directory for language '%s': %s", lang, dir_err or "unknown")
+    end
 
     local old_state, old_err = file_state(old_file)
     if not old_state then
@@ -417,8 +421,25 @@ function M.rename(opts)
 
   for path, entry in pairs(file_cache) do
     if entry.dirty then
-      fs.ensure_dir(fs.dirname(path))
-      local write_ok, write_err = resources.write_json_table(path, entry.data, entry.style, { start_dir = root })
+      local valid, validation_err = resources.validate_json_write(path, entry.data, entry.style, {
+        base_dir = base_dir,
+      })
+      if not valid then
+        return false, string.format("failed to validate %s: %s", path, validation_err or "unknown")
+      end
+    end
+  end
+
+  for path, entry in pairs(file_cache) do
+    if entry.dirty then
+      local dir_ok, dir_err = fs.ensure_dir_within(fs.dirname(path), base_dir)
+      if not dir_ok then
+        return false, string.format("failed to prepare resource directory for %s: %s", path, dir_err or "unknown")
+      end
+      local write_ok, write_err = resources.write_json_table(path, entry.data, entry.style, {
+        base_dir = base_dir,
+        start_dir = root,
+      })
       if not write_ok then
         return false, string.format("failed to write %s: %s", path, write_err or "unknown")
       end
