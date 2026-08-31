@@ -55,3 +55,24 @@ fn eval_string_exprs_expands_conditional_template_branches() {
 
     assert_eq!(values, vec!["a.title".to_string(), "b.title".to_string()]);
 }
+
+#[test]
+fn eval_string_expr_uses_cooked_template_text() {
+    let (expr, line) = first_call_arg(r#"t(`rename.\u0074itle`);"#);
+
+    assert_eq!(
+        eval_string_expr(&expr, line, &[]),
+        Some("rename.title".to_string())
+    );
+}
+
+#[test]
+fn eval_string_exprs_cooks_each_template_branch() {
+    let (expr, line) = first_call_arg(r#"t(`rename.\u0074${cond ? "itle" : "ab"}`);"#);
+    let values = eval_string_exprs(&expr, line, &[]);
+
+    assert_eq!(
+        values,
+        vec!["rename.title".to_string(), "rename.tab".to_string()]
+    );
+}

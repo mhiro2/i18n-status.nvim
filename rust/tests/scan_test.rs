@@ -127,6 +127,29 @@ t(`welcome`);
 }
 
 #[test]
+fn template_literal_keys_use_cooked_semantic_values() {
+    let result = extract(r#"t(`rename.\u0074itle`);"#, "tsx", "common");
+
+    let items = result["items"]
+        .as_array()
+        .expect("items should be an array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:rename.title");
+    assert_eq!(items[0]["raw"], "rename.title");
+    assert_eq!(items[0]["refactorable"], true);
+}
+
+#[test]
+fn template_literal_keys_reject_non_unicode_cooked_values() {
+    let result = extract(r#"t(`prefix\uD800suffix`);"#, "tsx", "common");
+    let items = result["items"]
+        .as_array()
+        .expect("items should be an array");
+
+    assert!(items.is_empty());
+}
+
+#[test]
 fn const_reference_resolution() {
     let source = r#"
 const KEY = "my_key";
