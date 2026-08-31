@@ -279,6 +279,12 @@ Doctor checks:
 
 Note: :I18nDoctor scans project files and can be slow on large codebases.
 It runs only when you explicitly invoke it.
+Starting another Doctor run cancels the pending or active run. Doctor work does
+not block interactive RPC, and each run has a 60-second overall deadline that
+includes resource discovery, indexing, buffer payload preparation, and project
+scanning. A run that reaches the deadline is cancelled without opening an empty
+Review UI. If timed-out non-cooperative workers temporarily exhaust the bounded
+Doctor capacity, Doctor reports a busy error; retry after earlier work finishes.
 
 Issue types:
   missing         key is missing in the primary language

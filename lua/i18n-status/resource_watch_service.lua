@@ -26,12 +26,14 @@ function M.new(resources, roots)
       if cache then
         cache.dirty = true
         cache.checked_at = 0
+        cache.revision = (cache.revision or 0) + 1
       end
       return
     end
     for _, cache in pairs(resources.caches) do
       cache.dirty = true
       cache.checked_at = 0
+      cache.revision = (cache.revision or 0) + 1
     end
   end
 

@@ -47,6 +47,7 @@ pub const INVALID_REQUEST: i32 = -32600;
 pub const METHOD_NOT_FOUND: i32 = -32601;
 pub const INVALID_PARAMS: i32 = -32602;
 pub const INTERNAL_ERROR: i32 = -32603;
+pub const REQUEST_CANCELLED: i32 = -32800;
 
 impl Response {
     pub fn success(id: Option<Value>, result: Value) -> Self {
@@ -86,6 +87,10 @@ impl Notification {
 pub struct Transport {
     reader: BufReader<io::Stdin>,
 }
+
+/// A thread-safe handle for writing JSON-RPC messages to stdout.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RpcSender;
 
 fn parse_message_line(line: &str) -> Result<Option<Request>> {
     let trimmed = line.trim();
@@ -134,17 +139,26 @@ impl Transport {
         read_message_from_reader(&mut self.reader)
     }
 
+    pub fn sender(&self) -> RpcSender {
+        RpcSender
+    }
+
     pub fn send_response(&self, response: &Response) -> Result<()> {
-        let json = serde_json::to_string(response)?;
-        let stdout = io::stdout();
-        let mut handle = stdout.lock();
-        writeln!(handle, "{}", json)?;
-        handle.flush()?;
-        Ok(())
+        self.sender().send_response(response)
+    }
+}
+
+impl RpcSender {
+    pub fn send_response(&self, response: &Response) -> Result<()> {
+        self.send(response)
     }
 
     pub fn send_notification(&self, notification: &Notification) -> Result<()> {
-        let json = serde_json::to_string(notification)?;
+        self.send(notification)
+    }
+
+    fn send<T: Serialize>(&self, message: &T) -> Result<()> {
+        let json = serde_json::to_string(message)?;
         let stdout = io::stdout();
         let mut handle = stdout.lock();
         writeln!(handle, "{}", json)?;

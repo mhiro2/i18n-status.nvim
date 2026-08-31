@@ -24,6 +24,14 @@ pub struct DiagnoseParams {
     pub open_buffers: Vec<OpenBuffer>,
     #[serde(default)]
     pub cancel_token_path: Option<String>,
+    #[serde(default = "default_deadline_ms")]
+    pub deadline_ms: u64,
+}
+
+pub const DEFAULT_DEADLINE_MS: u64 = 60_000;
+
+const fn default_deadline_ms() -> u64 {
+    DEFAULT_DEADLINE_MS
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +121,18 @@ fn make_result(issues: Vec<DoctorIssue>, used_keys_set: HashSet<String>, cancell
         "used_keys": used_keys_map,
         "cancelled": cancelled
     })
+}
+
+fn make_result_with_index(
+    issues: Vec<DoctorIssue>,
+    used_keys_set: HashSet<String>,
+    resource_index: Value,
+) -> Value {
+    let mut result = make_result(issues, used_keys_set, false);
+    if let Some(object) = result.as_object_mut() {
+        object.insert("resource_index".to_string(), resource_index);
+    }
+    result
 }
 
 fn process_file(
@@ -261,9 +281,13 @@ fn process_source(
     }
 }
 
-pub fn diagnose(params: DiagnoseParams, notify: &dyn Fn(&str, Value)) -> Result<Value> {
+pub fn diagnose(
+    mut params: DiagnoseParams,
+    notify: &dyn Fn(&str, Value),
+    server_cancelled: &dyn Fn() -> bool,
+) -> Result<Value> {
     let cancel_token_path = params.cancel_token_path.clone();
-    let is_cancelled_now = || is_cancelled(cancel_token_path.as_deref());
+    let is_cancelled_now = || server_cancelled() || is_cancelled(cancel_token_path.as_deref());
 
     let mut issues: Vec<DoctorIssue> = Vec::new();
     let mut used_keys_set: HashSet<String> = HashSet::new();
@@ -294,7 +318,28 @@ pub fn diagnose(params: DiagnoseParams, notify: &dyn Fn(&str, Value)) -> Result<
         },
         &cache,
     )?;
-    let index_data: crate::resource::index::IndexResult = serde_json::from_value(index_result)?;
+    let index_data: crate::resource::index::IndexResult =
+        serde_json::from_value(index_result.clone())?;
+
+    params.languages.clone_from(&index_data.languages);
+    if params.primary_lang.is_empty() {
+        params.primary_lang = index_data.languages.first().cloned().unwrap_or_default();
+    }
+    params.fallback_namespace = if index_data.namespaces.len() == 1 {
+        index_data.namespaces[0].clone()
+    } else if index_data
+        .namespaces
+        .iter()
+        .any(|namespace| namespace == "translation")
+    {
+        "translation".to_string()
+    } else {
+        index_data
+            .namespaces
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "common".to_string())
+    };
 
     if is_cancelled_now() {
         return Ok(make_result(issues, used_keys_set, true));
@@ -539,5 +584,5 @@ pub fn diagnose(params: DiagnoseParams, notify: &dyn Fn(&str, Value)) -> Result<
         }
     }
 
-    Ok(make_result(issues, used_keys_set, false))
+    Ok(make_result_with_index(issues, used_keys_set, index_result))
 }

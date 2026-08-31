@@ -139,6 +139,37 @@ describe("resources", function()
     end
   end)
 
+  it("preserves the last-good cache when a deadline-aware build times out", function()
+    local root = helpers.tmpdir()
+    write(root .. "/locales/ja/common.json", '{"login":{"title":"last good"}}')
+
+    local cache = resources.ensure_index(root)
+    assert.are.equal("last good", cache.index.ja["common:login.title"].value)
+    cache.dirty = true
+
+    local original_request_sync = rpc.request_sync
+    local ok, err = pcall(function()
+      rpc.request_sync = function(method)
+        if method == "resource/resolveRoots" then
+          return { roots = cache.roots }, nil
+        end
+        if method == "resource/buildIndex" then
+          return nil, "timeout after 10ms"
+        end
+        return {}, nil
+      end
+
+      local preserved, build_err = resources.ensure_index(root, { timeout_ms = 50 })
+      assert.is_true(preserved == cache)
+      assert.are.equal("timeout after 10ms", build_err)
+      assert.are.equal("last good", preserved.index.ja["common:login.title"].value)
+      assert.is_true(preserved.dirty)
+      assert.is_true(resources.caches[cache.key] == cache)
+    end)
+    rpc.request_sync = original_request_sync
+    assert.is_true(ok, err)
+  end)
+
   it("skips resolveRoots RPC when watcher is active for start_dir", function()
     local root = helpers.tmpdir()
     write(root .. "/locales/ja/common.json", '{"login":{"title":"A"}}')

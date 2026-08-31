@@ -84,15 +84,17 @@ function M.new(resources, roots)
   end
 
   ---@param root_list I18nStatusRootInfo[]
+  ---@param timeout_ms? integer
   ---@return I18nStatusCache
-  function service.build_index(root_list)
+  ---@return string|nil
+  function service.build_index(root_list, timeout_ms)
     local result, err = rpc.request_sync("resource/buildIndex", {
       roots = root_list,
-    })
+    }, timeout_ms)
     if err or not result then
-      return empty_index_result()
+      return empty_index_result(), err or "resource/buildIndex returned no result"
     end
-    return normalize_index_result(result)
+    return normalize_index_result(result), nil
   end
 
   ---@param root_list I18nStatusRootInfo[]
@@ -199,6 +201,7 @@ function M.new(resources, roots)
     end
 
     cache.dirty = true
+    cache.revision = (cache.revision or 0) + 1
     return nil
   end
 
@@ -242,6 +245,7 @@ function M.new(resources, roots)
   ---@param opts? { rpc_cache_key?: string }
   ---@return I18nStatusCache
   local function store_built_index(key, cache, root_list, built, opts)
+    built.revision = ((cache and cache.revision) or 0) + 1
     built.key = key
     built.rpc_cache_key = (opts and opts.rpc_cache_key) or built.cache_key or key
     built.roots = root_list
@@ -262,12 +266,67 @@ function M.new(resources, roots)
   end
 
   ---@param start_dir string
-  ---@param opts? { cooperative?: boolean, exact?: boolean }
+  ---@param root_list I18nStatusRootInfo[]
+  ---@param built I18nStatusCache
   ---@return I18nStatusCache
+  function service.store_index(start_dir, root_list, built)
+    start_dir = fs.normalize_path(start_dir) or start_dir
+    root_list = roots.normalize_roots(root_list or {})
+    local key = roots.compute_cache_key(root_list, start_dir)
+    local cache = resources.caches[key]
+    local rpc_cache_key = built.cache_key
+    return store_built_index(key, cache, root_list, normalize_index_result(built), {
+      rpc_cache_key = rpc_cache_key,
+    })
+  end
+
+  ---@param start_dir string
+  ---@param root_list I18nStatusRootInfo[]
+  ---@param built I18nStatusCache
+  ---@param expected { key: string, cache: I18nStatusCache|nil, revision: integer }
+  ---@return I18nStatusCache|nil
+  ---@return boolean published
+  function service.store_index_if_current(start_dir, root_list, built, expected)
+    start_dir = fs.normalize_path(start_dir) or start_dir
+    root_list = roots.normalize_roots(root_list or {})
+    local key = roots.compute_cache_key(root_list, start_dir)
+    local current = resources.caches[key]
+    if
+      not expected
+      or expected.key ~= key
+      or current ~= expected.cache
+      or (current and (current.revision or 0) ~= expected.revision)
+    then
+      return current, false
+    end
+    local rpc_cache_key = built.cache_key
+    return store_built_index(key, current, root_list, normalize_index_result(built), {
+      rpc_cache_key = rpc_cache_key,
+    }),
+      true
+  end
+
+  ---@param start_dir string
+  ---@param opts? { cooperative?: boolean, exact?: boolean, timeout_ms?: integer }
+  ---@return I18nStatusCache
+  ---@return string|nil
   function service.ensure_index(start_dir, opts)
     opts = opts or {}
     start_dir = start_dir or vim.fn.getcwd()
     start_dir = fs.normalize_path(start_dir) or start_dir
+
+    local started_at_ns = uv.hrtime()
+    local function remaining_timeout_ms()
+      if not opts.timeout_ms then
+        return nil
+      end
+      local elapsed_ms = (uv.hrtime() - started_at_ns) / 1000000
+      local remaining_ms = opts.timeout_ms - elapsed_ms
+      if remaining_ms <= 0 then
+        return 0
+      end
+      return math.max(1, math.ceil(remaining_ms))
+    end
 
     local key = nil
     local cache = nil
@@ -282,7 +341,18 @@ function M.new(resources, roots)
       cache = watching_cache
       root_list = watching_roots
     else
-      root_list = roots.resolve_roots_sync(start_dir)
+      local roots_timeout_ms = remaining_timeout_ms()
+      if roots_timeout_ms == 0 then
+        return empty_index_result()
+      end
+      local roots_err
+      root_list, roots_err = roots.resolve_roots_sync(start_dir, roots_timeout_ms)
+      if roots_err then
+        return empty_index_result(), roots_err
+      end
+      if remaining_timeout_ms() == 0 then
+        return empty_index_result(), "resource/resolveRoots exceeded its deadline"
+      end
       key = roots.compute_cache_key(root_list, start_dir)
       cache = resources.caches[key]
     end
@@ -297,7 +367,19 @@ function M.new(resources, roots)
       pcall(coroutine.yield)
     end
 
-    local built = resources.build_index(root_list)
+    local build_timeout_ms = remaining_timeout_ms()
+    if build_timeout_ms == 0 then
+      return cache or empty_index_result(), "resource/buildIndex exceeded its deadline"
+    end
+    local built, build_err = resources.build_index(root_list, build_timeout_ms)
+    if build_err then
+      if cache then
+        resources.last_cache_key = key
+        return cache, build_err
+      end
+      built.roots = root_list
+      return built, build_err
+    end
     return store_built_index(key, cache, root_list, built)
   end
 
@@ -335,6 +417,7 @@ function M.new(resources, roots)
   ---@param path string
   ---@param err string
   local function set_file_error(cache, path, err)
+    cache.revision = (cache.revision or 0) + 1
     cache.file_errors = cache.file_errors or {}
     cache.file_errors[path] = {
       error = err,

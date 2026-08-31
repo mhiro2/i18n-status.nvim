@@ -8,15 +8,17 @@ local stub = require("luassert.stub")
 local function diagnose(bufnr, config)
   local done = false
   local result = nil
-  doctor.diagnose(bufnr, config, function(issues)
+  local context = nil
+  doctor.diagnose(bufnr, config, function(issues, _, ctx)
     result = issues
+    context = ctx
     done = true
   end)
   local ok = vim.wait(5000, function()
     return done
   end)
   assert.is_true(ok, "doctor.diagnose timed out")
-  return result
+  return result, context
 end
 
 local function init_git_repo()
@@ -123,7 +125,7 @@ describe("doctor", function()
 
   it("reports drift and respects ignore keys", function()
     local root = helpers.tmpdir()
-    helpers.write_file(root .. "/locales/ja/common.json", '{"a":"A","ignore":"X"}')
+    helpers.write_file(root .. "/locales/ja/common.json", '{"a":"A","missing_in_en":"M","ignore":"X"}')
     helpers.write_file(root .. "/locales/en/common.json", '{"a":"A","extra":"Y"}')
     helpers.with_cwd(root, function()
       local buf = vim.api.nvim_create_buf(false, true)
@@ -134,19 +136,27 @@ describe("doctor", function()
         doctor = { ignore_keys = { "^common:ignore$" } },
       })
 
-      local issues = diagnose(buf, config)
+      local issues, ctx = diagnose(buf, config)
       local drift_extra = false
+      local drift_missing = false
       local ignored_seen = false
       for _, issue in ipairs(issues) do
         if issue.kind == "drift_extra" and issue.key == "common:extra" then
           drift_extra = true
+        end
+        if issue.kind == "drift_missing" and issue.key == "common:missing_in_en" then
+          drift_missing = true
         end
         if issue.key == "common:ignore" then
           ignored_seen = true
         end
       end
       assert.is_true(drift_extra)
+      assert.is_true(drift_missing)
       assert.is_false(ignored_seen)
+      assert.are.same({ "en", "ja" }, ctx.cache.languages)
+      assert.are.same({ "common" }, ctx.cache.namespaces)
+      assert.is_false(ctx.cache.dirty)
     end)
   end)
 
@@ -361,6 +371,33 @@ describe("doctor", function()
     assert.is_true(unused["translation:unused"], "translation:unused should be unused")
   end)
 
+  it("uses the sole non-common namespace on a cold cache", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/auth.json", '{"login":"ログイン"}')
+    helpers.write_file(root .. "/locales/en/auth.json", '{"login":"Login"}')
+
+    helpers.with_cwd(root, function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_name(buf, root .. "/page.ts")
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("login")' })
+      vim.bo[buf].filetype = "typescript"
+
+      local issues, ctx = diagnose(buf, config_mod.setup({ primary_lang = "ja" }))
+      for _, issue in ipairs(issues) do
+        assert.is_false(
+          issue.kind == "missing" and issue.key == "common:login",
+          "the worker must not keep the cold-cache common fallback"
+        )
+        assert.is_false(
+          issue.kind == "unused" and issue.key == "auth:login",
+          "the sole namespace key should be recognized as used"
+        )
+      end
+      assert.are.equal("auth", ctx.fallback_ns)
+      assert.are.same({ "auth" }, ctx.cache.namespaces)
+    end)
+  end)
+
   it("keeps explicit namespace keys", function()
     local root = init_git_repo()
     if not root then
@@ -413,5 +450,78 @@ describe("doctor", function()
     end
 
     assert.is_nil(unused["feature:alpha.beta"], "feature:alpha.beta should not be unused")
+  end)
+
+  it("keeps interactive RPC responsive while Doctor resource IO is blocked", function()
+    if vim.fn.executable("mkfifo") == 0 or vim.fn.executable("sh") == 0 then
+      return
+    end
+
+    local root = helpers.tmpdir()
+    local locale_dir = root .. "/locales/ja"
+    vim.fn.mkdir(locale_dir, "p")
+    local fifo = locale_dir .. "/blocked.json"
+    vim.fn.system({ "mkfifo", fifo })
+    assert.are.equal(0, vim.v.shell_error)
+
+    local rpc = require("i18n-status.rpc")
+    local doctor_done = false
+    local doctor_error = nil
+    local initialize_result = nil
+    local initialize_error = nil
+    local scan_result = nil
+    local scan_error = nil
+
+    rpc.request("doctor/diagnose", {
+      project_root = root,
+      roots = { { kind = "i18next", path = root .. "/locales" } },
+      primary_lang = "ja",
+      languages = {},
+      fallback_namespace = "common",
+      ignore_patterns = {},
+      open_buf_paths = {},
+      open_buffers = {},
+      deadline_ms = 1000,
+    }, function(err)
+      doctor_error = err
+      doctor_done = true
+    end, { timeout_ms = 2000 })
+
+    local started_at = vim.uv.hrtime()
+    rpc.request("initialize", {}, function(err, result)
+      initialize_error = err
+      initialize_result = result
+    end)
+    rpc.request("scan/extract", {
+      source = 't("ready")',
+      lang = "typescript",
+      fallback_namespace = "common",
+    }, function(err, result)
+      scan_error = err
+      scan_result = result
+    end)
+
+    local interactive_done = vim.wait(500, function()
+      return initialize_result ~= nil and scan_result ~= nil
+    end, 5)
+    local interactive_elapsed_ms = (vim.uv.hrtime() - started_at) / 1000000
+    local interactive_preceded_doctor = not doctor_done
+
+    local writer_done = false
+    vim.system({ "sh", "-c", 'printf "{}" > "$1"', "sh", fifo }, {}, function()
+      writer_done = true
+    end)
+    assert.is_true(vim.wait(2000, function()
+      return writer_done and doctor_done
+    end, 5))
+
+    assert.is_true(interactive_done, "interactive RPC was blocked behind Doctor")
+    assert.is_true(interactive_elapsed_ms < 500, "interactive RPC exceeded its latency budget")
+    assert.is_true(interactive_preceded_doctor, "Doctor completed before the isolation assertion")
+    assert.is_nil(initialize_error)
+    assert.are.equal("i18n-status-core", initialize_result.name)
+    assert.is_nil(scan_error)
+    assert.are.equal("common:ready", scan_result.items[1].key)
+    assert.is_nil(doctor_error)
   end)
 end)

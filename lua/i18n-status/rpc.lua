@@ -365,10 +365,8 @@ function M.request(method, params, cb, opts)
   local id = next_id
   next_id = next_id + 1
 
-  local timeout_ms = (opts and opts.timeout_ms) or DEFAULT_TIMEOUT_MS
-  if method == "doctor/diagnose" then
-    timeout_ms = DOCTOR_TIMEOUT_MS
-  end
+  local default_timeout_ms = method == "doctor/diagnose" and DOCTOR_TIMEOUT_MS or DEFAULT_TIMEOUT_MS
+  local timeout_ms = (opts and opts.timeout_ms) or default_timeout_ms
 
   local timer = uv.new_timer()
   pcall(function()

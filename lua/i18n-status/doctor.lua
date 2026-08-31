@@ -37,6 +37,7 @@ local uv = vim.uv
 ---@field file_total integer|nil
 ---@field file_processed integer|nil
 ---@field cancel_token_path string|nil
+---@field cache_snapshot { key: string, cache: I18nStatusCache|nil, revision: integer }|nil
 
 ---@param patterns string[]|nil
 ---@return string[]
@@ -202,6 +203,56 @@ local function doctor_lang_for_filetype(ft)
 end
 
 local OPEN_BUFFER_MAX_BYTES = 512 * 1024
+local DEFAULT_DEADLINE_MS = 60 * 1000
+local MAX_DEADLINE_MS = 120 * 1000
+local RPC_DEADLINE_GRACE_MS = 5 * 1000
+
+---@class I18nStatusDoctorDeadline
+---@field duration_ms integer
+---@field expires_at_ns number
+---@field notified boolean
+
+---@param deadline_ms integer|nil
+---@return I18nStatusDoctorDeadline
+local function new_deadline(deadline_ms)
+  local duration_ms = math.min(MAX_DEADLINE_MS, math.max(1, deadline_ms or DEFAULT_DEADLINE_MS))
+  return {
+    duration_ms = duration_ms,
+    expires_at_ns = uv.hrtime() + (duration_ms * 1000000),
+    notified = false,
+  }
+end
+
+---@param deadline I18nStatusDoctorDeadline
+---@return integer
+local function remaining_deadline_ms(deadline)
+  local remaining_ms = (deadline.expires_at_ns - uv.hrtime()) / 1000000
+  if remaining_ms <= 0 then
+    return 0
+  end
+  return math.max(1, math.ceil(remaining_ms))
+end
+
+---@param deadline I18nStatusDoctorDeadline
+---@return boolean
+local function deadline_expired(deadline)
+  return remaining_deadline_ms(deadline) == 0
+end
+
+---@param deadline I18nStatusDoctorDeadline
+---@return string
+local function deadline_message(deadline)
+  return string.format("deadline exceeded after %dms", deadline.duration_ms)
+end
+
+---@param deadline I18nStatusDoctorDeadline
+local function notify_deadline_once(deadline)
+  if deadline.notified then
+    return
+  end
+  deadline.notified = true
+  vim.notify("i18n-status doctor: " .. deadline_message(deadline), vim.log.levels.ERROR)
+end
 
 ---@type table<string, { changedtick: integer }>
 local open_buffer_snapshots = {}
@@ -229,15 +280,20 @@ local function buffer_size_bytes(bufnr)
 end
 
 ---@param ctx I18nStatusDoctorContext
----@return { open_buffers: table[], open_buf_paths: string[] }
-local function collect_open_buffer_payload(ctx)
+---@param deadline I18nStatusDoctorDeadline
+---@return { open_buffers: table[], open_buf_paths: string[] }|nil
+---@return string|nil
+local function collect_open_buffer_payload(ctx, deadline)
   local open_buffers = {}
   local open_buf_paths = {}
   local open_buf_path_seen = {}
-  local active_named_paths = {}
+  local next_snapshots = {}
   local skipped_large_count = 0
 
   for _, open_buf in ipairs(ctx.buffers) do
+    if deadline_expired(deadline) then
+      return nil, "deadline"
+    end
     if vim.api.nvim_buf_is_valid(open_buf) and vim.api.nvim_buf_is_loaded(open_buf) then
       local ft = vim.bo[open_buf].filetype
       local lang = doctor_lang_for_filetype(ft)
@@ -248,20 +304,22 @@ local function collect_open_buffer_payload(ctx)
 
         local should_send = true
         if has_path then
-          active_named_paths[path] = true
           local snapshot = open_buffer_snapshots[path]
           should_send = vim.bo[open_buf].modified or not snapshot or snapshot.changedtick ~= changedtick
+          if not should_send then
+            next_snapshots[path] = snapshot
+          end
         end
 
         if should_send then
           local size_bytes = buffer_size_bytes(open_buf)
           if size_bytes and size_bytes > OPEN_BUFFER_MAX_BYTES then
             skipped_large_count = skipped_large_count + 1
-            if has_path then
-              open_buffer_snapshots[path] = nil
-            end
           else
             local lines = vim.api.nvim_buf_get_lines(open_buf, 0, -1, false)
+            if deadline_expired(deadline) then
+              return nil, "deadline"
+            end
             local entry = {
               lang = lang,
               source = table.concat(lines, "\n"),
@@ -273,7 +331,7 @@ local function collect_open_buffer_payload(ctx)
               if real and real ~= "" then
                 add_open_buffer_path(open_buf_paths, open_buf_path_seen, real)
               end
-              open_buffer_snapshots[path] = { changedtick = changedtick }
+              next_snapshots[path] = { changedtick = changedtick }
             end
             table.insert(open_buffers, entry)
           end
@@ -282,11 +340,10 @@ local function collect_open_buffer_payload(ctx)
     end
   end
 
-  for path in pairs(open_buffer_snapshots) do
-    if not active_named_paths[path] then
-      open_buffer_snapshots[path] = nil
-    end
+  if deadline_expired(deadline) then
+    return nil, "deadline"
   end
+  open_buffer_snapshots = next_snapshots
 
   if skipped_large_count > 0 then
     vim.notify(
@@ -302,24 +359,73 @@ local function collect_open_buffer_payload(ctx)
   return {
     open_buffers = open_buffers,
     open_buf_paths = open_buf_paths,
-  }
+  }, nil
+end
+
+---@param cache I18nStatusCache
+---@return string
+local function fallback_namespace_from_cache(cache)
+  local namespaces = cache.namespaces or {}
+  if #namespaces == 1 then
+    return namespaces[1]
+  end
+  for _, namespace in ipairs(namespaces) do
+    if namespace == "translation" then
+      return namespace
+    end
+  end
+  return namespaces[1] or "common"
 end
 
 ---@param bufnr integer
 ---@param config I18nStatusConfig
----@return I18nStatusDoctorContext
-local function prepare_context(bufnr, config)
+---@param deadline I18nStatusDoctorDeadline
+---@return I18nStatusDoctorContext|nil
+---@return string|nil
+local function prepare_context(bufnr, config, deadline)
   config = config or {}
+  if deadline_expired(deadline) then
+    return nil, "deadline"
+  end
   local start_dir = resources.start_dir(bufnr)
-  local cache = resources.ensure_index(start_dir)
-  local fallback_ns = resources.fallback_namespace(start_dir)
+  local root_list, roots_err = resources.resolve_roots_sync(start_dir, remaining_deadline_ms(deadline))
+  if roots_err then
+    if deadline_expired(deadline) or tostring(roots_err):find("timeout", 1, true) then
+      return nil, "deadline"
+    end
+    return nil, "resource preflight failed: " .. tostring(roots_err)
+  end
+  if deadline_expired(deadline) then
+    return nil, "deadline"
+  end
+  local cache_key = resources.cache_key(root_list, start_dir)
+  local cached = resources.caches[cache_key]
+  local cache = cached
+    or {
+      key = cache_key,
+      index = {},
+      files = {},
+      languages = {},
+      roots = root_list,
+      errors = {},
+      namespaces = {},
+      dirty = true,
+      checked_at = 0,
+    }
+  local fallback_ns = fallback_namespace_from_cache(cache)
   local ignore_patterns = sanitize_ignore_patterns((config.doctor and config.doctor.ignore_keys) or {})
   local is_ignored = make_ignore_fn(ignore_patterns)
 
-  local project_root = resources.project_root(start_dir, cache.roots) or start_dir
+  local project_root = resources.project_root(start_dir, root_list, { resolve_empty = false }) or start_dir
+  if deadline_expired(deadline) then
+    return nil, "deadline"
+  end
 
   local buffers = {}
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if deadline_expired(deadline) then
+      return nil, "deadline"
+    end
     if vim.api.nvim_buf_is_loaded(buf) then
       local ft = vim.bo[buf].filetype
       if filetypes.is_source_filetype(ft) then
@@ -340,7 +446,13 @@ local function prepare_context(bufnr, config)
     items_by_buf = {},
     used_keys = {},
     project_root = project_root,
-  }
+    cache_snapshot = {
+      key = cache_key,
+      cache = cached,
+      revision = (cached and cached.revision) or 0,
+    },
+  },
+    nil
 end
 
 ---@param issues I18nStatusDoctorIssue[]
@@ -358,6 +470,7 @@ end
 
 local CANCEL_TOKEN_DIR = vim.fs.joinpath(uv.os_tmpdir(), "i18n-status", "doctor-cancel")
 local cancel_token_seq = 0
+local doctor_deadline_ms = DEFAULT_DEADLINE_MS
 
 ---@param path string|nil
 local function clear_cancel_token(path)
@@ -394,24 +507,253 @@ local function next_cancel_token_path()
   return vim.fs.joinpath(CANCEL_TOKEN_DIR, token .. ".cancel")
 end
 
----@type { ctx: I18nStatusDoctorContext, cancelled: boolean, cancel_token_path: string|nil }|nil
+---@param timer uv_timer_t|nil
+local function stop_timer(timer)
+  if not timer then
+    return
+  end
+  pcall(function()
+    if not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
+  end)
+end
+
+---@param timer uv_timer_t
+---@param deadline I18nStatusDoctorDeadline
+---@param on_expire fun()
+local function arm_deadline_timer(timer, deadline, on_expire)
+  local arm
+  arm = function()
+    if timer:is_closing() then
+      return
+    end
+    local remaining_ms = remaining_deadline_ms(deadline)
+    if remaining_ms == 0 then
+      on_expire()
+      return
+    end
+    timer:start(remaining_ms, 0, function()
+      vim.schedule(function()
+        if timer:is_closing() then
+          return
+        end
+        if deadline_expired(deadline) then
+          on_expire()
+        else
+          arm()
+        end
+      end)
+    end)
+  end
+  arm()
+end
+
+---@class I18nStatusDoctorResultStatus
+---@field cancelled boolean|nil
+---@field deadline boolean|nil
+---@field error string|nil
+
+---@class I18nStatusDoctorJob
+---@field generation integer
+---@field bufnr integer
+---@field config I18nStatusConfig|nil
+---@field ctx I18nStatusDoctorContext|nil
+---@field cancelled boolean
+---@field cancel_token_path string
+---@field request_id integer|nil
+---@field progress_handler fun(params: table|nil)|nil
+---@field started boolean
+---@field deadline I18nStatusDoctorDeadline
+---@field deadline_timer uv_timer_t|nil
+
+---@type I18nStatusDoctorJob|nil
 local active_job = nil
+local run_generation = 0
 
 local progress_handler_key = "doctor/progress"
-local progress_handler = nil
+
+---@param job I18nStatusDoctorJob
+local function stop_job_deadline_timer(job)
+  stop_timer(job.deadline_timer)
+  job.deadline_timer = nil
+end
+
+---@param job I18nStatusDoctorJob
+local function unregister_job_progress(job)
+  if not job.progress_handler then
+    return
+  end
+  rpc.off_notification(progress_handler_key, job.progress_handler)
+  job.progress_handler = nil
+end
+
+---@param job I18nStatusDoctorJob
+local function expire_active_job(job)
+  if active_job ~= job or run_generation ~= job.generation or job.cancelled then
+    return
+  end
+  job.cancelled = true
+  active_job = nil
+  signal_cancel(job.cancel_token_path)
+  unregister_job_progress(job)
+  stop_job_deadline_timer(job)
+  if not job.started then
+    clear_cancel_token(job.cancel_token_path)
+  end
+  notify_deadline_once(job.deadline)
+end
+
+---@param job I18nStatusDoctorJob
+local function start_job_deadline_timer(job)
+  local timer = uv.new_timer()
+  if not timer then
+    return
+  end
+  job.deadline_timer = timer
+  pcall(function()
+    timer:unref()
+  end)
+  arm_deadline_timer(timer, job.deadline, function()
+    expire_active_job(job)
+  end)
+end
 
 ---@param bufnr integer|nil
 ---@param config I18nStatusConfig|nil
----@param cb fun(issues: I18nStatusDoctorIssue[])
----@param opts? { cancel_token_path?: string }
+---@param cb fun(issues: I18nStatusDoctorIssue[], status?: I18nStatusDoctorResultStatus, ctx?: I18nStatusDoctorContext)
+---@param opts? { cancel_token_path?: string, deadline_ms?: integer, deadline?: I18nStatusDoctorDeadline, external_deadline_timer?: boolean, context?: I18nStatusDoctorContext }
 ---@return integer|nil request_id
 function M.diagnose(bufnr, config, cb, opts)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   opts = opts or {}
-  local ctx = prepare_context(bufnr, config)
-  local open_payload = collect_open_buffer_payload(ctx)
+  local deadline = opts.deadline or new_deadline(opts.deadline_ms or doctor_deadline_ms)
+  local cancel_token_path = opts.cancel_token_path or next_cancel_token_path()
+  local finished = false
+  local deadline_reached = false
+  local rpc_finished = false
+  local request_started = false
+  local deadline_timer = nil
+  local ctx = opts.context
 
-  return rpc.request("doctor/diagnose", {
+  ---@param issues I18nStatusDoctorIssue[]
+  ---@param status I18nStatusDoctorResultStatus|nil
+  local function finish(issues, status)
+    if finished then
+      return
+    end
+    finished = true
+    stop_timer(deadline_timer)
+    vim.schedule(function()
+      if rpc_finished or not request_started then
+        clear_cancel_token(cancel_token_path)
+      end
+      cb(issues, status, ctx)
+    end)
+  end
+
+  local function finish_deadline()
+    if finished then
+      return
+    end
+    deadline_reached = true
+    signal_cancel(cancel_token_path)
+    if not request_started or rpc_finished then
+      clear_cancel_token(cancel_token_path)
+    end
+    notify_deadline_once(deadline)
+    finish({}, { cancelled = true, deadline = true, error = deadline_message(deadline) })
+  end
+
+  ---@param err? string
+  local function finish_cancelled(err)
+    if not request_started then
+      clear_cancel_token(cancel_token_path)
+    end
+    finish({}, { cancelled = true, error = err })
+  end
+
+  if not opts.external_deadline_timer then
+    deadline_timer = uv.new_timer()
+    if deadline_timer then
+      pcall(function()
+        deadline_timer:unref()
+      end)
+      arm_deadline_timer(deadline_timer, deadline, function()
+        finish_deadline()
+      end)
+    end
+  end
+
+  if deadline_expired(deadline) then
+    finish_deadline()
+    return nil
+  end
+  if uv.fs_stat(cancel_token_path) then
+    finish_cancelled()
+    return nil
+  end
+
+  if not ctx then
+    local prepared, prepared_ctx, prepare_err = xpcall(function()
+      return prepare_context(bufnr, config, deadline)
+    end, debug.traceback)
+    if not prepared then
+      clear_cancel_token(cancel_token_path)
+      local message = tostring(prepared_ctx)
+      vim.notify("i18n-status doctor: " .. message, vim.log.levels.ERROR)
+      finish({}, { error = message })
+      return nil
+    end
+    if not prepared_ctx then
+      if prepare_err == "deadline" or deadline_expired(deadline) then
+        finish_deadline()
+      else
+        clear_cancel_token(cancel_token_path)
+        local message = tostring(prepare_err or "failed to prepare Doctor context")
+        vim.notify("i18n-status doctor: " .. message, vim.log.levels.ERROR)
+        finish({}, { error = message })
+      end
+      return nil
+    end
+    ctx = prepared_ctx
+  end
+
+  if deadline_expired(deadline) then
+    finish_deadline()
+    return nil
+  end
+  if uv.fs_stat(cancel_token_path) then
+    finish_cancelled()
+    return nil
+  end
+
+  local open_payload, payload_err = collect_open_buffer_payload(ctx, deadline)
+  if not open_payload then
+    if payload_err == "deadline" or deadline_expired(deadline) then
+      finish_deadline()
+    else
+      clear_cancel_token(cancel_token_path)
+      local message = tostring(payload_err or "failed to collect open buffers")
+      vim.notify("i18n-status doctor: " .. message, vim.log.levels.ERROR)
+      finish({}, { error = message })
+    end
+    return nil
+  end
+
+  if deadline_expired(deadline) then
+    finish_deadline()
+    return nil
+  end
+  if uv.fs_stat(cancel_token_path) then
+    finish_cancelled()
+    return nil
+  end
+
+  local remaining_ms = remaining_deadline_ms(deadline)
+  request_started = true
+  local request_id = rpc.request("doctor/diagnose", {
     project_root = ctx.project_root,
     roots = ctx.cache.roots or {},
     primary_lang = config and config.primary_lang or (ctx.cache.languages[1] or ""),
@@ -420,21 +762,65 @@ function M.diagnose(bufnr, config, cb, opts)
     ignore_patterns = ctx.ignore_patterns,
     open_buf_paths = open_payload.open_buf_paths,
     open_buffers = open_payload.open_buffers,
-    cancel_token_path = opts.cancel_token_path,
+    cancel_token_path = cancel_token_path,
+    deadline_ms = remaining_ms,
   }, function(err, result)
+    rpc_finished = true
+    local was_cancelled = uv.fs_stat(cancel_token_path) ~= nil
+    clear_cancel_token(cancel_token_path)
+    if finished then
+      return
+    end
     vim.schedule(function()
+      if finished then
+        return
+      end
+      if deadline_reached or deadline_expired(deadline) then
+        finish_deadline()
+        return
+      end
       if err then
-        if opts.cancel_token_path and uv.fs_stat(opts.cancel_token_path) then
-          cb({})
+        local message = tostring(err)
+        if message:find("deadline", 1, true) then
+          deadline_reached = true
+          notify_deadline_once(deadline)
+          finish({}, { cancelled = true, deadline = true, error = message })
           return
         end
-        vim.notify("i18n-status doctor: " .. tostring(err), vim.log.levels.ERROR)
-        cb({})
+        if
+          was_cancelled
+          or message == "doctor request cancelled"
+          or message:find("superseded by a newer request", 1, true)
+        then
+          finish({}, { cancelled = true, error = message })
+          return
+        end
+        vim.notify("i18n-status doctor: " .. message, vim.log.levels.ERROR)
+        finish({}, { error = message })
         return
       end
       if result and result.cancelled then
-        cb({})
+        finish({}, { cancelled = true })
         return
+      end
+      if result and type(result.resource_index) == "table" then
+        local stored, stored_cache, _published = pcall(
+          resources.store_index_if_current,
+          ctx.start_dir,
+          ctx.cache.roots,
+          result.resource_index,
+          ctx.cache_snapshot
+        )
+        if not stored then
+          local message = "failed to store Doctor resource index: " .. tostring(stored_cache)
+          vim.notify("i18n-status doctor: " .. message, vim.log.levels.ERROR)
+          finish({}, { error = message })
+          return
+        end
+        if stored_cache then
+          ctx.cache = stored_cache
+          ctx.fallback_ns = fallback_namespace_from_cache(stored_cache)
+        end
       end
       local issues = convert_issues(result and result.issues or {})
       local filtered = {}
@@ -445,57 +831,80 @@ function M.diagnose(bufnr, config, cb, opts)
       end
       local used_keys = result and result.used_keys or {}
       ctx.used_keys = used_keys
-      cb(filtered)
+      finish(filtered)
     end)
-  end, { timeout_ms = 120000 })
+  end, { timeout_ms = remaining_ms + RPC_DEADLINE_GRACE_MS })
+
+  return request_id
 end
 
 ---Refresh doctor context.
 ---@param ctx I18nStatusDoctorContext
 ---@param opts? { full?: boolean }
 ---@param cb fun(issues: I18nStatusDoctorIssue[])
-function M.refresh(ctx, opts, cb)
-  opts = opts or {}
-
-  if opts.full then
-    local bufnr = ctx.bufnr or vim.api.nvim_get_current_buf()
-    M.diagnose(bufnr, ctx.config, cb)
-    return
+function M.refresh(ctx, _opts, cb)
+  local function finish_refresh(issues, status, refreshed_ctx)
+    if status and (status.cancelled or status.error) then
+      return
+    end
+    for key, value in pairs(refreshed_ctx or {}) do
+      ctx[key] = value
+    end
+    cb(issues)
   end
 
-  -- Lightweight refresh: rebuild from cached data
-  ctx.cache = resources.ensure_index(ctx.start_dir)
-  if not ctx.fallback_ns or ctx.fallback_ns == "" then
-    ctx.fallback_ns = resources.fallback_namespace(ctx.start_dir)
-  end
-
-  -- For lightweight refresh, re-run diagnose since Rust handles everything
-  M.diagnose(ctx.bufnr or vim.api.nvim_get_current_buf(), ctx.config, cb)
+  -- Rust performs the full project diagnosis for both refresh modes.
+  M.diagnose(ctx.bufnr or vim.api.nvim_get_current_buf(), ctx.config, finish_refresh)
 end
 
 ---@param bufnr integer|nil
 ---@param config I18nStatusConfig|nil
 function M.run(bufnr, config)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local deadline = new_deadline(doctor_deadline_ms)
+  run_generation = run_generation + 1
 
   if active_job then
     active_job.cancelled = true
     signal_cancel(active_job.cancel_token_path)
+    unregister_job_progress(active_job)
+    stop_job_deadline_timer(active_job)
+    if not active_job.started then
+      clear_cancel_token(active_job.cancel_token_path)
+    end
     active_job = nil
   end
 
   vim.notify("i18n-status doctor: running... (:I18nDoctorCancel to cancel)", vim.log.levels.INFO)
 
-  -- Register progress handler
-  if progress_handler then
-    rpc.off_notification(progress_handler_key, progress_handler)
-  end
-  progress_handler = function(params)
+  local job = {
+    generation = run_generation,
+    bufnr = bufnr,
+    config = config,
+    ctx = nil,
+    cancelled = false,
+    cancel_token_path = next_cancel_token_path(),
+    request_id = nil,
+    progress_handler = nil,
+    started = false,
+    deadline = deadline,
+    deadline_timer = nil,
+  }
+  active_job = job
+
+  job.progress_handler = function(params)
     vim.schedule(function()
-      if active_job and active_job.cancelled then
+      if
+        active_job ~= job
+        or run_generation ~= job.generation
+        or job.cancelled
+        or job.request_id == nil
+        or not params
+        or params.request_id ~= job.request_id
+      then
         return
       end
-      local message = params and params.message or ""
+      local message = params.message or ""
       vim.api.nvim_echo(
         { { "i18n-status doctor: " .. message .. " (:I18nDoctorCancel to cancel)", "Normal" } },
         false,
@@ -503,28 +912,41 @@ function M.run(bufnr, config)
       )
     end)
   end
-  rpc.on_notification(progress_handler_key, progress_handler)
+  rpc.on_notification(progress_handler_key, job.progress_handler)
+  start_job_deadline_timer(job)
 
   vim.defer_fn(function()
-    local ctx = prepare_context(bufnr, config)
-    local cancel_token_path = next_cancel_token_path()
-    ctx.cancel_token_path = cancel_token_path
-    local job = { ctx = ctx, cancelled = false, cancel_token_path = cancel_token_path }
-    active_job = job
+    if active_job ~= job or run_generation ~= job.generation or job.cancelled then
+      clear_cancel_token(job.cancel_token_path)
+      return
+    end
+    if deadline_expired(job.deadline) then
+      expire_active_job(job)
+      return
+    end
 
-    M.diagnose(bufnr, config, function(issues)
-      clear_cancel_token(cancel_token_path)
-      if job.cancelled then
+    job.started = true
+    job.request_id = M.diagnose(bufnr, config, function(issues, status, ctx)
+      if active_job ~= job or run_generation ~= job.generation or job.cancelled then
         return
       end
       active_job = nil
-      -- Remove progress handler
-      if progress_handler then
-        rpc.off_notification(progress_handler_key, progress_handler)
-        progress_handler = nil
+      unregister_job_progress(job)
+      stop_job_deadline_timer(job)
+      if status and (status.cancelled or status.error) then
+        return
       end
+      if not ctx then
+        return
+      end
+      job.ctx = ctx
+      ctx.cancel_token_path = job.cancel_token_path
       report_issues(issues, ctx, config)
-    end, { cancel_token_path = cancel_token_path })
+    end, {
+      cancel_token_path = job.cancel_token_path,
+      deadline = job.deadline,
+      external_deadline_timer = job.deadline_timer ~= nil,
+    })
   end, 0)
 end
 
@@ -538,9 +960,10 @@ function M.cancel()
   job.cancelled = true
   active_job = nil
   signal_cancel(job.cancel_token_path)
-  if progress_handler then
-    rpc.off_notification(progress_handler_key, progress_handler)
-    progress_handler = nil
+  unregister_job_progress(job)
+  stop_job_deadline_timer(job)
+  if not job.started then
+    clear_cancel_token(job.cancel_token_path)
   end
   vim.notify("i18n-status doctor: cancelled", vim.log.levels.INFO)
   return true
@@ -550,6 +973,21 @@ end
 ---Intended for tests.
 function M._reset_open_buffer_snapshots_for_test()
   open_buffer_snapshots = {}
+  run_generation = run_generation + 1
+  if active_job then
+    active_job.cancelled = true
+    signal_cancel(active_job.cancel_token_path)
+    unregister_job_progress(active_job)
+    stop_job_deadline_timer(active_job)
+    clear_cancel_token(active_job.cancel_token_path)
+    active_job = nil
+  end
+  doctor_deadline_ms = DEFAULT_DEADLINE_MS
+end
+
+---@param deadline_ms integer
+function M._set_deadline_ms_for_test(deadline_ms)
+  doctor_deadline_ms = deadline_ms
 end
 
 return M
