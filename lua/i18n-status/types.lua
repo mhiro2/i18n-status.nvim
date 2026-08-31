@@ -15,7 +15,9 @@
 ---@field end_lnum integer
 ---@field end_col integer
 ---@field text string
----@field kind string
+---@field source_text string
+---@field kind 'jsx_text'|'jsx_literal'
+---@field replacement_context 'jsx_child'|'jsx_expression'
 
 ---@class I18nStatusHoverValue
 ---@field value string|nil

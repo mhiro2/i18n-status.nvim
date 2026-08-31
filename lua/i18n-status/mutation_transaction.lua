@@ -2,6 +2,7 @@
 ---@field label string
 ---@field validate? fun(): boolean, string|nil
 ---@field validate_committed? fun(): boolean, string|nil
+---@field validate_effective_catalog? fun(catalog: I18nStatusFrameworkCatalog): boolean, string|nil
 ---@field commit fun(): boolean, string|nil, boolean|nil
 ---@field rollback fun(): boolean, string|nil
 ---@field cleanup? fun(): boolean, string|nil

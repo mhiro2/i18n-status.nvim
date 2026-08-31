@@ -386,7 +386,7 @@ end
 ---@param bufnr integer
 ---@param row integer
 ---@param opts? { fallback_namespace?: string, col?: integer, callee?: string, member_call?: boolean }
----@return { namespace: string|nil, t_func: string, found_hook: boolean, has_any_hook: boolean, ambiguous: boolean, shadowed: boolean }
+---@return { namespace: string|nil, t_func: string|nil, binding_id: string|nil, hook: string|nil, framework: string|nil, source_key_policy: string|nil, namespace_resolution: 'absent'|'static'|'dynamic'|nil, extract_safe: boolean, found_hook: boolean, has_any_hook: boolean, ambiguous: boolean, shadowed: boolean }
 function M.translation_context_at(bufnr, row, opts)
   opts = opts or {}
   local fallback_ns = opts.fallback_namespace or ""
@@ -394,7 +394,13 @@ function M.translation_context_at(bufnr, row, opts)
   if lang == "" then
     return {
       namespace = fallback_ns,
-      t_func = "t",
+      t_func = nil,
+      binding_id = nil,
+      hook = nil,
+      framework = nil,
+      source_key_policy = nil,
+      namespace_resolution = nil,
+      extract_safe = false,
       found_hook = false,
       has_any_hook = false,
       ambiguous = false,
@@ -434,7 +440,13 @@ function M.translation_context_at(bufnr, row, opts)
   if not result then
     return {
       namespace = fallback_ns,
-      t_func = "t",
+      t_func = nil,
+      binding_id = nil,
+      hook = nil,
+      framework = nil,
+      source_key_policy = nil,
+      namespace_resolution = nil,
+      extract_safe = false,
       found_hook = false,
       has_any_hook = false,
       ambiguous = false,
@@ -443,7 +455,13 @@ function M.translation_context_at(bufnr, row, opts)
   end
   return {
     namespace = result.namespace,
-    t_func = result.t_func or "t",
+    t_func = type(result.t_func) == "string" and result.t_func ~= "" and result.t_func or nil,
+    binding_id = type(result.binding_id) == "string" and result.binding_id ~= "" and result.binding_id or nil,
+    hook = result.hook,
+    framework = result.framework,
+    source_key_policy = result.source_key_policy,
+    namespace_resolution = result.namespace_resolution,
+    extract_safe = result.extract_safe or false,
     found_hook = result.found_hook or false,
     has_any_hook = result.has_any_hook or false,
     ambiguous = result.ambiguous or false,

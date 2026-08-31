@@ -1,8 +1,17 @@
 local extract_review = require("i18n-status.extract_review")
 
+local function with_replacement_context(candidates)
+  for _, candidate in ipairs(candidates) do
+    candidate.t_func = "t"
+    candidate.source_key_policy = "canonical"
+    candidate.replacement_context = "jsx_child"
+  end
+  return candidates
+end
+
 describe("extract review state", function()
   it("updates candidate statuses for conflict/invalid/reuse", function()
-    local candidates = {
+    local candidates = with_replacement_context({
       {
         id = 1,
         namespace = "common",
@@ -43,7 +52,7 @@ describe("extract review state", function()
         selected = true,
         status = "ready",
       },
-    }
+    })
 
     extract_review._test.refresh_candidate_statuses(candidates, {
       ["common:exists"] = true,
@@ -57,7 +66,7 @@ describe("extract review state", function()
   end)
 
   it("marks duplicate new keys as conflicts", function()
-    local candidates = {
+    local candidates = with_replacement_context({
       {
         id = 1,
         namespace = "common",
@@ -74,7 +83,7 @@ describe("extract review state", function()
         selected = true,
         status = "ready",
       },
-    }
+    })
 
     extract_review._test.refresh_candidate_statuses(candidates, {})
 
@@ -82,8 +91,43 @@ describe("extract review state", function()
     assert.are.equal("conflict_existing", candidates[2].status)
   end)
 
+  it("marks every member of a transitive key-shape conflict", function()
+    local candidates = with_replacement_context({
+      {
+        id = 1,
+        namespace = "common",
+        proposed_key = "common:a.b",
+        mode = "new",
+        selected = true,
+        status = "ready",
+      },
+      {
+        id = 2,
+        namespace = "common",
+        proposed_key = "common:a.c",
+        mode = "new",
+        selected = true,
+        status = "ready",
+      },
+      {
+        id = 3,
+        namespace = "common",
+        proposed_key = "common:a",
+        mode = "new",
+        selected = true,
+        status = "ready",
+      },
+    })
+
+    extract_review._test.refresh_candidate_statuses(candidates, {})
+
+    assert.are.equal("conflict_existing", candidates[1].status)
+    assert.are.equal("conflict_existing", candidates[2].status)
+    assert.are.equal("conflict_existing", candidates[3].status)
+  end)
+
   it("filters applicable candidates from selected entries", function()
-    local candidates = {
+    local candidates = with_replacement_context({
       {
         id = 1,
         namespace = "common",
@@ -108,7 +152,7 @@ describe("extract review state", function()
         selected = false,
         status = "ready",
       },
-    }
+    })
 
     local applicable, skipped = extract_review._test.applicable_candidates(candidates, {
       ["common:exists"] = true,

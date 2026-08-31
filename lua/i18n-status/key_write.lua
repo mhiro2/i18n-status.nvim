@@ -13,7 +13,12 @@ local resources = require("i18n-status.resources")
 ---@field data table
 ---@field style table
 ---@field base_dir string
+---@field framework 'i18next'|'next_intl'|nil
+---@field full_key string
+---@field namespace string
 ---@field plan I18nStatusResourceWritePlan|nil
+---@field start_dir string
+---@field value string
 
 ---@class I18nStatusKeyWriteOpts
 ---@field create_only? boolean
@@ -103,7 +108,12 @@ local function prepare_entry(namespace, key_path, translations, start_dir, base_
     data = data,
     style = style,
     base_dir = base_dir,
+    framework = opts.framework,
+    full_key = namespace .. ":" .. key_path,
+    namespace = namespace,
     plan = nil,
+    start_dir = start_dir,
+    value = translations[lang] or "",
   },
     nil
 end
@@ -160,6 +170,46 @@ local function resource_participant(entries, label)
     return true, nil
   end
 
+  ---@param catalog I18nStatusFrameworkCatalog
+  ---@return boolean
+  ---@return string|nil
+  local function validate_effective_catalog(catalog)
+    for _, entry in ipairs(entries) do
+      local current_path =
+        resources.namespace_path(entry.start_dir, entry.lang, entry.namespace, entry.framework, catalog.roots)
+      local sanitized_path, sanitize_err = fs.sanitize_path(current_path, entry.base_dir)
+      if not sanitized_path then
+        return false,
+          string.format("%s (%s): %s", entry.lang, tostring(current_path), sanitize_err or "unsafe resource path")
+      end
+      if sanitized_path ~= entry.path then
+        return false, string.format("%s: effective resource path changed to %s", entry.lang, sanitized_path)
+      end
+
+      local effective = catalog.index[entry.lang] and catalog.index[entry.lang][entry.full_key]
+      if not effective then
+        return false, string.format("%s: committed key is not effective", entry.lang)
+      end
+      local effective_path, effective_path_err = fs.sanitize_path(effective.file, entry.base_dir)
+      if not effective_path then
+        return false,
+          string.format(
+            "%s (%s): %s",
+            entry.lang,
+            tostring(effective.file),
+            effective_path_err or "unsafe effective resource path"
+          )
+      end
+      if effective_path ~= entry.path then
+        return false, string.format("%s: committed key is shadowed by %s", entry.lang, effective_path)
+      end
+      if effective.value ~= entry.value then
+        return false, string.format("%s: committed translation value changed", entry.lang)
+      end
+    end
+    return true, nil
+  end
+
   return {
     label = label,
     validate = validate_entries,
@@ -171,6 +221,7 @@ local function resource_participant(entries, label)
       end
       return validate_entries()
     end,
+    validate_effective_catalog = validate_effective_catalog,
     commit = function()
       for _, entry in ipairs(entries) do
         local called, committed_ok, commit_err = pcall(resources.commit_json_write, entry.plan)

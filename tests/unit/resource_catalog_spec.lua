@@ -130,4 +130,18 @@ describe("resource catalog", function()
     assert.is_false(resource_catalog.same_languages({ "en", "ja" }, { "en" }))
     assert.is_false(resource_catalog.same_languages({ "en", "en" }, { "en" }))
   end)
+
+  it("compares resource root identities independent of order", function()
+    local roots = {
+      { kind = "i18next", path = "/project/locales" },
+      { kind = "next-intl", path = "/project/messages" },
+    }
+
+    assert.is_true(resource_catalog.same_roots(roots, { roots[2], roots[1] }))
+    assert.is_false(resource_catalog.same_roots(roots, {
+      roots[1],
+      { kind = "next-intl", path = "/project/public/messages" },
+    }))
+    assert.is_false(resource_catalog.same_roots(roots, { roots[1] }))
+  end)
 end)

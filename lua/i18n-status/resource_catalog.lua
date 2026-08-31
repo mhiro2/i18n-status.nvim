@@ -155,4 +155,22 @@ function M.same_languages(actual, expected)
   return vim.deep_equal(left, right)
 end
 
+---@param actual I18nStatusRootInfo[]
+---@param expected I18nStatusRootInfo[]
+---@return boolean
+function M.same_roots(actual, expected)
+  local function sorted(roots)
+    local values = vim.deepcopy(roots or {})
+    table.sort(values, function(left, right)
+      if left.kind == right.kind then
+        return left.path < right.path
+      end
+      return left.kind < right.kind
+    end)
+    return values
+  end
+
+  return vim.deep_equal(sorted(actual), sorted(expected))
+end
+
 return M

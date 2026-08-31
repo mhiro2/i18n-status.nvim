@@ -19,7 +19,7 @@ describe("hardcoded", function()
     for _, item in ipairs(items) do
       found[item.text] = true
     end
-    assert.is_true(found["Hello"])
+    assert.is_true(found["Hello "])
     assert.is_true(found["World"])
   end)
 

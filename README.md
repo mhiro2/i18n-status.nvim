@@ -311,6 +311,12 @@ Candidates are unselected by default. Select targets with `<Space>`, then use `<
 The list pane keeps shortcut hints minimal (`?:help`, `q:quit`). Use `?` to view the full keymap.
 The diff preview shows both the source replacement and the resource file changes that will be written. When a key conflicts with an existing one, `u` lets you reuse it (source replacement only, no resource write).
 
+Extraction is offered only when an unambiguous translation function obtained from `useTranslation`, `useTranslations`, or an awaited `getTranslations` is available in the candidate's lexical scope; the command does not invent a global `t` or insert imports/hooks. Dynamic namespace expressions and `useTranslation` options that can change key semantics, including `keyPrefix`, are refused.
+
+Each framework uses only its own resource root and locale set, so i18next and next-intl candidates remain isolated in mixed projects. Multiple roots for the same framework are ambiguous and cause that framework's candidates to be refused. Scoped next-intl translators require a statically resolved namespace, keep canonical `namespace:key` identities in resources, and generate namespace-relative calls such as `t("key")` in source. If `primary_lang` is not among that framework's detected locales, Extract warns and uses the first detected locale so the source text is never discarded.
+
+JSX text and string/template literal expressions are replaced according to their syntax context. Resource files receive cooked semantic text: JSX indentation is cleaned while meaningful spaces next to element boundaries are preserved. Apply revalidates the buffer name, filetype, canonical project, tracked source range, syntax, and translator binding after the Review opens. New keys are create-only and are rejected if an exact key or any scalar/branch shape conflict appeared concurrently. Resource files are committed first and revalidated immediately before the source edit; a resource failure leaves the source untouched, while a later source conflict rolls the resource changes back without overwriting concurrent edits.
+
 ## ⚡ Completion (blink.cmp)
 
 Manual setup (recommended):
@@ -377,7 +383,7 @@ require("i18n-status").setup({
 >   2. `next-intl` root file (`messages/{lang}.json`, priority 40)
 >   3. `next-intl` namespace file (`messages/{lang}/{namespace}.json`, priority 50)
 > - Resource indexing and cross-file resolve target strict `*.json` files. `jsonc` is supported as an editor filetype UX improvement, but JSONC comments/trailing commas are not indexed.
-> - Nested keys are always split on `.` (i18next's default nested layout). `keySeparator: false` or custom separators are not supported for resolution or writing. A write is refused if it would replace an existing scalar or branch. Add missing and `:I18nAddKey` are create-only and also refuse an exact key that appeared after their initial check.
+> - Nested keys are always split on `.` (i18next's default nested layout). `keySeparator: false` or custom separators are not supported for resolution or writing. A write is refused if it would replace an existing scalar or branch. New-key actions such as Add missing, `:I18nAddKey`, and Extract are create-only and also refuse an exact key that appeared after their initial check.
 > - Resource mutations require a readable, valid JSON object at the file root. They are refused for arrays, scalar roots, modified resource buffers, files changed on disk after reading, and symlink-resolved targets outside the project root.
 > - Atomic resource mutations require LuaJIT plus `openat`/`mkdirat`/`unlinkat` and `renameat2` on Linux or `renameatx_np` on macOS. Other runtimes keep read-only features, but Add, Extract, and resource edits fail closed; `:checkhealth i18n-status` reports symbol availability. A filesystem that does not implement atomic exchange is rejected when the write is attempted.
 > - Resource parent directories must already exist. The plugin does not create nested locale directories during a mutation because doing so cannot be secured against path replacement with the supported filesystem APIs.

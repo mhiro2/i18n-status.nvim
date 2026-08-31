@@ -32,7 +32,7 @@ local review_ui = require("i18n-status.review_ui")
 
 ---@class I18nStatusExtractPreviewDeps
 ---@field current_candidate fun(ctx: I18nStatusExtractReviewCtx): I18nStatusExtractCandidate|nil
----@field candidate_text fun(ctx: I18nStatusExtractReviewCtx, candidate: I18nStatusExtractCandidate): string
+---@field candidate_range? fun(ctx: I18nStatusExtractReviewCtx, candidate: I18nStatusExtractCandidate): integer|nil, integer|nil, integer|nil, integer|nil
 
 local LIST_WINHIGHLIGHT = table.concat({
   "Normal:I18nStatusReviewListNormal",
@@ -702,7 +702,6 @@ function M.render_extract_resource_preview(ctx, namespace, deps)
     return
   end
 
-  candidate.text = deps.candidate_text(ctx, candidate)
   local lines = {}
   local decorations = {}
 
@@ -739,7 +738,17 @@ function M.render_extract_resource_preview(ctx, namespace, deps)
   end
   lines[#lines + 1] = ""
 
-  for _, line in ipairs(extract_diff.resource_diff_lines(candidate, ctx.languages, ctx.primary_lang, ctx.start_dir)) do
+  for _, line in
+    ipairs(
+      extract_diff.resource_diff_lines(
+        candidate,
+        candidate.languages or ctx.languages,
+        candidate.primary_lang or ctx.primary_lang,
+        ctx.start_dir,
+        ctx.framework_catalogs[candidate.framework].roots
+      )
+    )
+  do
     lines[#lines + 1] = line
     local line_nr = #lines - 1
     if line == "Resource diff:" then
@@ -833,16 +842,21 @@ function M.render_extract_source_preview(ctx, namespace, deps)
   end
 
   local context_lines = 5
+  local candidate_line = candidate.lnum
+  if deps.candidate_range then
+    local tracked_line = deps.candidate_range(ctx, candidate)
+    candidate_line = tracked_line or candidate_line
+  end
   local total = vim.api.nvim_buf_line_count(ctx.source_buf)
-  local start_line = math.max(0, candidate.lnum - context_lines)
-  local end_line = math.min(total, candidate.lnum + context_lines + 1)
+  local start_line = math.max(0, candidate_line - context_lines)
+  local end_line = math.min(total, candidate_line + context_lines + 1)
   local source_lines = vim.api.nvim_buf_get_lines(ctx.source_buf, start_line, end_line, false)
 
   M.set_lines(buf, source_lines)
   ensure_source_preview_treesitter(ctx)
 
   vim.api.nvim_buf_clear_namespace(buf, namespace, 0, -1)
-  local focus_buf_line = candidate.lnum - start_line
+  local focus_buf_line = candidate_line - start_line
   for i = 0, #source_lines - 1 do
     local real_nr = start_line + i + 1
     local is_focus = i == focus_buf_line

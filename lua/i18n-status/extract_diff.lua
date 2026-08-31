@@ -2,6 +2,7 @@
 local M = {}
 
 local fs = require("i18n-status.fs")
+local extract_candidate = require("i18n-status.extract_candidate")
 local resources = require("i18n-status.resources")
 local text_utils = require("i18n-status.text")
 
@@ -10,25 +11,27 @@ local split_key = text_utils.split_i18n_key
 ---@param candidate I18nStatusExtractCandidate
 ---@return string[]
 function M.source_diff_lines(candidate)
-  local source_text = candidate.text or ""
-  local replacement = string.format('{%s("%s")}', candidate.t_func or "t", candidate.proposed_key or "")
+  local source_text = candidate.source_text or ""
+  local replacement, replacement_err = extract_candidate.replacement(candidate)
   return {
     "Source diff:",
     "- " .. source_text,
-    "+ " .. replacement,
+    "+ " .. (replacement or "(" .. (replacement_err or "invalid replacement") .. ")"),
   }
 end
 
 ---@param start_dir string|nil
 ---@param lang string
 ---@param namespace string
+---@param framework string|nil
+---@param root_list I18nStatusRootInfo[]|nil
 ---@return string
-local function display_resource_path(start_dir, lang, namespace)
+local function display_resource_path(start_dir, lang, namespace, framework, root_list)
   if type(start_dir) ~= "string" or start_dir == "" then
     return string.format("%s/%s.json", lang, namespace)
   end
 
-  local path = resources.namespace_path(start_dir, lang, namespace)
+  local path = resources.namespace_path(start_dir, lang, namespace, framework, root_list)
   if not path then
     return string.format("%s/%s.json", lang, namespace)
   end
@@ -40,8 +43,9 @@ end
 ---@param languages string[]
 ---@param primary_lang string
 ---@param start_dir string|nil
+---@param root_list I18nStatusRootInfo[]|nil
 ---@return string[]
-function M.resource_diff_lines(candidate, languages, primary_lang, start_dir)
+function M.resource_diff_lines(candidate, languages, primary_lang, start_dir, root_list)
   if candidate.mode == "reuse" then
     return {
       "Resource diff:",
@@ -61,18 +65,18 @@ function M.resource_diff_lines(candidate, languages, primary_lang, start_dir)
   for _, lang in ipairs(languages or {}) do
     local path = nil
     if type(start_dir) == "string" and start_dir ~= "" then
-      path = resources.namespace_path(start_dir, lang, namespace)
+      path = resources.namespace_path(start_dir, lang, namespace, candidate.framework, root_list)
     end
 
     local key_in_file = key_path
     if path and type(start_dir) == "string" and start_dir ~= "" then
-      key_in_file = resources.key_path_for_file(namespace, key_path, start_dir, lang, path)
+      key_in_file = resources.key_path_for_file(namespace, key_path, start_dir, lang, path, root_list)
     end
 
     local value = lang == primary_lang and (candidate.text or "") or ""
     lines[#lines + 1] = string.format(
       '%s: + "%s": %s',
-      display_resource_path(start_dir, lang, namespace),
+      display_resource_path(start_dir, lang, namespace, candidate.framework, root_list),
       key_in_file,
       vim.json.encode(value)
     )

@@ -366,8 +366,35 @@ When a key conflicts with an existing one, pressing `u` lets you reuse
 the existing key: source text is replaced but no resource file is written.
 Press `U` to switch back to creating a new key.
 
-If resource file writes fail during apply, the source buffer replacement
-is rolled back automatically.
+Extract only offers candidates that have an unambiguous translation function
+obtained from useTranslation(), useTranslations(), or an awaited
+getTranslations() in their lexical scope. It does not invent a global t() or
+insert imports/hooks. It refuses dynamic namespace expressions and
+useTranslation() options that can change key semantics, including keyPrefix.
+
+Each framework uses only its own resource root and locale set. i18next and
+next-intl candidates therefore remain isolated in mixed projects. Multiple
+roots for one framework are ambiguous, so Extract refuses that framework's
+candidates.
+
+JSX text and literal expressions use context-aware replacements. Resource
+values use cooked semantic text: indentation is cleaned while meaningful
+spaces next to element boundaries are preserved.
+
+Scoped next-intl translators require a statically resolved namespace. They
+keep canonical namespace:key identities in resources and generate
+namespace-relative calls such as t("key") in source.
+
+If primary_lang is not one of the detected locales, Extract warns and uses
+the first detected locale so the original text is preserved.
+
+Apply revalidates the buffer name, filetype, canonical project, tracked source
+range, syntax, and translator binding after Review opens. New keys use
+create-only writes and are rejected if an exact key or scalar/branch shape
+conflict appeared concurrently. Resource files are committed first and
+revalidated immediately before the source edit. A resource failure leaves the
+source untouched. A later source conflict rolls the resource changes back
+without overwriting concurrent edits.
 
 ==============================================================================
 6. Completion (blink.cmp)                                   *i18n-status-completion*
@@ -460,9 +487,9 @@ Key path separator (always ".").
   Nested keys are always split on ".", matching i18next's default nested
   JSON layout. i18next setups that disable nesting (keySeparator: false) or
   use a custom separator are not supported for resolution or writing. A write
-  is refused if it would replace an existing scalar or branch. Add missing and
-  :I18nAddKey use create-only writes and also refuse an exact key that appeared
-  after their initial check.
+  is refused if it would replace an existing scalar or branch. Add missing,
+  :I18nAddKey, and Extract use create-only writes and also refuse an exact key
+  that appeared after their initial check.
 
 Resource mutation safety:
   Locale files must be readable, valid JSON objects at the root. Mutations are
