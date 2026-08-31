@@ -9,6 +9,15 @@ local function make_buf(lines, ft)
   return buf
 end
 
+local function make_named_buf(lines, ft)
+  local buf = vim.api.nvim_create_buf(false, false)
+  vim.bo[buf].swapfile = false
+  vim.api.nvim_buf_set_name(buf, vim.fn.tempname() .. ".ts")
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].filetype = ft
+  return buf
+end
+
 ---@param bufnr integer
 ---@param opts? { fallback_namespace?: string, range?: { start_line: integer, end_line: integer } }
 ---@return table[]
@@ -296,6 +305,115 @@ describe("scan", function()
     assert.are.equal(1, #second)
     assert.are.equal(1, #third)
     assert.are.equal(2, get_lines_calls)
+  end)
+
+  it("returns a stable source snapshot for refactoring", function()
+    local lines = {
+      'const { t } = useTranslation("common")',
+      't("title")',
+    }
+    local buf = make_named_buf(lines, "typescript")
+
+    local items, snapshot = scan.extract_for_refactor(buf, { fallback_namespace = "common" })
+
+    assert.are.equal(1, #items)
+    assert.are.equal("common:title", items[1].key)
+    assert.are.equal(vim.api.nvim_buf_get_changedtick(buf), snapshot.tick)
+    assert.are.equal(table.concat(lines, "\n"), snapshot.source)
+    assert.are.same(lines, snapshot.lines)
+  end)
+
+  it("preserves RPC errors during refactor scans", function()
+    local buf = make_named_buf({ 't("title")' }, "typescript")
+    add_stub(rpc, "request_sync", function()
+      return nil, "core unavailable"
+    end)
+
+    local items, err = scan.extract_for_refactor(buf, { fallback_namespace = "common" })
+
+    assert.is_nil(items)
+    assert.are.equal("source scan failed: core unavailable", err)
+  end)
+
+  it("rejects a malformed refactor item list", function()
+    local buf = make_named_buf({ 't("title")' }, "typescript")
+    add_stub(rpc, "request_sync", function()
+      return { items = "not a list" }, nil
+    end)
+
+    local items, err = scan.extract_for_refactor(buf, { fallback_namespace = "common" })
+
+    assert.is_nil(items)
+    assert.are.equal("source scan returned an invalid item list", err)
+  end)
+
+  it("rejects malformed refactor item fields", function()
+    local buf = make_named_buf({ 't("title")' }, "typescript")
+    add_stub(rpc, "request_sync", function()
+      return {
+        items = {
+          {
+            key = "common:title",
+            raw = "title",
+            namespace = "common",
+            lnum = 0,
+            col = 2,
+            end_lnum = 0,
+            end_col = -1,
+            fallback = true,
+            refactorable = true,
+          },
+        },
+      },
+        nil
+    end)
+
+    local items, err = scan.extract_for_refactor(buf, { fallback_namespace = "common" })
+
+    assert.is_nil(items)
+    assert.are.equal("source scan returned an invalid item at index 1", err)
+  end)
+
+  it("rejects non-table refactor items", function()
+    local buf = make_named_buf({ 't("title")' }, "typescript")
+    add_stub(rpc, "request_sync", function()
+      return { items = { "invalid" } }, nil
+    end)
+
+    local items, err = scan.extract_for_refactor(buf, { fallback_namespace = "common" })
+
+    assert.is_nil(items)
+    assert.are.equal("source scan returned an invalid item at index 1", err)
+  end)
+
+  it("rejects a buffer changed during a refactor scan", function()
+    local buf = make_named_buf({ 't("title")' }, "typescript")
+    add_stub(rpc, "request_sync", function()
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("changed")' })
+      return { items = {} }, nil
+    end)
+
+    local items, err = scan.extract_for_refactor(buf, { fallback_namespace = "common" })
+
+    assert.is_nil(items)
+    assert.are.equal("source buffer changed while scanning", err)
+  end)
+
+  it("rejects unnamed and non-source buffers for refactoring", function()
+    local unnamed = vim.api.nvim_create_buf(false, false)
+    vim.bo[unnamed].swapfile = false
+    vim.api.nvim_buf_set_lines(unnamed, 0, -1, false, { 't("title")' })
+    vim.bo[unnamed].filetype = "typescript"
+    local terminal = make_named_buf({ 't("title")' }, "typescript")
+    vim.bo[terminal].buftype = "nofile"
+
+    local unnamed_items, unnamed_err = scan.extract_for_refactor(unnamed, { fallback_namespace = "common" })
+    local terminal_items, terminal_err = scan.extract_for_refactor(terminal, { fallback_namespace = "common" })
+
+    assert.is_nil(unnamed_items)
+    assert.are.equal("source buffer must have a file name", unnamed_err)
+    assert.is_nil(terminal_items)
+    assert.are.equal("source buffer must be a normal buffer", terminal_err)
   end)
 
   it("avoids expensive retries for non-react buffers", function()

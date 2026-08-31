@@ -173,7 +173,7 @@ describe("failure scenarios", function()
     end)
   end)
 
-  it("ops.rename returns false when write_json_table fails", function()
+  it("ops.rename rolls source changes back when a resource commit fails", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
     helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
@@ -181,7 +181,8 @@ describe("failure scenarios", function()
 
     helpers.with_cwd(root, function()
       state.init("ja", { "ja", "en" })
-      local buf = vim.api.nvim_create_buf(false, true)
+      local buf = vim.api.nvim_create_buf(false, false)
+      vim.bo[buf].swapfile = false
       vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("rename.title")' })
       vim.bo[buf].filetype = "typescript"
       vim.api.nvim_buf_set_name(buf, root .. "/src/app.ts")
@@ -190,11 +191,15 @@ describe("failure scenarios", function()
       local config = config_mod.setup({ primary_lang = "ja", inline = { visible_only = false } })
       resources.ensure_index(root)
 
-      local original_extract = scan.extract
-      scan.extract = function(bufnr)
+      local original_extract_for_refactor = scan.extract_for_refactor
+      scan.extract_for_refactor = function(bufnr)
         if bufnr ~= buf then
-          return {}
+          return {}, {
+            tick = vim.api.nvim_buf_get_changedtick(bufnr),
+            lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false),
+          }
         end
+        local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
         return {
           {
             key = "common:rename.title",
@@ -206,12 +211,14 @@ describe("failure scenarios", function()
             end_col = 16,
             refactorable = true,
           },
+        }, {
+          tick = vim.api.nvim_buf_get_changedtick(bufnr),
+          lines = lines,
         }
       end
 
-      -- Stub write_json_table to simulate failure
-      local original_write = resources.write_json_table
-      resources.write_json_table = function()
+      local original_commit = resources.commit_json_write
+      resources.commit_json_write = function()
         return false, "disk full"
       end
 
@@ -233,11 +240,17 @@ describe("failure scenarios", function()
         config = config,
       })
 
-      resources.write_json_table = original_write
-      scan.extract = original_extract
+      resources.commit_json_write = original_commit
+      scan.extract_for_refactor = original_extract_for_refactor
 
       assert.is_false(ok)
       assert.is_truthy(err and err:find("disk full", 1, true))
+      assert.are.equal('t("rename.title")', vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1])
+      assert.are.equal(
+        "ログイン",
+        vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json")).rename.title
+      )
+      assert.are.equal("Login", vim.json.decode(helpers.read_file(root .. "/locales/en/common.json")).rename.title)
     end)
   end)
 

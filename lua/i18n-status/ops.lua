@@ -1,36 +1,83 @@
 ---@class I18nStatusOps
 local M = {}
 
-local filetypes = require("i18n-status.filetypes")
 local fs = require("i18n-status.fs")
 local json = require("i18n-status.json")
+local mutation_transaction = require("i18n-status.mutation_transaction")
+local project_identity = require("i18n-status.project_identity")
+local resource_roots = require("i18n-status.resource_roots")
 local resources = require("i18n-status.resources")
 local state = require("i18n-status.state")
 local core = require("i18n-status.core")
 local scan = require("i18n-status.scan")
 
----@param bufnr integer
----@return string[]
-local function rpc_scan_extract(bufnr, fallback_ns)
-  return scan.extract(bufnr, {
-    fallback_namespace = fallback_ns,
-  })
+---@param kind string|nil
+---@return string|nil
+local function normalized_root_kind(kind)
+  if resource_roots.is_next_intl_kind(kind) then
+    return "next-intl"
+  end
+  return kind
 end
 
----@param bufnr integer
----@return boolean
-local function is_target_rename_buf(bufnr)
-  if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_buf_is_loaded(bufnr) then
-    return false
+---@param identity I18nStatusProjectIdentity
+---@param path string
+---@param lang string
+---@param namespace string
+---@param owner { kind: string, root: string, lang?: string, namespace?: string, is_root?: boolean }
+---@return I18nStatusResourceInfo|nil
+local function owned_resource_info(identity, path, lang, namespace, owner)
+  local owner_kind = normalized_root_kind(owner.kind)
+  local owner_root = fs.canonical_path(owner.root, nil)
+  if not owner_kind or not owner_root then
+    return nil
   end
-  local buftype = vim.bo[bufnr].buftype
-  if buftype ~= "" and buftype ~= "nofile" then
-    return false
+
+  local root_matches = false
+  for _, root in ipairs(identity.cache.roots or {}) do
+    local canonical_root = fs.canonical_path(root.path, nil)
+    if canonical_root == owner_root and normalized_root_kind(root.kind) == owner_kind then
+      root_matches = true
+      break
+    end
   end
-  if not vim.bo[bufnr].modifiable then
-    return false
+  if not root_matches or not fs.path_under(path, owner_root) then
+    return nil
   end
-  return filetypes.is_source_filetype(vim.bo[bufnr].filetype)
+
+  local info = resource_roots.resource_info_from_roots({
+    { kind = owner_kind, path = owner_root },
+  }, path)
+  if not info or info.lang ~= lang or (not info.is_root and info.namespace ~= namespace) then
+    return nil
+  end
+  if owner.lang and owner.lang ~= info.lang then
+    return nil
+  end
+  if type(owner.is_root) == "boolean" and owner.is_root ~= info.is_root then
+    return nil
+  end
+  if owner.is_root == false and owner.namespace ~= info.namespace then
+    return nil
+  end
+  if owner.is_root == true and owner.namespace ~= nil then
+    return nil
+  end
+  return info
+end
+
+---@param info I18nStatusResourceInfo
+---@param namespace string
+---@param key_path string
+---@return string
+local function resource_key_path(info, namespace, key_path)
+  if not info.is_root then
+    return key_path
+  end
+  if key_path == "" then
+    return namespace
+  end
+  return namespace .. "." .. key_path
 end
 
 ---@param tbl table
@@ -107,10 +154,17 @@ end
 ---@param new_ns string
 ---@param explicit_ns boolean
 ---@param fallback_ns string
----@return table[]|nil edits
+---@param identity I18nStatusProjectIdentity
+---@return table|nil plan
 ---@return string|nil error
-local function plan_buffer_rename(bufnr, old_key, new_key, new_ns, explicit_ns, fallback_ns)
-  local items = rpc_scan_extract(bufnr, fallback_ns)
+local function plan_buffer_rename(bufnr, old_key, new_key, new_ns, explicit_ns, fallback_ns, identity)
+  local items, snapshot = scan.extract_for_refactor(bufnr, {
+    fallback_namespace = fallback_ns,
+  })
+  if not items then
+    return nil, tostring(snapshot or "source scan failed")
+  end
+
   local edits = {}
   for _, item in ipairs(items) do
     if item.key == old_key then
@@ -149,6 +203,9 @@ local function plan_buffer_rename(bufnr, old_key, new_key, new_ns, explicit_ns, 
       if #old_text < 2 or (quote ~= '"' and quote ~= "'" and quote ~= "`") or old_text:sub(-1) ~= quote then
         return nil, string.format("translation reference is not a direct literal in buffer %d", bufnr)
       end
+      if old_text:sub(2, -2) ~= item.raw then
+        return nil, string.format("translation reference does not match scanner value in buffer %d", bufnr)
+      end
       table.insert(edits, {
         lnum = item.lnum,
         col = item.col,
@@ -159,6 +216,7 @@ local function plan_buffer_rename(bufnr, old_key, new_key, new_ns, explicit_ns, 
       })
     end
   end
+
   table.sort(edits, function(a, b)
     if a.lnum == b.lnum then
       return a.col > b.col
@@ -166,68 +224,211 @@ local function plan_buffer_rename(bufnr, old_key, new_key, new_ns, explicit_ns, 
     return a.lnum > b.lnum
   end)
 
-  return edits, nil
+  for index = 2, #edits do
+    local later = edits[index - 1]
+    local earlier = edits[index]
+    local overlaps = earlier.end_lnum > later.lnum or (earlier.end_lnum == later.lnum and earlier.end_col > later.col)
+    if overlaps then
+      return nil, string.format("overlapping translation reference ranges in buffer %d", bufnr)
+    end
+  end
+
+  return {
+    applied = {},
+    bufnr = bufnr,
+    edits = edits,
+    expected_tick = snapshot.tick,
+    identity = identity,
+    initial_lines = snapshot.lines or vim.api.nvim_buf_get_lines(bufnr, 0, -1, false),
+    initial_modified = vim.bo[bufnr].modified,
+    rollback_blocked = false,
+  },
+    nil
 end
 
 ---@param bufnr integer
----@param edits table[]
----@return string[] edit_errors
-local function apply_buffer_rename(bufnr, edits)
-  local edit_errors = {}
-  for _, edit in ipairs(edits) do
-    if vim.api.nvim_buf_is_valid(bufnr) then
-      local ok_old, old_chunks =
-        pcall(vim.api.nvim_buf_get_text, bufnr, edit.lnum, edit.col, edit.end_lnum, edit.end_col, {})
-      local current_text = ok_old and type(old_chunks) == "table" and table.concat(old_chunks, "\n") or nil
-      if current_text ~= edit.old_text then
-        table.insert(
-          edit_errors,
-          string.format("buf=%d line=%d error=translation reference changed before apply", bufnr, edit.lnum + 1)
-        )
-      else
-        local ok_set, set_err =
-          pcall(vim.api.nvim_buf_set_text, bufnr, edit.lnum, edit.col, edit.end_lnum, edit.end_col, { edit.new_text })
-        if not ok_set then
-          table.insert(
-            edit_errors,
-            string.format("buf=%d line=%d col=%d error=%s", bufnr, edit.lnum + 1, edit.col + 1, tostring(set_err))
-          )
-        end
-      end
+---@param start_row integer
+---@param start_col integer
+---@param end_row integer
+---@param end_col integer
+---@return string|nil
+local function buffer_text(bufnr, start_row, start_col, end_row, end_col)
+  local ok, chunks = pcall(vim.api.nvim_buf_get_text, bufnr, start_row, start_col, end_row, end_col, {})
+  if not ok or type(chunks) ~= "table" then
+    return nil
+  end
+  return table.concat(chunks, "\n")
+end
+
+---@param plan table
+---@return boolean
+---@return string|nil
+local function validate_source_plan(plan)
+  local _, identity_err = project_identity.validate(plan.bufnr, plan.identity, "rename")
+  if identity_err then
+    return false, identity_err
+  end
+  if not vim.bo[plan.bufnr].modifiable then
+    return false, "source buffer is not modifiable"
+  end
+  if vim.api.nvim_buf_get_changedtick(plan.bufnr) ~= plan.expected_tick then
+    return false, "source buffer changed before rename"
+  end
+  for _, edit in ipairs(plan.edits) do
+    local current = buffer_text(plan.bufnr, edit.lnum, edit.col, edit.end_lnum, edit.end_col)
+    if current ~= edit.old_text then
+      return false, string.format("translation reference changed before rename at line %d", edit.lnum + 1)
     end
   end
-  return edit_errors
+  return true, nil
+end
+
+---@param plan table
+---@return boolean
+---@return string|nil
+---@return boolean
+local function commit_source_plan(plan)
+  local valid, validation_err = validate_source_plan(plan)
+  if not valid then
+    return false, validation_err, false
+  end
+
+  for _, edit in ipairs(plan.edits) do
+    local before_tick = vim.api.nvim_buf_get_changedtick(plan.bufnr)
+    if before_tick ~= plan.expected_tick then
+      return false, "source buffer changed while applying rename", #plan.applied > 0
+    end
+    local old_text = buffer_text(plan.bufnr, edit.lnum, edit.col, edit.end_lnum, edit.end_col)
+    if old_text ~= edit.old_text then
+      return false,
+        string.format("translation reference changed while applying rename at line %d", edit.lnum + 1),
+        #plan.applied > 0
+    end
+    local ok, set_err =
+      pcall(vim.api.nvim_buf_set_text, plan.bufnr, edit.lnum, edit.col, edit.end_lnum, edit.end_col, { edit.new_text })
+    local replacement_end_col = edit.col + #edit.new_text
+    local current = buffer_text(plan.bufnr, edit.lnum, edit.col, edit.lnum, replacement_end_col)
+    local changed = vim.api.nvim_buf_get_changedtick(plan.bufnr) ~= before_tick
+    if current == edit.new_text and changed then
+      plan.applied[#plan.applied + 1] = {
+        edit = edit,
+        end_lnum = edit.lnum,
+        end_col = replacement_end_col,
+      }
+      plan.expected_tick = vim.api.nvim_buf_get_changedtick(plan.bufnr)
+    elseif changed then
+      plan.rollback_blocked = true
+      plan.expected_tick = vim.api.nvim_buf_get_changedtick(plan.bufnr)
+    end
+    if not ok or current ~= edit.new_text then
+      return false,
+        string.format(
+          "failed to update source buffer %d at line %d: %s",
+          plan.bufnr,
+          edit.lnum + 1,
+          tostring(set_err or "replacement mismatch")
+        ),
+        #plan.applied > 0 or changed
+    end
+  end
+  return true, nil, #plan.applied > 0
+end
+
+---@param plan table
+---@return boolean
+---@return string|nil
+local function rollback_source_plan(plan)
+  local stable, stability_err = project_identity.validate_buffer(plan.bufnr, plan.identity, "rename rollback")
+  if not stable then
+    return false, stability_err
+  end
+  if vim.api.nvim_buf_get_changedtick(plan.bufnr) ~= plan.expected_tick then
+    return false, "source buffer changed after rename; preserving concurrent edits"
+  end
+  if plan.rollback_blocked then
+    return false, "source mutation did not match the planned replacement; preserving concurrent edits"
+  end
+
+  for index = #plan.applied, 1, -1 do
+    if vim.api.nvim_buf_get_changedtick(plan.bufnr) ~= plan.expected_tick then
+      return false, "source buffer changed during rollback; preserving concurrent edits"
+    end
+    local applied = plan.applied[index]
+    local edit = applied.edit
+    local current = buffer_text(plan.bufnr, edit.lnum, edit.col, applied.end_lnum, applied.end_col)
+    if current ~= edit.new_text then
+      return false, "source replacement changed after rename; preserving concurrent edits"
+    end
+    local ok, restore_err = pcall(
+      vim.api.nvim_buf_set_text,
+      plan.bufnr,
+      edit.lnum,
+      edit.col,
+      applied.end_lnum,
+      applied.end_col,
+      vim.split(edit.old_text, "\n", { plain = true })
+    )
+    if not ok then
+      return false, "failed to restore source buffer: " .. tostring(restore_err)
+    end
+    plan.expected_tick = vim.api.nvim_buf_get_changedtick(plan.bufnr)
+  end
+
+  local current_lines = vim.api.nvim_buf_get_lines(plan.bufnr, 0, -1, false)
+  if not plan.initial_modified and vim.deep_equal(current_lines, plan.initial_lines) then
+    vim.bo[plan.bufnr].modified = false
+  end
+  return true, nil
+end
+
+---@param plan table
+---@return I18nStatusMutationParticipant
+local function source_participant(plan)
+  return {
+    label = "source " .. plan.identity.name,
+    validate = function()
+      return validate_source_plan(plan)
+    end,
+    commit = function()
+      return commit_source_plan(plan)
+    end,
+    rollback = function()
+      return rollback_source_plan(plan)
+    end,
+  }
 end
 
 ---@param cache table|nil
----@param project I18nStatusProjectState|nil
 ---@return string[]
-local function active_languages(cache, project)
+local function active_languages(cache)
   local langs = {}
   if cache and cache.languages then
     for _, lang in ipairs(cache.languages) do
       table.insert(langs, lang)
     end
   end
-  if #langs == 0 and project and project.primary_lang then
-    table.insert(langs, project.primary_lang)
-  end
   return langs
 end
 
----@param errors string[]
----@return string
-local function summarize_edit_errors(errors)
-  local max_count = 3
-  local count = math.min(#errors, max_count)
-  local summary = {}
-  for i = 1, count do
-    summary[#summary + 1] = errors[i]
+---@param entries table<string, I18nStatusResourceItem>|nil
+---@param old_key string
+---@param new_key string
+---@return boolean
+local function target_key_conflicts(entries, old_key, new_key)
+  local descendant_prefix = new_key .. "."
+  for key, _ in pairs(entries or {}) do
+    if
+      key ~= old_key
+      and (
+        key == new_key
+        or key:sub(1, #descendant_prefix) == descendant_prefix
+        or new_key:sub(1, #key + 1) == key .. "."
+      )
+    then
+      return true
+    end
   end
-  if #errors > max_count then
-    summary[#summary + 1] = string.format("+%d more", #errors - max_count)
-  end
-  return table.concat(summary, "; ")
+  return false
 end
 
 ---@param opts { item: I18nStatusResolved, source_buf?: integer, new_key: string, config: I18nStatusConfig }
@@ -241,6 +442,10 @@ function M.rename(opts)
   local source_buf = opts.source_buf or vim.api.nvim_get_current_buf()
   if not vim.api.nvim_buf_is_valid(source_buf) then
     return false, "source buffer is invalid"
+  end
+  local target_identity, identity_err = project_identity.resolve(source_buf)
+  if not target_identity then
+    return false, identity_err or "failed to resolve source project"
   end
 
   -- Prevent renaming missing keys
@@ -265,32 +470,42 @@ function M.rename(opts)
 
   local old_ns = old_key:match("^(.-):") or fallback_ns
   local old_path = old_key:match("^[^:]+:(.+)$") or ""
-  local root = resources.start_dir(source_buf)
-  local cache = resources.ensure_index(root)
-  local base_dir = resources.project_root(root, cache.roots)
-  if not base_dir or base_dir == "" then
-    base_dir = root
-  end
-  local project = state.set_languages(cache.key, cache.languages)
-  state.set_buf_project(source_buf, cache.key)
-  local langs = active_languages(cache, project)
+  local cache = target_identity.cache
+  local base_dir = target_identity.root
+  local langs = active_languages(cache)
   if #langs == 0 then
     return false, "no languages detected"
   end
 
   local buffer_plans = {}
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    if is_target_rename_buf(buf) then
-      local fb = resources.fallback_namespace_for_buf(buf)
-      local edits, plan_err = plan_buffer_rename(buf, old_key, new_key, new_ns, explicit_ns, fb)
-      if not edits then
-        return false, plan_err or "failed to plan source rename"
-      end
-      if #edits > 0 then
-        table.insert(buffer_plans, { bufnr = buf, edits = edits })
+    if project_identity.is_source_buffer(buf) then
+      local candidate_name = fs.canonical_path(vim.api.nvim_buf_get_name(buf), nil)
+      if candidate_name and fs.path_under(candidate_name, target_identity.root) then
+        local candidate_identity, candidate_err = project_identity.resolve(buf)
+        if not candidate_identity then
+          return false,
+            string.format("failed to resolve project for source buffer %d: %s", buf, candidate_err or "unknown")
+        end
+        if project_identity.same_project(candidate_identity, target_identity) then
+          local fb = resources.fallback_namespace_for_buf(buf)
+          local plan, plan_err = plan_buffer_rename(buf, old_key, new_key, new_ns, explicit_ns, fb, candidate_identity)
+          if not plan then
+            return false, plan_err or "failed to plan source rename"
+          end
+          if #plan.edits > 0 then
+            table.insert(buffer_plans, plan)
+          end
+        end
       end
     end
   end
+  table.sort(buffer_plans, function(a, b)
+    if a.identity.name == b.identity.name then
+      return a.bufnr < b.bufnr
+    end
+    return a.identity.name < b.identity.name
+  end)
 
   local file_cache = {}
 
@@ -318,152 +533,262 @@ function M.rename(opts)
     return sanitized_path, nil
   end
 
+  local found_definition = false
   for _, lang in ipairs(langs) do
     local info = item.hover and item.hover.values and item.hover.values[lang]
-    local old_file_raw = (info and info.file) or resources.namespace_path(root, lang, old_ns)
-    if not old_file_raw then
-      return false,
-        string.format(
-          "Cannot find resource file for language '%s'. Expected file in namespace '%s'. "
-            .. "Please check your i18n configuration and ensure resource files exist.",
-          lang,
-          old_ns or "default"
-        )
+    local lang_index = cache.index and cache.index[lang]
+    if target_key_conflicts(lang_index, old_key, new_key) then
+      return false, "target key already exists (" .. lang .. ")"
     end
-    local old_file, old_file_err = sanitize_resource_path(old_file_raw, lang)
-    if not old_file then
-      return false, old_file_err
-    end
-    local old_is_root = resources.is_next_intl_root_file(root, lang, old_file)
-    local new_file_raw = old_is_root and old_file or resources.namespace_path(root, lang, new_ns)
-    if not new_file_raw then
-      return false,
-        string.format(
-          "Cannot find resource file for language '%s'. Expected file in namespace '%s'. "
-            .. "Please check your i18n configuration and ensure resource files exist.",
-          lang,
-          new_ns or "default"
-        )
-    end
-    local new_file, new_file_err = sanitize_resource_path(new_file_raw, lang)
-    if not new_file then
-      return false, new_file_err
-    end
-    local same_file = fs.normalize_path(old_file, root) == fs.normalize_path(new_file, root)
+    local indexed_entry = lang_index and lang_index[old_key]
+    local indexed_file = indexed_entry and indexed_entry.file
+    if not indexed_file then
+      if info and info.file then
+        local _, hover_file_err = sanitize_resource_path(info.file, lang)
+        if hover_file_err then
+          return false, hover_file_err
+        end
+        return false, string.format("resource location for language '%s' changed; refresh before renaming", lang)
+      end
+      if info and not info.missing then
+        return false, string.format("resource definition for language '%s' changed; refresh before renaming", lang)
+      end
+    else
+      local old_file, old_file_err = sanitize_resource_path(indexed_file, lang)
+      if not old_file then
+        return false, old_file_err
+      end
+      if not cache.files or cache.files[old_file] == nil then
+        return false, string.format("resource index for language '%s' changed; refresh before renaming", lang)
+      end
+      local owner = cache.file_meta and cache.file_meta[old_file]
+      if type(owner) ~= "table" then
+        return false, string.format("resource ownership for language '%s' is unavailable", lang)
+      end
+      local old_resource_info = owned_resource_info(target_identity, old_file, lang, old_ns, owner)
+      if not old_resource_info then
+        return false, string.format("resource path for language '%s' does not belong to the target project", lang)
+      end
 
-    local dir_ok, dir_err = fs.ensure_dir_within(fs.dirname(new_file), base_dir)
-    if not dir_ok then
-      return false,
-        string.format("failed to prepare resource directory for language '%s': %s", lang, dir_err or "unknown")
-    end
+      if info and info.file then
+        local hover_file, hover_file_err = sanitize_resource_path(info.file, lang)
+        if not hover_file then
+          return false, hover_file_err
+        end
+        if hover_file ~= old_file then
+          return false, string.format("resource location for language '%s' changed; refresh before renaming", lang)
+        end
+      elseif info and not info.missing then
+        return false, string.format("resource location for language '%s' changed; refresh before renaming", lang)
+      end
 
-    local old_state, old_err = file_state(old_file)
-    if not old_state then
-      return false,
-        string.format(
-          "Failed to parse JSON file '%s': %s. "
-            .. "The file may contain syntax errors. Please validate the JSON syntax.",
-          old_file,
-          old_err
-        )
-    end
-    local new_state = old_state
-    if not same_file then
-      local state_new, new_err = file_state(new_file)
-      if not state_new then
+      local new_file_raw = old_resource_info.is_root and old_file
+        or fs.path_join(old_resource_info.root, lang, new_ns .. ".json")
+      local new_file, new_file_err = sanitize_resource_path(new_file_raw, lang)
+      if not new_file then
+        return false, new_file_err
+      end
+      local new_resource_info = owned_resource_info(target_identity, new_file, lang, new_ns, {
+        kind = old_resource_info.kind,
+        root = old_resource_info.root,
+      })
+      if not new_resource_info then
+        return false,
+          string.format("target resource path for language '%s' does not belong to the target project", lang)
+      end
+      local same_file = old_file == new_file
+
+      local dir_ok, dir_err = fs.ensure_dir_within(fs.dirname(new_file), base_dir)
+      if not dir_ok then
+        return false,
+          string.format("failed to prepare resource directory for language '%s': %s", lang, dir_err or "unknown")
+      end
+
+      local old_state, old_err = file_state(old_file)
+      if not old_state then
         return false,
           string.format(
             "Failed to parse JSON file '%s': %s. "
               .. "The file may contain syntax errors. Please validate the JSON syntax.",
-            new_file,
-            new_err
+            old_file,
+            old_err
           )
       end
-      new_state = state_new
-    end
+      local new_state = old_state
+      if not same_file then
+        local state_new, new_err = file_state(new_file)
+        if not state_new then
+          return false,
+            string.format(
+              "Failed to parse JSON file '%s': %s. "
+                .. "The file may contain syntax errors. Please validate the JSON syntax.",
+              new_file,
+              new_err
+            )
+        end
+        new_state = state_new
+      end
 
-    local old_path_in_file = resources.key_path_for_file(old_ns, old_path, root, lang, old_file)
-    local new_path_in_file = resources.key_path_for_file(new_ns, new_path, root, lang, new_file)
+      local old_path_in_file = resource_key_path(old_resource_info, old_ns, old_path)
+      local new_path_in_file = resource_key_path(new_resource_info, new_ns, new_path)
+      if
+        same_file
+        and (
+          old_path_in_file:sub(1, #new_path_in_file + 1) == new_path_in_file .. "."
+          or new_path_in_file:sub(1, #old_path_in_file + 1) == old_path_in_file .. "."
+        )
+      then
+        return false, "cannot rename a translation key to or from its own descendant"
+      end
+      local old_value = get_nested(old_state.data, old_path_in_file)
+      if old_value == nil then
+        return false, string.format("resource definition for language '%s' changed; refresh before renaming", lang)
+      end
+      if json.is_object(old_value) then
+        return false, string.format("resource definition for language '%s' is no longer a translation leaf", lang)
+      end
+      found_definition = true
 
-    local old_value_from_data = get_nested(old_state.data, old_path_in_file)
-    local old_value = old_value_from_data
-    if old_value == nil and info and not info.missing then
-      old_value = info.value
-    end
-    local should_create = old_value_from_data ~= nil or (info and not info.missing and info.value ~= nil)
-    if should_create then
       local existing = get_nested(new_state.data, new_path_in_file)
       if existing ~= nil then
         return false, "target key already exists (" .. lang .. ")"
-      end
-    end
-
-    if should_create then
-      if old_value == nil then
-        old_value = ""
       end
       local set_ok, set_err = json.set_nested(new_state.data, new_path_in_file, old_value)
       if not set_ok then
         return false, string.format("%s (%s)", set_err or "failed to set key", lang)
       end
       new_state.dirty = true
-    end
-    if same_file then
-      if delete_nested(new_state.data, old_path_in_file) then
-        new_state.dirty = true
-      end
-    else
-      if delete_nested(old_state.data, old_path_in_file) then
+
+      if same_file then
+        delete_nested(new_state.data, old_path_in_file)
+      else
+        delete_nested(old_state.data, old_path_in_file)
         old_state.dirty = true
       end
     end
   end
 
+  if not found_definition then
+    return false, "translation key is not defined in the target project"
+  end
+
+  local dirty_paths = {}
   for path, entry in pairs(file_cache) do
     if entry.dirty then
-      local valid, validation_err = resources.validate_json_write(path, entry.data, entry.style, {
-        base_dir = base_dir,
-      })
-      if not valid then
-        return false, string.format("failed to validate %s: %s", path, validation_err or "unknown")
-      end
+      dirty_paths[#dirty_paths + 1] = path
     end
   end
+  table.sort(dirty_paths)
 
-  for path, entry in pairs(file_cache) do
-    if entry.dirty then
-      local dir_ok, dir_err = fs.ensure_dir_within(fs.dirname(path), base_dir)
-      if not dir_ok then
-        return false, string.format("failed to prepare resource directory for %s: %s", path, dir_err or "unknown")
-      end
-      local write_ok, write_err = resources.write_json_table(path, entry.data, entry.style, {
-        base_dir = base_dir,
-        start_dir = root,
-      })
-      if not write_ok then
-        return false, string.format("failed to write %s: %s", path, write_err or "unknown")
+  local resource_entries = {}
+
+  ---@return string[]
+  local function discard_prepared_resources()
+    local cleanup_errors = {}
+    for index = #resource_entries, 1, -1 do
+      local prepared = resource_entries[index]
+      local called, discarded, discard_err = pcall(resources.discard_json_write, prepared.plan)
+      if not called then
+        cleanup_errors[#cleanup_errors + 1] = prepared.path .. ": " .. tostring(discarded)
+      elseif not discarded then
+        cleanup_errors[#cleanup_errors + 1] = prepared.path .. ": " .. tostring(discard_err or "unknown")
       end
     end
+    return cleanup_errors
   end
 
-  local buffer_edit_errors = {}
+  ---@param message string
+  ---@return string
+  local function preparation_failure(message)
+    local cleanup_errors = discard_prepared_resources()
+    if #cleanup_errors > 0 then
+      return message .. "; cleanup failed: " .. table.concat(cleanup_errors, "; ")
+    end
+    return message
+  end
 
+  for _, path in ipairs(dirty_paths) do
+    local entry = file_cache[path]
+    local dir_ok, dir_err = fs.ensure_dir_within(fs.dirname(path), base_dir)
+    if not dir_ok then
+      return false,
+        preparation_failure(
+          string.format("failed to prepare resource directory for %s: %s", path, dir_err or "unknown")
+        )
+    end
+    local called, plan, prepare_err = pcall(resources.prepare_json_write, path, entry.data, entry.style, {
+      base_dir = base_dir,
+    })
+    if not called then
+      prepare_err = "prepare raised: " .. tostring(plan)
+      plan = nil
+    end
+    if not plan then
+      local message = string.format("failed to prepare %s: %s", path, prepare_err or "unknown")
+      return false, preparation_failure(message)
+    end
+    resource_entries[#resource_entries + 1] = {
+      data = entry.data,
+      path = path,
+      plan = plan,
+      style = entry.style,
+    }
+  end
+
+  local participants = {}
   for _, plan in ipairs(buffer_plans) do
-    local edit_errors = apply_buffer_rename(plan.bufnr, plan.edits)
-    for _, edit_err in ipairs(edit_errors) do
-      table.insert(buffer_edit_errors, edit_err)
-    end
+    participants[#participants + 1] = source_participant(plan)
+  end
+  for _, entry in ipairs(resource_entries) do
+    local resource_entry = entry
+    participants[#participants + 1] = {
+      label = "resource " .. resource_entry.path,
+      validate = function()
+        return resources.validate_json_write(resource_entry.path, resource_entry.data, resource_entry.style, {
+          base_dir = base_dir,
+        })
+      end,
+      commit = function()
+        local committed, commit_err = resources.commit_json_write(resource_entry.plan)
+        return committed, commit_err, resource_entry.plan.atomic.committed_ok == true
+      end,
+      rollback = function()
+        local called, rolled_back, rollback_err = pcall(resources.rollback_json_write, resource_entry.plan)
+        if called and rolled_back then
+          return true, nil
+        end
+        local protect_called, protected, protect_err = pcall(resources.protect_json_write, resource_entry.plan)
+        local message = called and (rollback_err or "resource rollback failed")
+          or ("resource rollback raised: " .. tostring(rolled_back))
+        if not protect_called then
+          message = message .. "; recovery protection raised: " .. tostring(protected)
+        elseif not protected then
+          message = message .. "; failed to protect recovery files: " .. tostring(protect_err or "unknown")
+        end
+        return false, message
+      end,
+      cleanup = function()
+        return resources.discard_json_write(resource_entry.plan)
+      end,
+    }
   end
 
+  local renamed, rename_err = mutation_transaction.run(participants)
+  if not renamed then
+    return false, rename_err or "rename transaction failed"
+  end
+
+  state.set_languages(cache.key, cache.languages)
+  state.set_buf_project(source_buf, cache.key)
   for _, plan in ipairs(buffer_plans) do
-    core.refresh_now(plan.bufnr, opts.config)
-  end
-
-  if #buffer_edit_errors > 0 then
-    return false,
-      "resource files were renamed, but failed to update some open buffers: " .. summarize_edit_errors(
-        buffer_edit_errors
+    state.set_buf_project(plan.bufnr, cache.key)
+    local refreshed, refresh_err = pcall(core.refresh_now, plan.bufnr, opts.config)
+    if not refreshed then
+      vim.notify(
+        string.format("i18n-status: rename committed but buffer %d refresh failed: %s", plan.bufnr, refresh_err),
+        vim.log.levels.ERROR
       )
+    end
   end
 
   return true

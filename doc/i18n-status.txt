@@ -449,7 +449,12 @@ Rename safety:
   substitutions. Const references, concatenations, interpolated templates,
   and conditional expressions remain visible to inline status and Doctor but
   Rename refuses them rather than replacing a larger expression or another
-  conditional branch.
+  conditional branch. A direct literal is also refused when its source
+  spelling (including escapes) does not exactly match the scanner's semantic
+  value. Only loaded, named, normal source buffers in the same canonical
+  project as the initiating buffer are considered. Source and locale changes
+  commit as one transaction; conflicts abort the rename, and rollback
+  conflicts are reported without overwriting concurrent changes.
 
 Key path separator (always ".").
   Nested keys are always split on ".", matching i18next's default nested

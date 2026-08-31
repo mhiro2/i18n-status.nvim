@@ -9,6 +9,11 @@ local rpc = require("i18n-status.rpc")
 ---@field source string
 ---@field lines string[]
 
+---@class I18nStatusRefactorScanSnapshot
+---@field tick integer
+---@field source string
+---@field lines string[]
+
 ---@type table<integer, I18nStatusScanSnapshot>
 local source_cache = {}
 local cache_autocmd_registered = false
@@ -205,6 +210,108 @@ function M.extract(bufnr, opts)
     return {}
   end
   return result.items or {}
+end
+
+---@param bufnr integer
+---@return { name: string, filetype: string, lang: string }|nil
+---@return string|nil
+local function validate_refactor_buffer(bufnr)
+  if type(bufnr) ~= "number" or bufnr % 1 ~= 0 or not vim.api.nvim_buf_is_valid(bufnr) then
+    return nil, "source buffer is invalid"
+  end
+  if not vim.api.nvim_buf_is_loaded(bufnr) then
+    return nil, "source buffer is not loaded"
+  end
+  if vim.bo[bufnr].buftype ~= "" then
+    return nil, "source buffer must be a normal buffer"
+  end
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  if name == "" then
+    return nil, "source buffer must have a file name"
+  end
+  local filetype = vim.bo[bufnr].filetype
+  local lang = filetypes.lang_for_filetype(filetype)
+  if lang == "" then
+    return nil, "source buffer has an unsupported filetype"
+  end
+  return { name = name, filetype = filetype, lang = lang }, nil
+end
+
+---@param value any
+---@return boolean
+local function is_non_negative_integer(value)
+  return type(value) == "number" and value >= 0 and value % 1 == 0
+end
+
+---@param result any
+---@return table[]|nil
+---@return string|nil
+local function validate_refactor_result(result)
+  if type(result) ~= "table" or type(result.items) ~= "table" or not vim.islist(result.items) then
+    return nil, "source scan returned an invalid item list"
+  end
+
+  for index, item in ipairs(result.items) do
+    local valid = type(item) == "table"
+      and type(item.key) == "string"
+      and type(item.raw) == "string"
+      and type(item.namespace) == "string"
+      and is_non_negative_integer(item.lnum)
+      and is_non_negative_integer(item.col)
+      and is_non_negative_integer(item.end_lnum)
+      and is_non_negative_integer(item.end_col)
+      and type(item.fallback) == "boolean"
+      and type(item.refactorable) == "boolean"
+    if not valid or item.end_lnum < item.lnum or (item.end_lnum == item.lnum and item.end_col < item.col) then
+      return nil, string.format("source scan returned an invalid item at index %d", index)
+    end
+  end
+
+  return result.items, nil
+end
+
+---@param bufnr integer
+---@param opts? { fallback_namespace?: string, range?: { start_line: integer, end_line: integer } }
+---@return table[]|nil
+---@return I18nStatusRefactorScanSnapshot|string
+function M.extract_for_refactor(bufnr, opts)
+  local info, validation_err = validate_refactor_buffer(bufnr)
+  if not info then
+    return nil, validation_err
+  end
+
+  opts = opts or {}
+  local source_snapshot = buf_snapshot(bufnr)
+  local snapshot = {
+    tick = source_snapshot.tick,
+    source = source_snapshot.source,
+    lines = source_snapshot.lines,
+  }
+  local result, err = rpc.request_sync("scan/extract", extract_params(snapshot.source, info.lang, opts))
+  if err then
+    return nil, "source scan failed: " .. tostring(err)
+  end
+  if not result then
+    return nil, "source scan returned no result"
+  end
+
+  local items, result_err = validate_refactor_result(result)
+  if not items then
+    return nil, result_err
+  end
+
+  local current, current_err = validate_refactor_buffer(bufnr)
+  if not current then
+    return nil, "source buffer changed while scanning: " .. tostring(current_err)
+  end
+  if
+    current.name ~= info.name
+    or current.filetype ~= info.filetype
+    or vim.api.nvim_buf_get_changedtick(bufnr) ~= snapshot.tick
+  then
+    return nil, "source buffer changed while scanning"
+  end
+  return items, snapshot
 end
 
 ---@param source string

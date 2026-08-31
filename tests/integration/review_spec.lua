@@ -13,6 +13,15 @@ local function make_buf(lines, ft)
   return buf
 end
 
+local function make_named_source(path, lines, ft)
+  local buf = vim.api.nvim_create_buf(false, false)
+  vim.bo[buf].swapfile = false
+  vim.api.nvim_buf_set_name(buf, path)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].filetype = ft
+  return buf
+end
+
 ---@param buf integer
 ---@return string[], string[]
 local function list_item_keys(buf)
@@ -443,10 +452,8 @@ describe("doctor review edit", function()
     helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
 
     helpers.with_cwd(root, function()
-      local buf1 = make_buf({ 't("rename.title")' }, "typescript")
-      vim.api.nvim_buf_set_name(buf1, root .. "/src/one.ts")
-      local buf2 = make_buf({ 'const label = t("rename.title")' }, "typescript")
-      vim.api.nvim_buf_set_name(buf2, root .. "/src/two.ts")
+      local buf1 = make_named_source(root .. "/src/one.ts", { 't("rename.title")' }, "typescript")
+      local buf2 = make_named_source(root .. "/src/two.ts", { 'const label = t("rename.title")' }, "typescript")
 
       local config = config_mod.setup({
         primary_lang = "ja",

@@ -265,7 +265,7 @@ In **Overview**, `=` means the value matches the primary language, and `≠` mea
 - **`gd`**: Jump to definition file (Overview: open resource file)
 - **`?`**: Toggle keymap help overlay
 
-Rename rewrites only direct string or no-substitution template literal arguments. References resolved from consts, concatenation, interpolation, or conditional branches are reported by Doctor/inline status but are rejected by Rename because rewriting the enclosing expression could change unrelated runtime behavior.
+Rename rewrites only direct string or no-substitution template literal arguments in loaded, named, normal source buffers that belong to the same canonical project as the initiating buffer. References resolved from consts, concatenation, interpolation, or conditional branches are reported by Doctor/inline status but are rejected by Rename because rewriting the enclosing expression could change unrelated runtime behavior. Direct literals whose source spelling does not exactly match the scanner's semantic value, including escaped key spellings, are also rejected so a stale span cannot rewrite unrelated source. Source and locale changes are committed as one transaction; conflicts abort the rename, and any rollback conflict is reported without overwriting concurrent edits.
 
 > [!TIP]
 > The list pane statusline mirrors the most common shortcuts so you can glance without opening the help overlay.
