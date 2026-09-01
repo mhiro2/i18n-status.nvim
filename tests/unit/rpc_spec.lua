@@ -130,6 +130,16 @@ describe("rpc", function()
     assert.are.same({ 15, 9 }, kill_signals)
   end)
 
+  it("honors a Doctor-specific deadline without changing interactive defaults", function()
+    assert.is_true(rpc.start())
+
+    rpc.request("doctor/diagnose", {}, function() end, { timeout_ms = 4321 })
+    assert.are.equal(4321, timers[#timers].delay)
+
+    rpc.request("scan/extract", {}, function() end)
+    assert.are.equal(30000, timers[#timers].delay)
+  end)
+
   it("cleans pending sync request when vim.wait times out first", function()
     assert.is_true(rpc.start())
 

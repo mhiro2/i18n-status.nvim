@@ -57,9 +57,10 @@ fn diagnose_marks_cancelled_when_token_file_exists() {
         open_buf_paths: vec![],
         open_buffers: vec![],
         cancel_token_path: Some(token_path.to_string_lossy().to_string()),
+        deadline_ms: doctor::DEFAULT_DEADLINE_MS,
     };
 
-    let result = doctor::diagnose(params, &|_, _| {}).expect("diagnose should succeed");
+    let result = doctor::diagnose(params, &|_, _| {}, &|| false).expect("diagnose should succeed");
     assert_eq!(result["cancelled"], true);
     assert_eq!(result["issues"].as_array().map(|v| v.len()), Some(0));
 
@@ -78,15 +79,38 @@ fn diagnose_without_cancel_token_keeps_normal_result() {
         open_buf_paths: vec![],
         open_buffers: vec![],
         cancel_token_path: None,
+        deadline_ms: doctor::DEFAULT_DEADLINE_MS,
     };
 
-    let result = doctor::diagnose(params, &|_, _| {}).expect("diagnose should succeed");
+    let result = doctor::diagnose(params, &|_, _| {}, &|| false).expect("diagnose should succeed");
     assert_eq!(result["cancelled"], false);
     let issues = result["issues"]
         .as_array()
         .expect("issues should be an array");
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0]["kind"], "resource_root_missing");
+}
+
+#[test]
+fn diagnose_honors_server_side_cancellation() {
+    let params = DiagnoseParams {
+        project_root: ".".to_string(),
+        roots: vec![],
+        primary_lang: "en".to_string(),
+        languages: vec!["en".to_string()],
+        fallback_namespace: "translation".to_string(),
+        ignore_patterns: vec![],
+        open_buf_paths: vec![],
+        open_buffers: vec![],
+        cancel_token_path: None,
+        deadline_ms: doctor::DEFAULT_DEADLINE_MS,
+    };
+
+    let result = doctor::diagnose(params, &|_, _| {}, &|| true)
+        .expect("diagnose should honor server cancellation");
+
+    assert_eq!(result["cancelled"], true);
+    assert_eq!(result["issues"].as_array().map(Vec::len), Some(0));
 }
 
 #[test]
@@ -113,9 +137,10 @@ fn diagnose_reports_scan_error_and_skips_unused_when_parse_fails() {
         open_buf_paths: vec![],
         open_buffers: vec![],
         cancel_token_path: None,
+        deadline_ms: doctor::DEFAULT_DEADLINE_MS,
     };
 
-    let result = doctor::diagnose(params, &|_, _| {}).expect("diagnose should succeed");
+    let result = doctor::diagnose(params, &|_, _| {}, &|| false).expect("diagnose should succeed");
     let issues = result["issues"]
         .as_array()
         .expect("issues should be an array");
@@ -168,24 +193,29 @@ fn diagnose_cancels_during_file_collection() {
         open_buf_paths: vec![],
         open_buffers: vec![],
         cancel_token_path: Some(token_path.to_string_lossy().to_string()),
+        deadline_ms: doctor::DEFAULT_DEADLINE_MS,
     };
 
     let wrote_token = AtomicBool::new(false);
-    let result = doctor::diagnose(params, &|method, payload| {
-        if method != "doctor/progress" {
-            return;
-        }
-        let Some(message) = payload.get("message").and_then(|v| v.as_str()) else {
-            return;
-        };
-        if !message.contains("collecting source files") {
-            return;
-        }
-        if wrote_token.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        fs::write(&token_path, "1").expect("failed to create cancel token");
-    })
+    let result = doctor::diagnose(
+        params,
+        &|method, payload| {
+            if method != "doctor/progress" {
+                return;
+            }
+            let Some(message) = payload.get("message").and_then(|v| v.as_str()) else {
+                return;
+            };
+            if !message.contains("collecting source files") {
+                return;
+            }
+            if wrote_token.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            fs::write(&token_path, "1").expect("failed to create cancel token");
+        },
+        &|| false,
+    )
     .expect("diagnose should succeed");
 
     assert_eq!(result["cancelled"], true);

@@ -64,9 +64,12 @@ local resource_watch_service = require("i18n-status.resource_watch_service").new
 ---@field dirty boolean
 ---@field checked_at integer
 ---@field file_meta table<string, I18nStatusFileMeta>
+---@field revision integer|nil
 
 M.start_dir = resource_roots.start_dir
 M.project_root = resource_roots.project_root
+M.resolve_roots_sync = resource_roots.resolve_roots_sync
+M.cache_key = resource_roots.compute_cache_key
 
 ---@param path string
 ---@return table|nil
@@ -116,6 +119,8 @@ M.build_index = resource_cache.build_index
 M.build_index_async = resource_cache.build_index_async
 M.ensure_index = resource_cache.ensure_index
 M.ensure_index_async = resource_cache.ensure_index_async
+M.store_index = resource_cache.store_index
+M.store_index_if_current = resource_cache.store_index_if_current
 M.apply_changes = resource_cache.apply_changes
 
 ---@param start_dir string

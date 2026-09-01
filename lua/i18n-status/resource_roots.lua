@@ -210,28 +210,32 @@ function M.start_dir(bufnr)
 end
 
 ---@param start_dir string
+---@param timeout_ms? integer
 ---@return I18nStatusRootInfo[]
-function M.resolve_roots_sync(start_dir)
+---@return string|nil
+function M.resolve_roots_sync(start_dir, timeout_ms)
   local roots_result, roots_err = rpc.request_sync("resource/resolveRoots", {
     start_dir = start_dir,
-  })
+  }, timeout_ms)
   if not roots_err and roots_result and roots_result.roots then
-    return M.normalize_roots(roots_result.roots)
+    return M.normalize_roots(roots_result.roots), nil
   end
-  return {}
+  return {}, roots_err or "resource/resolveRoots returned no result"
 end
 
 ---@param start_dir string
 ---@param roots I18nStatusRootInfo[]|nil
+---@param opts? { resolve_empty?: boolean, timeout_ms?: integer }
 ---@return string
-function M.project_root(start_dir, roots)
+function M.project_root(start_dir, roots, opts)
+  opts = opts or {}
   if not start_dir or start_dir == "" then
     return ""
   end
   start_dir = fs.normalize_path(start_dir) or start_dir
 
-  if not roots or #roots == 0 then
-    roots = M.resolve_roots_sync(start_dir)
+  if (not roots or #roots == 0) and opts.resolve_empty ~= false then
+    roots = M.resolve_roots_sync(start_dir, opts.timeout_ms)
   end
 
   local git_root = fs.find_git_root(start_dir)
