@@ -5,6 +5,28 @@ local M = {}
 -- can be told apart from empty arrays (`[]`), which decode to a plain table.
 local empty_dict_mt = getmetatable(vim.empty_dict())
 
+local is_array
+
+---@param value any
+local function tag_objects(value)
+  if type(value) ~= "table" then
+    return
+  end
+  local array, length = is_array(value)
+  if array and not (next(value) == nil and empty_dict_mt ~= nil and getmetatable(value) == empty_dict_mt) then
+    for index = 1, length do
+      tag_objects(value[index])
+    end
+    return
+  end
+  if empty_dict_mt ~= nil then
+    setmetatable(value, empty_dict_mt)
+  end
+  for _, child in pairs(value) do
+    tag_objects(child)
+  end
+end
+
 ---@param json string
 ---@return table|nil
 ---@return string|nil
@@ -13,6 +35,7 @@ function M.json_decode(json)
   if not ok then
     return nil, result
   end
+  tag_objects(result)
   return result, nil
 end
 
@@ -37,7 +60,7 @@ end
 ---@param tbl table
 ---@return boolean
 ---@return integer
-local function is_array(tbl)
+is_array = function(tbl)
   local max = 0
   local count = 0
   for key, _ in pairs(tbl) do
@@ -64,7 +87,7 @@ end
 -- is rejected so we never silently convert a list into an object.
 ---@param value any
 ---@return boolean
-local function is_object(value)
+function M.is_object(value)
   if type(value) ~= "table" then
     return false
   end
@@ -160,8 +183,8 @@ function M.set_nested(tbl, key_path, value)
     local key = parts[i]
     local existing = current[key]
     if existing == nil then
-      current[key] = {}
-    elseif not is_object(existing) then
+      current[key] = vim.empty_dict()
+    elseif not M.is_object(existing) then
       -- A scalar or list already occupies this position. Turning it into a
       -- branch would silently destroy the existing data, so refuse instead.
       return false,

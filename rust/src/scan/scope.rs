@@ -8,13 +8,19 @@ use swc_ecma_visit::{Visit, VisitWith};
 
 use super::const_eval::{ConstBinding, eval_string_expr};
 use super::parser::{span_to_lines, span_to_loc};
+use super::{NamespaceResolution, SourceKeyPolicy, TranslationFramework, TranslationHook};
 
 #[derive(Debug, Clone)]
 pub(super) struct SymbolBinding {
     pub(super) namespace: Option<String>,
     pub(super) name: String,
     pub(super) translator: bool,
-    hook: Option<String>,
+    pub(super) hook: Option<TranslationHook>,
+    canonical_hook: Option<TranslationHook>,
+    pub(super) framework: Option<TranslationFramework>,
+    pub(super) source_key_policy: Option<SourceKeyPolicy>,
+    pub(super) namespace_resolution: Option<NamespaceResolution>,
+    pub(super) extract_safe: bool,
     pub(super) start_line: u32,
     pub(super) end_line: u32,
     scope_start: u32,
@@ -33,6 +39,10 @@ impl SymbolBinding {
 
     pub(super) fn is_callable_translator_at(&self, pos: u32) -> bool {
         self.translator && self.declaration_end <= pos
+    }
+
+    pub(super) fn binding_id(&self) -> String {
+        format!("{}@{}", self.name, self.declaration_end)
     }
 }
 
@@ -307,11 +317,10 @@ impl ScopeAnalysis {
             .map(|&index| &self.bindings[index])
     }
 
-    fn canonical_hook_at(&self, name: &str, pos: u32) -> Option<String> {
+    fn canonical_hook_at(&self, name: &str, pos: u32) -> Option<TranslationHook> {
         match self.resolve(name, pos) {
-            Some(binding) => binding.hook.clone(),
-            None if is_translation_hook(name) => Some(name.to_string()),
-            None => None,
+            Some(binding) => binding.canonical_hook,
+            None => translation_hook(name),
         }
     }
 
@@ -373,12 +382,14 @@ struct PendingTranslator {
     hook_name: String,
     awaited: bool,
     namespace: Option<String>,
+    namespace_resolution: NamespaceResolution,
+    extract_safe: bool,
     call_pos: u32,
 }
 
 struct PendingCommonJsHook {
     binding_indices: Vec<usize>,
-    hook: String,
+    hook: TranslationHook,
     local_name: String,
     require_pos: u32,
 }
@@ -389,21 +400,24 @@ struct PendingInvalidation {
     fallback_scope: ScopeRange,
 }
 
-pub(super) fn is_translation_hook(name: &str) -> bool {
-    matches!(
-        name,
-        "useTranslation" | "useTranslations" | "getTranslations"
-    )
+fn translation_hook(name: &str) -> Option<TranslationHook> {
+    match name {
+        "useTranslation" => Some(TranslationHook::UseTranslation),
+        "useTranslations" => Some(TranslationHook::UseTranslations),
+        "getTranslations" => Some(TranslationHook::GetTranslations),
+        _ => None,
+    }
 }
 
-fn imported_translation_hook(source: &str, imported: &str) -> Option<String> {
-    let valid = matches!(
-        (source, imported),
-        ("react-i18next" | "next-i18next", "useTranslation")
-            | ("next-intl", "useTranslations")
-            | ("next-intl/server", "getTranslations")
-    );
-    valid.then(|| imported.to_string())
+fn imported_translation_hook(source: &str, imported: &str) -> Option<TranslationHook> {
+    match (source, imported) {
+        ("react-i18next" | "next-i18next", "useTranslation") => {
+            Some(TranslationHook::UseTranslation)
+        }
+        ("next-intl", "useTranslations") => Some(TranslationHook::UseTranslations),
+        ("next-intl/server", "getTranslations") => Some(TranslationHook::GetTranslations),
+        _ => None,
+    }
 }
 
 fn transparent_expr(expr: &Expr) -> &Expr {
@@ -466,7 +480,7 @@ fn local_pattern_name(pattern: &Pat) -> Option<&str> {
     }
 }
 
-fn commonjs_hook_bindings(pattern: &Pat, init: &Expr) -> Vec<(String, String, u32)> {
+fn commonjs_hook_bindings(pattern: &Pat, init: &Expr) -> Vec<(String, TranslationHook, u32)> {
     if let Pat::Object(object) = pattern {
         let Some((require, source)) = require_source(init) else {
             return Vec::new();
@@ -519,13 +533,47 @@ fn get_callee_name(callee: &Callee) -> Option<String> {
     }
 }
 
-fn get_first_string_arg(
+fn resolve_namespace(
     args: &[ExprOrSpread],
     line: u32,
     const_bindings: &[ConstBinding],
-) -> Option<String> {
-    args.first()
-        .and_then(|arg| eval_string_expr(&arg.expr, line, const_bindings))
+) -> (Option<String>, NamespaceResolution) {
+    let Some(arg) = args.first() else {
+        return (None, NamespaceResolution::Absent);
+    };
+    match eval_string_expr(&arg.expr, line, const_bindings) {
+        Some(namespace) => (Some(namespace), NamespaceResolution::Static),
+        None => (None, NamespaceResolution::Dynamic),
+    }
+}
+
+fn property_may_be_key_prefix(name: &PropName) -> bool {
+    match name {
+        PropName::Ident(ident) => ident.sym == *"keyPrefix",
+        PropName::Str(value) => value.value.as_str() == Some("keyPrefix"),
+        PropName::Num(_) | PropName::BigInt(_) => false,
+        PropName::Computed(_) => true,
+    }
+}
+
+fn use_translation_options_are_extract_safe(args: &[ExprOrSpread]) -> bool {
+    let Some(options) = args.get(1) else {
+        return true;
+    };
+    let Expr::Object(object) = options.expr.as_ref() else {
+        return false;
+    };
+    object.props.iter().all(|property| match property {
+        PropOrSpread::Spread(_) => false,
+        PropOrSpread::Prop(property) => match property.as_ref() {
+            Prop::Shorthand(ident) => ident.sym != *"keyPrefix",
+            Prop::KeyValue(property) => !property_may_be_key_prefix(&property.key),
+            Prop::Assign(property) => property.key.sym != *"keyPrefix",
+            Prop::Getter(property) => !property_may_be_key_prefix(&property.key),
+            Prop::Setter(property) => !property_may_be_key_prefix(&property.key),
+            Prop::Method(property) => !property_may_be_key_prefix(&property.key),
+        },
+    })
 }
 
 fn extract_hook_call(expr: &Expr) -> Option<(&CallExpr, bool)> {
@@ -575,18 +623,36 @@ fn destructured_t_name(name: &Pat) -> Option<String> {
     }
 }
 
-fn translation_binding_name(hook: &str, awaited: bool, pattern: &Pat) -> Option<String> {
+fn translation_binding_name(hook: TranslationHook, awaited: bool, pattern: &Pat) -> Option<String> {
     match hook {
-        "useTranslation" if !awaited => destructured_t_name(pattern),
-        "useTranslations" if !awaited => match pattern {
+        TranslationHook::UseTranslation if !awaited => destructured_t_name(pattern),
+        TranslationHook::UseTranslations if !awaited => match pattern {
             Pat::Ident(ident) => Some(ident.sym.to_string()),
             _ => None,
         },
-        "getTranslations" if awaited => match pattern {
+        TranslationHook::GetTranslations if awaited => match pattern {
             Pat::Ident(ident) => Some(ident.sym.to_string()),
             _ => None,
         },
         _ => None,
+    }
+}
+
+fn hook_metadata(
+    hook: TranslationHook,
+    has_namespace: bool,
+) -> (TranslationFramework, SourceKeyPolicy) {
+    match hook {
+        TranslationHook::UseTranslation => {
+            (TranslationFramework::I18next, SourceKeyPolicy::Canonical)
+        }
+        TranslationHook::UseTranslations | TranslationHook::GetTranslations if has_namespace => (
+            TranslationFramework::NextIntl,
+            SourceKeyPolicy::NamespaceRelative,
+        ),
+        TranslationHook::UseTranslations | TranslationHook::GetTranslations => {
+            (TranslationFramework::NextIntl, SourceKeyPolicy::Canonical)
+        }
     }
 }
 
@@ -736,6 +802,11 @@ impl<'a> ScopeCollector<'a> {
             name,
             translator,
             hook: None,
+            canonical_hook: None,
+            framework: None,
+            source_key_policy: None,
+            namespace_resolution: None,
+            extract_safe: false,
             start_line: scope.start_line,
             end_line: scope.end_line,
             scope_start: scope.start_pos,
@@ -747,12 +818,12 @@ impl<'a> ScopeCollector<'a> {
     fn add_hook_binding(
         &mut self,
         name: String,
-        hook: String,
+        hook: TranslationHook,
         scope: ScopeRange,
         declaration_end: u32,
     ) {
         let index = self.add_binding(name, None, false, scope, declaration_end);
-        self.analysis.bindings[index].hook = Some(hook);
+        self.analysis.bindings[index].canonical_hook = Some(hook);
     }
 
     fn add_pattern_bindings(
@@ -793,7 +864,7 @@ impl<'a> ScopeCollector<'a> {
             for index in pending.binding_indices {
                 let binding = &mut self.analysis.bindings[index];
                 if binding.name == pending.local_name {
-                    binding.hook = Some(pending.hook.clone());
+                    binding.canonical_hook = Some(pending.hook);
                 }
             }
         }
@@ -830,15 +901,22 @@ impl<'a> ScopeCollector<'a> {
                 continue;
             };
             let Some(translator_name) =
-                translation_binding_name(&hook, pending.awaited, &pending.pattern)
+                translation_binding_name(hook, pending.awaited, &pending.pattern)
             else {
                 continue;
             };
+            let (framework, source_key_policy) = hook_metadata(hook, pending.namespace.is_some());
             for index in pending.binding_indices {
                 let binding = &mut self.analysis.bindings[index];
                 if binding.name == translator_name {
                     binding.translator = true;
                     binding.namespace.clone_from(&pending.namespace);
+                    binding.hook = Some(hook);
+                    binding.framework = Some(framework);
+                    binding.source_key_policy = Some(source_key_policy);
+                    binding.namespace_resolution = Some(pending.namespace_resolution);
+                    binding.extract_safe =
+                        !matches!(hook, TranslationHook::UseTranslation) || pending.extract_safe;
                 }
             }
         }
@@ -897,16 +975,16 @@ impl<'a> ScopeCollector<'a> {
                 if let Some((call, awaited)) = extract_hook_call(init) {
                     if let Some(hook_name) = get_callee_name(&call.callee) {
                         let (call_line, _, _) = span_to_loc(self.cm, call.span);
+                        let (namespace, namespace_resolution) =
+                            resolve_namespace(&call.args, call_line, self.const_bindings);
                         self.pending_translators.push(PendingTranslator {
                             binding_indices,
                             pattern: declarator.name.clone(),
                             hook_name,
                             awaited,
-                            namespace: get_first_string_arg(
-                                &call.args,
-                                call_line,
-                                self.const_bindings,
-                            ),
+                            namespace,
+                            namespace_resolution,
+                            extract_safe: use_translation_options_are_extract_safe(&call.args),
                             call_pos: call.span.lo.0,
                         });
                     }
@@ -1349,6 +1427,11 @@ async function Page() {
                 name: format!("symbol_{index}"),
                 translator: false,
                 hook: None,
+                canonical_hook: None,
+                framework: None,
+                source_key_policy: None,
+                namespace_resolution: None,
+                extract_safe: false,
                 start_line: 0,
                 end_line: u32::MAX,
                 scope_start: 0,
@@ -1361,6 +1444,11 @@ async function Page() {
             name: "translate".to_string(),
             translator: true,
             hook: None,
+            canonical_hook: None,
+            framework: None,
+            source_key_policy: None,
+            namespace_resolution: None,
+            extract_safe: false,
             start_line: 0,
             end_line: u32::MAX,
             scope_start: 0,
@@ -1407,6 +1495,11 @@ async function Page() {
                 name: "t".to_string(),
                 translator: true,
                 hook: None,
+                canonical_hook: None,
+                framework: None,
+                source_key_policy: None,
+                namespace_resolution: None,
+                extract_safe: false,
                 start_line: 0,
                 end_line: u32::MAX,
                 scope_start: 0,

@@ -100,7 +100,8 @@ describe("failure scenarios", function()
       -- Writing to a directory path should fail
       local original_notify = vim.notify
       vim.notify = function() end
-      local ok, err = resources.write_json_table(bad_path, { a = "b" }, { indent = "  " })
+      local style = select(2, resources.read_json_table(bad_path))
+      local ok, err = resources.write_json_table(bad_path, { a = "b" }, style, { base_dir = root })
       vim.notify = original_notify
       assert.is_false(ok)
       assert.is_truthy(err)
@@ -113,20 +114,66 @@ describe("failure scenarios", function()
     helpers.with_cwd(root, function()
       resources.ensure_index(root)
 
-      -- Stub write_json_table to simulate failure
-      local original_write = resources.write_json_table
-      resources.write_json_table = function()
+      -- Stub commit_json_write to simulate failure
+      local original_commit = resources.commit_json_write
+      resources.commit_json_write = function()
         return false, "simulated failure"
       end
 
       local ok = key_write.write_single_translation("common", "new.key", "ja", "test", root)
 
-      resources.write_json_table = original_write
+      resources.commit_json_write = original_commit
       assert.is_false(ok)
     end)
   end)
 
-  it("ops.rename returns false when write_json_table fails", function()
+  it("key_write preserves a modified resource buffer and its disk file", function()
+    local root = helpers.tmpdir()
+    local path = root .. "/locales/ja/common.json"
+    helpers.write_file(path, '{"key":"disk"}')
+    helpers.with_cwd(root, function()
+      resources.ensure_index(root)
+      local resource_buf = vim.api.nvim_create_buf(true, false)
+      vim.bo[resource_buf].swapfile = false
+      vim.api.nvim_buf_set_name(resource_buf, path)
+      vim.api.nvim_buf_set_lines(resource_buf, 0, -1, false, { '{"key":"unsaved"}' })
+      vim.bo[resource_buf].modified = true
+
+      local ok = key_write.write_single_translation("common", "new.key", "ja", "value", root)
+
+      assert.is_false(ok)
+      assert.are.equal('{"key":"disk"}', helpers.read_file(path))
+      assert.are.same({ '{"key":"unsaved"}' }, vim.api.nvim_buf_get_lines(resource_buf, 0, -1, false))
+      vim.api.nvim_buf_delete(resource_buf, { force = true })
+    end)
+  end)
+
+  it("allows a normal buffer save after a plugin resource mutation", function()
+    local root = helpers.tmpdir()
+    local path = root .. "/locales/ja/common.json"
+    helpers.write_file(path, '{"key":"original"}\n')
+    helpers.with_cwd(root, function()
+      local resource_buf = vim.fn.bufadd(path)
+      vim.bo[resource_buf].swapfile = false
+      vim.fn.bufload(resource_buf)
+      local data, style = resources.read_json_table(path)
+      data.key = "plugin"
+
+      local mutated, mutation_err = resources.write_json_table(path, data, style, { base_dir = root })
+      assert.is_true(mutated, mutation_err)
+      vim.api.nvim_buf_set_lines(resource_buf, 0, -1, false, { '{"key":"user"}' })
+      vim.bo[resource_buf].modified = true
+      local saved, save_err = pcall(vim.api.nvim_buf_call, resource_buf, function()
+        vim.cmd("silent write")
+      end)
+
+      assert.is_true(saved, save_err)
+      assert.are.equal('{"key":"user"}\n', helpers.read_file(path))
+      vim.api.nvim_buf_delete(resource_buf, { force = true })
+    end)
+  end)
+
+  it("ops.rename rolls source changes back when a resource commit fails", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
     helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
@@ -134,7 +181,8 @@ describe("failure scenarios", function()
 
     helpers.with_cwd(root, function()
       state.init("ja", { "ja", "en" })
-      local buf = vim.api.nvim_create_buf(false, true)
+      local buf = vim.api.nvim_create_buf(false, false)
+      vim.bo[buf].swapfile = false
       vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("rename.title")' })
       vim.bo[buf].filetype = "typescript"
       vim.api.nvim_buf_set_name(buf, root .. "/src/app.ts")
@@ -143,11 +191,15 @@ describe("failure scenarios", function()
       local config = config_mod.setup({ primary_lang = "ja", inline = { visible_only = false } })
       resources.ensure_index(root)
 
-      local original_extract = scan.extract
-      scan.extract = function(bufnr)
+      local original_extract_for_refactor = scan.extract_for_refactor
+      scan.extract_for_refactor = function(bufnr)
         if bufnr ~= buf then
-          return {}
+          return {}, {
+            tick = vim.api.nvim_buf_get_changedtick(bufnr),
+            lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false),
+          }
         end
+        local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
         return {
           {
             key = "common:rename.title",
@@ -159,12 +211,14 @@ describe("failure scenarios", function()
             end_col = 16,
             refactorable = true,
           },
+        }, {
+          tick = vim.api.nvim_buf_get_changedtick(bufnr),
+          lines = lines,
         }
       end
 
-      -- Stub write_json_table to simulate failure
-      local original_write = resources.write_json_table
-      resources.write_json_table = function()
+      local original_commit = resources.commit_json_write
+      resources.commit_json_write = function()
         return false, "disk full"
       end
 
@@ -186,11 +240,17 @@ describe("failure scenarios", function()
         config = config,
       })
 
-      resources.write_json_table = original_write
-      scan.extract = original_extract
+      resources.commit_json_write = original_commit
+      scan.extract_for_refactor = original_extract_for_refactor
 
       assert.is_false(ok)
       assert.is_truthy(err and err:find("disk full", 1, true))
+      assert.are.equal('t("rename.title")', vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1])
+      assert.are.equal(
+        "ログイン",
+        vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json")).rename.title
+      )
+      assert.are.equal("Login", vim.json.decode(helpers.read_file(root .. "/locales/en/common.json")).rename.title)
     end)
   end)
 

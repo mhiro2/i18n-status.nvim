@@ -46,7 +46,9 @@ describe("review actions", function()
     add_stub(fs, "sanitize_path", function(path)
       return path, nil
     end)
-    add_stub(fs, "ensure_dir", function() end)
+    add_stub(fs, "ensure_dir_within", function()
+      return true, nil
+    end)
     add_stub(resources, "read_json_table", function()
       return {}, { indent = 2 }
     end)
@@ -106,7 +108,9 @@ describe("review actions", function()
     add_stub(fs, "sanitize_path", function(path)
       return path, nil
     end)
-    add_stub(fs, "ensure_dir", function() end)
+    add_stub(fs, "ensure_dir_within", function()
+      return true, nil
+    end)
     add_stub(resources, "read_json_table", function()
       return {}, {}
     end)
@@ -193,13 +197,14 @@ describe("review actions", function()
     add_stub(resources, "start_dir", function()
       return "/project"
     end)
-    add_stub(key_write, "write_translations", function(namespace, key_path, translations, root, languages)
+    add_stub(key_write, "write_translations", function(namespace, key_path, translations, root, languages, opts)
       written = {
         namespace = namespace,
         key_path = key_path,
         translations = vim.deepcopy(translations),
         root = root,
         languages = vim.deepcopy(languages),
+        opts = vim.deepcopy(opts),
       }
       return #languages, {}
     end)
@@ -225,9 +230,44 @@ describe("review actions", function()
       translations = { en = "Hello", ja = "こんにちは" },
       root = "/project",
       languages = { "en", "ja" },
+      opts = { create_only = true },
     }, written)
     assert.are.equal(1, refresh_all_calls)
     assert.are.equal(1, refresh_calls)
+  end)
+
+  it("uses create-only writes for a new command key", function()
+    local inputs = { "new-key", "Hello", "こんにちは" }
+    local received_opts = nil
+    local cache_opts = nil
+
+    add_stub(vim.ui, "input", function(_, on_confirm)
+      on_confirm(table.remove(inputs, 1))
+    end)
+    add_stub(resources, "start_dir", function()
+      return "/project"
+    end)
+    add_stub(resources, "ensure_index", function(_root, opts)
+      cache_opts = opts
+      return {
+        index = { en = {}, ja = {} },
+        languages = { "en", "ja" },
+      }
+    end)
+    add_stub(resources, "fallback_namespace", function()
+      return "common"
+    end)
+    add_stub(key_write, "write_translations", function(_, _, _, _, languages, opts)
+      received_opts = vim.deepcopy(opts)
+      return #languages, {}, nil
+    end)
+    add_stub(core, "refresh_all", function() end)
+    add_stub(vim, "notify", function() end)
+
+    review_actions.add_key_command({ primary_lang = "en" })
+
+    assert.are.same({ create_only = true }, received_opts)
+    assert.is_true(cache_opts.exact)
   end)
 
   it("jumps to the overview definition file for the display locale", function()

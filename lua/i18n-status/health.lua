@@ -173,6 +173,12 @@ function M.check()
   end
 
   health.start("Resources")
+  local mutations_supported, mutation_err = require("i18n-status.atomic_file").supported()
+  if mutations_supported then
+    ok("atomic resource mutations are supported")
+  else
+    warn("resource mutations are disabled: " .. tostring(mutation_err or "unsupported platform"))
+  end
   local cache = resources.ensure_index(start_dir)
   local roots = cache.roots or {}
   if #roots == 0 then

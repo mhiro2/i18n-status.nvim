@@ -107,19 +107,89 @@ function M.normalize_path(path, base_dir)
   return normalize_separator(path)
 end
 
----@param list string[]
----@param seen table<string, boolean>
----@param value string|nil
-local function push_candidate(list, seen, value)
-  if type(value) ~= "string" or value == "" then
-    return
+---@param candidate string
+---@param base_dir string|nil
+---@return string
+local function absolute_path(candidate, base_dir)
+  if is_absolute_path(candidate) then
+    return normalize_path_value(collapse_path(candidate))
   end
-  local normalized = normalize_path_value(value)
-  if seen[normalized] then
-    return
+  return normalize_path_value(collapse_path(vim.fs.joinpath(base_dir or vim.fn.getcwd(), candidate)))
+end
+
+---@param err string|nil
+---@return boolean
+local function is_not_found_error(err)
+  return type(err) == "string" and err:find("ENOENT", 1, true) ~= nil
+end
+
+---Resolve a path through its longest existing parent.
+---@param path string
+---@return string|nil
+---@return string|nil
+local function resolve_from_existing_parent(path)
+  local cursor = normalize_path_value(path)
+  local missing_parts = {}
+
+  while cursor and cursor ~= "" do
+    local real_path = uv.fs_realpath(cursor)
+    if real_path then
+      local stat = uv.fs_stat(real_path)
+      if #missing_parts > 0 and (not stat or stat.type ~= "directory") then
+        return nil, "existing path parent is not a directory"
+      end
+
+      local resolved = normalize_path_value(real_path)
+      for index = #missing_parts, 1, -1 do
+        resolved = normalize_path_value(collapse_path(vim.fs.joinpath(resolved, missing_parts[index])))
+      end
+      return resolved, nil
+    end
+
+    local lstat, lstat_err = uv.fs_lstat(cursor)
+    if lstat then
+      return nil, "failed to resolve existing path component"
+    end
+    if lstat_err and not is_not_found_error(lstat_err) then
+      return nil, "failed to inspect path component: " .. tostring(lstat_err)
+    end
+
+    local parent = vim.fs.dirname(cursor)
+    local name = vim.fs.basename(cursor)
+    if not parent or parent == cursor or not name or name == "" then
+      return nil, "failed to resolve an existing path parent"
+    end
+    missing_parts[#missing_parts + 1] = name
+    cursor = parent
   end
-  seen[normalized] = true
-  table.insert(list, normalized)
+
+  return nil, "failed to resolve an existing path parent"
+end
+
+---@param target string
+---@param base string
+---@return boolean
+local function is_within_base(target, base)
+  if target == base then
+    return true
+  end
+  local prefix = base
+  if prefix:sub(-1) ~= "/" then
+    prefix = prefix .. "/"
+  end
+  return target:sub(1, #prefix) == prefix
+end
+
+---Resolve a path through its longest existing parent without applying a containment policy.
+---@param path string
+---@param base_dir string|nil
+---@return string|nil
+---@return string|nil
+function M.canonical_path(path, base_dir)
+  if type(path) ~= "string" or path == "" then
+    return nil, "path is empty"
+  end
+  return resolve_from_existing_parent(absolute_path(path, base_dir))
 end
 
 ---@param path string|nil
@@ -130,32 +200,9 @@ function M.path_under(path, root)
     return false
   end
 
-  local path_candidates = {}
-  local root_candidates = {}
-  local seen_path = {}
-  local seen_root = {}
-
-  push_candidate(path_candidates, seen_path, path)
-  push_candidate(path_candidates, seen_path, uv.fs_realpath(path))
-  push_candidate(root_candidates, seen_root, root)
-  push_candidate(root_candidates, seen_root, uv.fs_realpath(root))
-
-  for _, candidate_path in ipairs(path_candidates) do
-    for _, candidate_root in ipairs(root_candidates) do
-      if candidate_path == candidate_root then
-        return true
-      end
-      local prefix = candidate_root
-      if prefix:sub(-1) ~= "/" then
-        prefix = prefix .. "/"
-      end
-      if candidate_path:sub(1, #prefix) == prefix then
-        return true
-      end
-    end
-  end
-
-  return false
+  local resolved_path = M.canonical_path(path, nil)
+  local resolved_root = M.canonical_path(root, nil)
+  return resolved_path ~= nil and resolved_root ~= nil and is_within_base(resolved_path, resolved_root)
 end
 
 ---@param ... string
@@ -268,16 +315,6 @@ function M.shorten_path(path)
   return path
 end
 
----@param target string
----@param base string
----@return boolean
-local function is_within_base(target, base)
-  if target == base:sub(1, -2) then
-    return true
-  end
-  return target:sub(1, #base) == base
-end
-
 ---Normalize and validate a file path for security.
 ---@param path string
 ---@param base_dir string
@@ -294,45 +331,50 @@ function M.sanitize_path(path, base_dir)
     return nil, "path contains null byte"
   end
 
-  local normalized_path = normalize_separator(path)
-  local normalized_base = normalize_separator(base_dir)
+  local normalized_base = absolute_path(normalize_separator(base_dir), nil)
   local real_base = uv.fs_realpath(normalized_base)
-  if not real_base then
+  local base_stat = real_base and uv.fs_stat(real_base) or nil
+  if not real_base or not base_stat or base_stat.type ~= "directory" then
     return nil, "base directory does not exist"
   end
 
-  real_base = normalize_separator(real_base)
-  if real_base:sub(-1) ~= "/" then
-    real_base = real_base .. "/"
+  real_base = normalize_path_value(real_base)
+  local abs_path = absolute_path(normalize_separator(path), normalized_base)
+  local resolved_path, resolve_err = resolve_from_existing_parent(abs_path)
+  if not resolved_path then
+    return nil, resolve_err
   end
-
-  local base_hint = normalized_base
-  if base_hint:sub(-1) ~= "/" then
-    base_hint = base_hint .. "/"
-  end
-
-  local abs_path
-  if is_absolute_path(normalized_path) then
-    abs_path = collapse_path(normalized_path)
-  else
-    abs_path = collapse_path(M.path_join(base_hint, normalized_path))
-  end
-  abs_path = normalize_separator(abs_path)
-
-  local real_path = uv.fs_realpath(abs_path)
-  if real_path then
-    real_path = normalize_separator(real_path)
-    if not is_within_base(real_path, real_base) then
-      return nil, "path is outside base directory"
-    end
-    return real_path, nil
-  end
-
-  if not is_within_base(abs_path, real_base) and not is_within_base(abs_path, base_hint) then
+  if not is_within_base(resolved_path, real_base) then
     return nil, "path is outside base directory"
   end
 
-  return abs_path, nil
+  return resolved_path, nil
+end
+
+---Require an existing directory whose canonical path stays inside a base directory.
+---@param path string
+---@param base_dir string
+---@return boolean
+---@return string|nil
+function M.ensure_dir_within(path, base_dir)
+  local sanitized_path, sanitize_err = M.sanitize_path(path, base_dir)
+  if not sanitized_path then
+    return false, sanitize_err
+  end
+
+  local stat = uv.fs_stat(sanitized_path)
+  if not stat or stat.type ~= "directory" then
+    return false, "resource directory does not exist"
+  end
+
+  local verified_path, verify_err = M.sanitize_path(sanitized_path, base_dir)
+  if not verified_path then
+    return false, verify_err
+  end
+  if verified_path ~= sanitized_path then
+    return false, "directory path changed while it was being created"
+  end
+  return true, nil
 end
 
 return M

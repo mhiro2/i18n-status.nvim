@@ -1,9 +1,7 @@
 ---@class I18nStatusResources
----@field reader fun(path: string): string|nil
 ---@field caches table<string, I18nStatusCache>
 ---@field last_cache_key string|nil
 local M = {
-  reader = nil,
   caches = {},
   last_cache_key = nil,
 }
@@ -25,8 +23,11 @@ local resource_watch_service = require("i18n-status.resource_watch_service").new
 ---@field priority integer
 
 ---@class I18nStatusFileMeta
+---@field kind "i18next"|"next-intl"|"next_intl"
+---@field root string
 ---@field lang string
 ---@field namespace string|nil
+---@field is_root boolean
 
 ---@class I18nStatusResourceError
 ---@field lang string
@@ -35,7 +36,7 @@ local resource_watch_service = require("i18n-status.resource_watch_service").new
 
 ---@class I18nStatusRootInfo
 ---@field path string
----@field kind "i18next"|"next_intl"
+---@field kind "i18next"|"next-intl"|"next_intl"
 
 ---@class I18nStatusResourceInfo
 ---@field kind "i18next"|"next-intl"|"next_intl"
@@ -48,6 +49,8 @@ local resource_watch_service = require("i18n-status.resource_watch_service").new
 ---@field indent string
 ---@field newline boolean
 ---@field error string|nil
+---@field path string
+---@field revision I18nStatusResourceRevision|nil
 
 ---@class I18nStatusCache
 ---@field key string|nil
@@ -60,6 +63,7 @@ local resource_watch_service = require("i18n-status.resource_watch_service").new
 ---@field namespaces string[]
 ---@field dirty boolean
 ---@field checked_at integer
+---@field file_meta table<string, I18nStatusFileMeta>
 
 M.start_dir = resource_roots.start_dir
 M.project_root = resource_roots.project_root
@@ -81,6 +85,32 @@ function M.write_json_table(path, data, style, opts)
   local io_opts = vim.tbl_extend("force", opts or {}, { mark_dirty = M.mark_dirty })
   return resource_io.write_json_table(path, data, style, io_opts)
 end
+
+---@param path string
+---@param data table
+---@param style I18nStatusJsonStyle|nil
+---@param opts I18nStatusResourceWriteOpts|nil
+---@return boolean ok
+---@return string|nil err
+function M.validate_json_write(path, data, style, opts)
+  return resource_io.validate_json_write(path, data, style, opts)
+end
+
+---@param path string
+---@param data table
+---@param style I18nStatusJsonStyle|nil
+---@param opts I18nStatusResourceWriteOpts|nil
+---@return I18nStatusResourceWritePlan|nil
+---@return string|nil
+function M.prepare_json_write(path, data, style, opts)
+  local io_opts = vim.tbl_extend("force", opts or {}, { mark_dirty = M.mark_dirty })
+  return resource_io.prepare_json_write(path, data, style, io_opts)
+end
+
+M.commit_json_write = resource_io.commit_json_write
+M.rollback_json_write = resource_io.rollback_json_write
+M.discard_json_write = resource_io.discard_json_write
+M.protect_json_write = resource_io.protect_json_write
 
 M.build_index = resource_cache.build_index
 M.build_index_async = resource_cache.build_index_async
@@ -113,11 +143,5 @@ M.stop_watch = resource_watch_service.stop_watch
 M.stop_watch_for_buffer = resource_watch_service.stop_watch_for_buffer
 M.mark_dirty = resource_watch_service.mark_dirty
 M.get_watcher_key = resource_watch_service.get_watcher_key
-
----@param reader fun(path: string): string|nil
-function M.set_reader(reader)
-  M.reader = reader
-  resource_io.set_reader(reader)
-end
 
 return M

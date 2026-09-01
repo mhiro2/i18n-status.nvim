@@ -221,8 +221,10 @@ The plugin creates the following user commands:
   :I18nAddKey         Add a new i18n key to all language files interactively.
                       Prompts for key name and translations for all configured
                       languages.
-                      Writes are performed per language file; when a write
-                      fails mid-way, previously written languages remain.
+                      New keys use create-only writes. All target files are
+                      checked before writing. If a later write fails, earlier
+                      writes are rolled back when their files have not changed
+                      again.
 
   :I18nExtract        Detect hardcoded JSX text and open the Extract Review UI.
                       Supports ranges (e.g. :'<,'>I18nExtract).
@@ -364,8 +366,35 @@ When a key conflicts with an existing one, pressing `u` lets you reuse
 the existing key: source text is replaced but no resource file is written.
 Press `U` to switch back to creating a new key.
 
-If resource file writes fail during apply, the source buffer replacement
-is rolled back automatically.
+Extract only offers candidates that have an unambiguous translation function
+obtained from useTranslation(), useTranslations(), or an awaited
+getTranslations() in their lexical scope. It does not invent a global t() or
+insert imports/hooks. It refuses dynamic namespace expressions and
+useTranslation() options that can change key semantics, including keyPrefix.
+
+Each framework uses only its own resource root and locale set. i18next and
+next-intl candidates therefore remain isolated in mixed projects. Multiple
+roots for one framework are ambiguous, so Extract refuses that framework's
+candidates.
+
+JSX text and literal expressions use context-aware replacements. Resource
+values use cooked semantic text: indentation is cleaned while meaningful
+spaces next to element boundaries are preserved.
+
+Scoped next-intl translators require a statically resolved namespace. They
+keep canonical namespace:key identities in resources and generate
+namespace-relative calls such as t("key") in source.
+
+If primary_lang is not one of the detected locales, Extract warns and uses
+the first detected locale so the original text is preserved.
+
+Apply revalidates the buffer name, filetype, canonical project, tracked source
+range, syntax, and translator binding after Review opens. New keys use
+create-only writes and are rejected if an exact key or scalar/branch shape
+conflict appeared concurrently. Resource files are committed first and
+revalidated immediately before the source edit. A resource failure leaves the
+source untouched. A later source conflict rolls the resource changes back
+without overwriting concurrent edits.
 
 ==============================================================================
 6. Completion (blink.cmp)                                   *i18n-status-completion*
@@ -447,15 +476,33 @@ Rename safety:
   substitutions. Const references, concatenations, interpolated templates,
   and conditional expressions remain visible to inline status and Doctor but
   Rename refuses them rather than replacing a larger expression or another
-  conditional branch.
+  conditional branch. A direct literal is also refused when its source
+  spelling (including escapes) does not exactly match the scanner's semantic
+  value. Only loaded, named, normal source buffers in the same canonical
+  project as the initiating buffer are considered. Source and locale changes
+  commit as one transaction; conflicts abort the rename, and rollback
+  conflicts are reported without overwriting concurrent changes.
 
 Key path separator (always ".").
   Nested keys are always split on ".", matching i18next's default nested
   JSON layout. i18next setups that disable nesting (keySeparator: false) or
-  use a custom separator are not supported for resolution or writing. When a
-  write would turn an existing scalar value into a nested branch (for example
-  adding "login.title" where "login" is already a string), the write is
-  refused instead of silently overwriting the existing value.
+  use a custom separator are not supported for resolution or writing. A write
+  is refused if it would replace an existing scalar or branch. Add missing,
+  :I18nAddKey, and Extract use create-only writes and also refuse an exact key
+  that appeared after their initial check.
+
+Resource mutation safety:
+  Locale files must be readable, valid JSON objects at the root. Mutations are
+  refused for array or scalar roots, loaded buffers with unsaved changes, and
+  files changed on disk after they were read. Symlinks are resolved before
+  writing, and the resolved target must remain inside the project root.
+  Atomic mutations require LuaJIT plus openat/mkdirat/unlinkat and renameat2
+  on Linux or renameatx_np on macOS; other runtimes retain read-only features and fail
+  closed for writes. Health checks report symbol availability. Filesystems
+  without atomic exchange support are rejected when a write is attempted.
+  Resource parent directories must already exist. Concurrent versions that
+  cannot be restored safely are kept in reported .i18n-status-* recovery files
+  for manual inspection.
 
 next-intl root file priority:
   When both messages/{lang}.json (root file) and

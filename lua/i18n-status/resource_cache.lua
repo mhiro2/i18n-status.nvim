@@ -262,7 +262,7 @@ function M.new(resources, roots)
   end
 
   ---@param start_dir string
-  ---@param opts? { cooperative?: boolean }
+  ---@param opts? { cooperative?: boolean, exact?: boolean }
   ---@return I18nStatusCache
   function service.ensure_index(start_dir, opts)
     opts = opts or {}
@@ -273,7 +273,10 @@ function M.new(resources, roots)
     local cache = nil
     local root_list = nil
 
-    local watching_key, watching_cache, watching_roots = watching_cache_for_start_dir(start_dir)
+    local watching_key, watching_cache, watching_roots = nil, nil, nil
+    if not opts.exact then
+      watching_key, watching_cache, watching_roots = watching_cache_for_start_dir(start_dir)
+    end
     if watching_key and watching_cache then
       key = watching_key
       cache = watching_cache

@@ -2,6 +2,7 @@
 local M = {}
 
 local extract_review_apply = require("i18n-status.extract_review_apply")
+local project_identity = require("i18n-status.project_identity")
 local review_buffers = require("i18n-status.review_buffers")
 local review_filters = require("i18n-status.review_filters")
 local review_shared_ui = require("i18n-status.review_shared_ui")
@@ -16,16 +17,28 @@ local EXTRACT_REVIEW_TRACK_NS = vim.api.nvim_create_namespace("i18n-status-extra
 ---@field end_lnum integer
 ---@field end_col integer
 ---@field text string
+---@field source_text string
+---@field kind 'jsx_text'|'jsx_literal'
+---@field replacement_context 'jsx_child'|'jsx_expression'
 ---@field namespace string
 ---@field t_func string
+---@field binding_id string
+---@field hook 'useTranslation'|'useTranslations'|'getTranslations'
+---@field framework 'i18next'|'next_intl'
+---@field source_key_policy 'canonical'|'namespace_relative'
+---@field namespace_resolution 'absent'|'static'
+---@field extract_safe boolean
 ---@field proposed_key string
 ---@field new_key string
 ---@field mode 'new'|'reuse'
 ---@field selected boolean
 ---@field status 'ready'|'conflict_existing'|'invalid_key'|'error'
 ---@field error string|nil
----@field context_error string|nil
+---@field apply_error string|nil
 ---@field mark_id integer|nil
+---@field stale boolean|nil
+---@field languages string[]
+---@field primary_lang string
 
 ---@class I18nStatusExtractApplySummary
 ---@field applied integer
@@ -46,9 +59,12 @@ local EXTRACT_REVIEW_TRACK_NS = vim.api.nvim_create_namespace("i18n-status-extra
 ---@field view_candidates I18nStatusExtractCandidate[]
 ---@field line_to_candidate table<integer, integer>
 ---@field existing_keys table<string, boolean>
+---@field framework_catalogs table<string, I18nStatusFrameworkCatalog>
 ---@field languages string[]
 ---@field primary_lang string
 ---@field start_dir string
+---@field source_identity I18nStatusProjectIdentity
+---@field source_tick integer
 ---@field list_width integer
 ---@field augroup integer
 ---@field status_message string|nil
@@ -66,9 +82,12 @@ local EXTRACT_REVIEW_TRACK_NS = vim.api.nvim_create_namespace("i18n-status-extra
 ---@field cfg I18nStatusConfig
 ---@field candidates I18nStatusExtractCandidate[]
 ---@field existing_keys table<string, boolean>
+---@field framework_catalogs table<string, I18nStatusFrameworkCatalog>
 ---@field languages string[]
 ---@field primary_lang string
 ---@field start_dir string
+---@field source_identity I18nStatusProjectIdentity
+---@field source_tick integer
 
 ---@type table<integer, I18nStatusExtractReviewCtx>
 local review_state = {}
@@ -106,8 +125,20 @@ end
 ---@param candidate I18nStatusExtractCandidate
 ---@return integer start_col
 ---@return integer end_col
-local function byte_columns_for_candidate(_, candidate)
-  return candidate.col, candidate.end_col
+local function byte_columns_for_candidate(bufnr, candidate)
+  local start_line = vim.api.nvim_buf_get_lines(bufnr, candidate.lnum, candidate.lnum + 1, false)[1] or ""
+  local end_line = start_line
+  if candidate.end_lnum ~= candidate.lnum then
+    end_line = vim.api.nvim_buf_get_lines(bufnr, candidate.end_lnum, candidate.end_lnum + 1, false)[1] or ""
+  end
+
+  local start_col = math.min(math.max(0, candidate.col or 0), #start_line)
+  local end_col = math.min(math.max(0, candidate.end_col or 0), #end_line)
+  if candidate.end_lnum == candidate.lnum and end_col < start_col then
+    end_col = start_col
+  end
+
+  return start_col, end_col
 end
 
 ---@param ctx I18nStatusExtractReviewCtx
@@ -125,6 +156,8 @@ local function create_track_mark(ctx, candidate)
   candidate.mark_id = vim.api.nvim_buf_set_extmark(bufnr, EXTRACT_REVIEW_TRACK_NS, candidate.lnum, start_col, {
     end_row = candidate.end_lnum,
     end_col = end_col,
+    right_gravity = false,
+    end_right_gravity = true,
   })
 end
 
@@ -135,11 +168,19 @@ end
 ---@return integer|nil
 ---@return integer|nil
 local function candidate_range(ctx, candidate)
-  if not candidate.mark_id then
+  if not candidate.mark_id or not vim.api.nvim_buf_is_valid(ctx.source_buf) then
     return nil, nil, nil, nil
   end
-  local mark =
-    vim.api.nvim_buf_get_extmark_by_id(ctx.source_buf, EXTRACT_REVIEW_TRACK_NS, candidate.mark_id, { details = true })
+  local ok, mark = pcall(
+    vim.api.nvim_buf_get_extmark_by_id,
+    ctx.source_buf,
+    EXTRACT_REVIEW_TRACK_NS,
+    candidate.mark_id,
+    { details = true }
+  )
+  if not ok or type(mark) ~= "table" then
+    return nil, nil, nil, nil
+  end
   if #mark < 3 then
     return nil, nil, nil, nil
   end
@@ -152,15 +193,15 @@ end
 
 ---@param ctx I18nStatusExtractReviewCtx
 ---@param candidate I18nStatusExtractCandidate
----@return string
-local function candidate_text(ctx, candidate)
+---@return string|nil
+local function candidate_source_text(ctx, candidate)
   local srow, scol, erow, ecol = candidate_range(ctx, candidate)
   if not srow then
-    return candidate.text or ""
+    return nil
   end
   local ok, lines = pcall(vim.api.nvim_buf_get_text, ctx.source_buf, srow, scol, erow, ecol, {})
   if not ok then
-    return candidate.text or ""
+    return nil
   end
   return table.concat(lines, "\n")
 end
@@ -196,18 +237,25 @@ end
 local function refresh_views(ctx, preferred_candidate_id)
   ctx.statuses_dirty = true
   if ctx.statuses_dirty then
-    extract_review_apply.refresh_candidate_statuses(ctx.candidates, ctx.existing_keys)
+    extract_review_apply.refresh_candidate_statuses(ctx.candidates, ctx.framework_catalogs, ctx.existing_keys)
     ctx.statuses_dirty = false
   end
   review_buffers.render_extract_list(ctx, EXTRACT_REVIEW_NS, preferred_candidate_id)
   review_buffers.render_extract_resource_preview(ctx, EXTRACT_REVIEW_NS, {
     current_candidate = current_candidate,
-    candidate_text = candidate_text,
   })
   review_buffers.render_extract_source_preview(ctx, EXTRACT_REVIEW_NS, {
+    candidate_range = candidate_range,
     current_candidate = current_candidate,
-    candidate_text = candidate_text,
   })
+end
+
+---@param candidate I18nStatusExtractCandidate
+local function clear_apply_error(candidate)
+  candidate.apply_error = nil
+  if not candidate.stale then
+    candidate.error = nil
+  end
 end
 
 ---@param ctx I18nStatusExtractReviewCtx
@@ -223,6 +271,7 @@ local function edit_candidate_key(ctx, candidate)
     candidate.mode = "new"
     candidate.selected = true
     candidate.proposed_key = vim.trim(input)
+    clear_apply_error(candidate)
     refresh_views(ctx, candidate.id)
   end)
 end
@@ -247,6 +296,7 @@ local function toggle_current_selection(ctx)
     return
   end
   candidate.selected = not candidate.selected
+  clear_apply_error(candidate)
   refresh_views(ctx, candidate.id)
 end
 
@@ -254,6 +304,7 @@ end
 local function select_all(ctx)
   for _, candidate in ipairs(ctx.candidates) do
     candidate.selected = true
+    clear_apply_error(candidate)
   end
   refresh_views(ctx, current_candidate(ctx) and current_candidate(ctx).id or nil)
 end
@@ -273,7 +324,9 @@ local function choose_reuse_mode(ctx)
     return
   end
 
-  if not ctx.existing_keys[candidate.proposed_key] then
+  local catalog = ctx.framework_catalogs[candidate.framework]
+  local existing_keys = (catalog and catalog.existing_keys) or ctx.existing_keys
+  if not existing_keys[candidate.proposed_key] then
     vim.notify("i18n-status extract: no existing key to reuse for " .. candidate.proposed_key, vim.log.levels.INFO)
     return
   end
@@ -281,6 +334,7 @@ local function choose_reuse_mode(ctx)
   if candidate.status ~= "conflict_existing" or candidate.mode ~= "new" then
     candidate.mode = "reuse"
     candidate.selected = true
+    clear_apply_error(candidate)
     refresh_views(ctx, candidate.id)
     return
   end
@@ -297,6 +351,7 @@ local function choose_reuse_mode(ctx)
     if choice == options[1] then
       candidate.mode = "reuse"
       candidate.selected = true
+      clear_apply_error(candidate)
       refresh_views(ctx, candidate.id)
       return
     end
@@ -320,6 +375,7 @@ local function choose_new_mode(ctx)
   candidate.mode = "new"
   candidate.selected = true
   candidate.proposed_key = candidate.new_key or candidate.proposed_key
+  clear_apply_error(candidate)
   refresh_views(ctx, candidate.id)
 end
 
@@ -329,7 +385,7 @@ local close_review
 local function apply_selected(ctx)
   extract_review_apply.apply_selected(ctx, {
     candidate_range = candidate_range,
-    candidate_text = candidate_text,
+    candidate_source_text = candidate_source_text,
     close_review = close_review,
     refresh_views = refresh_views,
   })
@@ -441,6 +497,24 @@ local function is_open_for_buffer(bufnr)
   return false
 end
 
+---@param layout I18nStatusExtractLayout
+---@param source_win integer
+local function discard_layout(layout, source_win)
+  for _, win in ipairs({ layout.source_preview_win, layout.resource_win, layout.list_win }) do
+    if win and vim.api.nvim_win_is_valid(win) then
+      pcall(vim.api.nvim_win_close, win, true)
+    end
+  end
+  if source_win and vim.api.nvim_win_is_valid(source_win) then
+    pcall(vim.api.nvim_set_current_win, source_win)
+  end
+  for _, buf in ipairs({ layout.list_buf, layout.resource_buf, layout.source_preview_buf }) do
+    if buf and vim.api.nvim_buf_is_valid(buf) then
+      pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    end
+  end
+end
+
 ---@param opts I18nStatusExtractReviewOpenOpts
 ---@return I18nStatusExtractReviewCtx|nil
 function M.open(opts)
@@ -454,9 +528,26 @@ function M.open(opts)
   if not opts.candidates or #opts.candidates == 0 then
     return nil
   end
+  if opts.source_tick and vim.api.nvim_buf_get_changedtick(opts.bufnr) ~= opts.source_tick then
+    vim.notify("i18n-status extract: source changed before the review opened", vim.log.levels.WARN)
+    return nil
+  end
 
   local source_win = vim.api.nvim_get_current_win()
   local layout = review_buffers.open_extract_layout(opts.cfg)
+  local identity_valid, identity_err = true, nil
+  if opts.source_identity then
+    identity_valid, identity_err =
+      project_identity.validate_buffer(opts.bufnr, opts.source_identity, "extract review layout")
+  end
+  if not identity_valid or (opts.source_tick and vim.api.nvim_buf_get_changedtick(opts.bufnr) ~= opts.source_tick) then
+    discard_layout(layout, source_win)
+    vim.notify(
+      "i18n-status extract: source changed while opening the review: " .. tostring(identity_err or "content changed"),
+      vim.log.levels.WARN
+    )
+    return nil
+  end
   local list_buf = layout.list_buf
   local resource_buf = layout.resource_buf
   local source_preview_buf = layout.source_preview_buf
@@ -481,9 +572,12 @@ function M.open(opts)
     view_candidates = {},
     line_to_candidate = {},
     existing_keys = vim.deepcopy(opts.existing_keys or {}),
+    framework_catalogs = vim.deepcopy(opts.framework_catalogs or {}),
     languages = vim.deepcopy(opts.languages or {}),
     primary_lang = opts.primary_lang,
     start_dir = opts.start_dir,
+    source_identity = vim.deepcopy(opts.source_identity),
+    source_tick = opts.source_tick,
     list_width = list_width,
     augroup = augroup,
     status_message = nil,
@@ -528,11 +622,10 @@ function M.open(opts)
       end
       review_buffers.render_extract_resource_preview(current, EXTRACT_REVIEW_NS, {
         current_candidate = current_candidate,
-        candidate_text = candidate_text,
       })
       review_buffers.render_extract_source_preview(current, EXTRACT_REVIEW_NS, {
+        candidate_range = candidate_range,
         current_candidate = current_candidate,
-        candidate_text = candidate_text,
       })
     end,
   })
@@ -554,6 +647,13 @@ function M.open(opts)
       end,
     })
   end
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    group = augroup,
+    buffer = opts.bufnr,
+    callback = function()
+      handle_external_close(false)
+    end,
+  })
 
   refresh_views(ctx, ctx.candidates[1] and ctx.candidates[1].id or nil)
   vim.api.nvim_set_current_win(list_win)
@@ -565,12 +665,13 @@ M._test = {
   normalize_key_input = extract_review_apply.normalize_key_input,
   status_icon = review_buffers.extract_status_icon,
   refresh_candidate_statuses = function(candidates, existing_keys)
-    extract_review_apply.refresh_candidate_statuses(candidates, existing_keys)
+    extract_review_apply.refresh_candidate_statuses(candidates, nil, existing_keys)
   end,
   applicable_candidates = function(candidates, existing_keys)
     local ctx = {
       candidates = candidates,
       existing_keys = existing_keys,
+      framework_catalogs = {},
       statuses_dirty = true,
     }
     return extract_review_apply.applicable_candidates(ctx, candidates)

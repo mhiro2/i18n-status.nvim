@@ -44,7 +44,54 @@ fn detects_jsx_text() {
     let items = result["items"].as_array().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["text"], "Hello World");
+    assert_eq!(items[0]["source_text"], "Hello World");
     assert_eq!(items[0]["kind"], "jsx_text");
+    assert_eq!(items[0]["replacement_context"], "jsx_child");
+}
+
+#[test]
+fn preserves_meaningful_spaces_at_jsx_element_boundaries() {
+    let source = r#"const App = () => <p>Hello <strong>dear</strong> friend</p>;"#;
+    let result = extract(source, "tsx");
+    let items = result["items"].as_array().unwrap();
+    let texts: Vec<&str> = items
+        .iter()
+        .map(|item| item["text"].as_str().unwrap())
+        .collect();
+
+    assert_eq!(texts, vec!["Hello ", "dear", " friend"]);
+}
+
+#[test]
+fn cleans_multiline_jsx_indentation_like_react() {
+    let source = r#"const App = () => (
+  <p>
+    Hello
+    world
+  </p>
+);"#;
+    let result = extract(source, "tsx");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["text"], "Hello world");
+    assert_eq!(items[0]["source_text"], "\n    Hello\n    world\n  ");
+}
+
+#[test]
+fn reports_neovim_byte_columns_after_multibyte_text() {
+    let source = r#"const App = () => <p>日本語<span>Hello world</span></p>;"#;
+    let result = extract(source, "tsx");
+    let item = result["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["text"] == "Hello world")
+        .expect("nested text should be detected");
+
+    let expected_start = source.find("Hello world").unwrap() as u64;
+    assert_eq!(item["col"].as_u64(), Some(expected_start));
+    assert_eq!(item["end_col"].as_u64(), Some(expected_start + 11));
 }
 
 #[test]
@@ -54,7 +101,33 @@ fn detects_jsx_literal() {
     let items = result["items"].as_array().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["text"], "Hello");
+    assert_eq!(items[0]["source_text"], r#""Hello""#);
     assert_eq!(items[0]["kind"], "jsx_literal");
+    assert_eq!(items[0]["replacement_context"], "jsx_expression");
+}
+
+#[test]
+fn preserves_raw_literal_but_returns_semantic_text() {
+    let source = r#"const App = () => <div>{"Hello\nworld"}</div>;"#;
+    let result = extract(source, "tsx");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["text"], "Hello\nworld");
+    assert_eq!(items[0]["source_text"], r#""Hello\nworld""#);
+    assert_eq!(items[0]["replacement_context"], "jsx_expression");
+}
+
+#[test]
+fn uses_cooked_template_literal_text() {
+    let source = r#"const App = () => <div>{`Hello\u0020world`}</div>;"#;
+    let result = extract(source, "tsx");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["text"], "Hello world");
+    assert_eq!(items[0]["source_text"], r#"`Hello\u0020world`"#);
+    assert_eq!(items[0]["replacement_context"], "jsx_expression");
 }
 
 #[test]

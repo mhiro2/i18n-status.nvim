@@ -216,8 +216,222 @@ function Page() {
     let result = scan::translation_context_at(params).expect("should succeed");
     assert_eq!(result["namespace"], "home");
     assert_eq!(result["t_func"], "t");
+    assert!(result["binding_id"].as_str().is_some());
+    assert_eq!(result["hook"], "useTranslation");
+    assert_eq!(result["framework"], "i18next");
+    assert_eq!(result["source_key_policy"], "canonical");
+    assert_eq!(result["namespace_resolution"], "static");
     assert_eq!(result["found_hook"], true);
     assert_eq!(result["has_any_hook"], true);
+}
+
+#[test]
+fn next_intl_context_returns_relative_source_key_metadata() {
+    let source = r#"
+function Page() {
+  const t = useTranslations("Home");
+  return <p>Hello</p>;
+}
+"#;
+    let result = scan::translation_context_at(scan::TranslationContextParams {
+        source: source.to_string(),
+        lang: "tsx".to_string(),
+        row: 3,
+        col: Some(12),
+        callee: Some("t".to_string()),
+        member_call: false,
+        fallback_namespace: "translation".to_string(),
+    })
+    .expect("context should resolve");
+
+    assert_eq!(result["namespace"], "Home");
+    assert_eq!(result["t_func"], "t");
+    assert!(result["binding_id"].as_str().is_some());
+    assert_eq!(result["hook"], "useTranslations");
+    assert_eq!(result["framework"], "next_intl");
+    assert_eq!(result["source_key_policy"], "namespace_relative");
+    assert_eq!(result["namespace_resolution"], "static");
+    assert_eq!(result["extract_safe"], true);
+}
+
+#[test]
+fn use_translation_options_report_extract_safety() {
+    let cases = [
+        ("no options", r#"useTranslation("common")"#, true),
+        (
+            "unrelated literal options",
+            r#"useTranslation("common", { lng: "en" })"#,
+            true,
+        ),
+        (
+            "identifier keyPrefix property",
+            r#"useTranslation("common", { keyPrefix: "account" })"#,
+            false,
+        ),
+        (
+            "keyPrefix shorthand",
+            r#"useTranslation("common", { keyPrefix })"#,
+            false,
+        ),
+        (
+            "string keyPrefix property",
+            r#"useTranslation("common", { "keyPrefix": "account" })"#,
+            false,
+        ),
+        (
+            "computed keyPrefix property",
+            r#"useTranslation("common", { ["keyPrefix"]: "account" })"#,
+            false,
+        ),
+        (
+            "spread options",
+            r#"useTranslation("common", { ...options })"#,
+            false,
+        ),
+        (
+            "dynamic options",
+            r#"useTranslation("common", options)"#,
+            false,
+        ),
+    ];
+
+    for (label, hook_call, expected) in cases {
+        let source = format!(
+            "function Page(options, keyPrefix) {{\n  const {{ t }} = {hook_call};\n  return <p>Hello</p>;\n}}"
+        );
+        let result = scan::translation_context_at(scan::TranslationContextParams {
+            source,
+            lang: "tsx".to_string(),
+            row: 2,
+            col: Some(12),
+            callee: Some("t".to_string()),
+            member_call: false,
+            fallback_namespace: "translation".to_string(),
+        })
+        .unwrap_or_else(|error| panic!("{label}: context should resolve: {error}"));
+
+        assert_eq!(result["found_hook"], true, "{label}");
+        assert_eq!(result["extract_safe"], expected, "{label}");
+    }
+}
+
+#[test]
+fn next_intl_contexts_are_extract_safe() {
+    let cases = [
+        (
+            "useTranslations",
+            "function Page() {",
+            r#"const t = useTranslations("Home");"#,
+        ),
+        (
+            "getTranslations",
+            "async function Page() {",
+            r#"const t = await getTranslations("Home");"#,
+        ),
+    ];
+
+    for (label, function_header, binding) in cases {
+        let source = format!("{function_header}\n  {binding}\n  return <p>Hello</p>;\n}}");
+        let result = scan::translation_context_at(scan::TranslationContextParams {
+            source,
+            lang: "tsx".to_string(),
+            row: 2,
+            col: Some(12),
+            callee: Some("t".to_string()),
+            member_call: false,
+            fallback_namespace: "translation".to_string(),
+        })
+        .unwrap_or_else(|error| panic!("{label}: context should resolve: {error}"));
+
+        assert_eq!(result["found_hook"], true, "{label}");
+        assert_eq!(result["framework"], "next_intl", "{label}");
+        assert_eq!(result["extract_safe"], true, "{label}");
+    }
+}
+
+#[test]
+fn translation_context_distinguishes_absent_and_dynamic_namespaces() {
+    let absent_source = r#"
+function Page() {
+  const { t } = useTranslation();
+  return <p>Hello</p>;
+}
+"#;
+    let absent = scan::translation_context_at(scan::TranslationContextParams {
+        source: absent_source.to_string(),
+        lang: "tsx".to_string(),
+        row: 3,
+        col: Some(12),
+        callee: Some("t".to_string()),
+        member_call: false,
+        fallback_namespace: "translation".to_string(),
+    })
+    .expect("absent namespace should resolve to fallback");
+    assert_eq!(absent["namespace_resolution"], "absent");
+    assert_eq!(absent["namespace"], "translation");
+
+    let dynamic_source = r#"
+function Page(namespace) {
+  const { t } = useTranslation(namespace);
+  return <p>Hello</p>;
+}
+"#;
+    let dynamic = scan::translation_context_at(scan::TranslationContextParams {
+        source: dynamic_source.to_string(),
+        lang: "tsx".to_string(),
+        row: 3,
+        col: Some(12),
+        callee: Some("t".to_string()),
+        member_call: false,
+        fallback_namespace: "translation".to_string(),
+    })
+    .expect("dynamic namespace should be reported");
+    assert_eq!(dynamic["namespace_resolution"], "dynamic");
+    assert_eq!(dynamic["namespace"], "translation");
+}
+
+#[test]
+fn get_translations_requires_await_through_typescript_wrappers() {
+    let unawaited_source = r#"
+async function Page() {
+  const t = (getTranslations("Home") as unknown) satisfies Translator;
+  return <p>Hello</p>;
+}
+"#;
+    let unawaited = scan::translation_context_at(scan::TranslationContextParams {
+        source: unawaited_source.to_string(),
+        lang: "tsx".to_string(),
+        row: 3,
+        col: Some(12),
+        callee: Some("t".to_string()),
+        member_call: false,
+        fallback_namespace: "translation".to_string(),
+    })
+    .expect("context request should succeed");
+    assert!(unawaited["t_func"].is_null());
+    assert!(unawaited["binding_id"].is_null());
+    assert_eq!(unawaited["found_hook"], false);
+
+    let awaited_source = r#"
+async function Page() {
+  const t = (await (getTranslations("Home") as unknown)) as Translator;
+  return <p>Hello</p>;
+}
+"#;
+    let awaited = scan::translation_context_at(scan::TranslationContextParams {
+        source: awaited_source.to_string(),
+        lang: "tsx".to_string(),
+        row: 3,
+        col: Some(12),
+        callee: Some("t".to_string()),
+        member_call: false,
+        fallback_namespace: "translation".to_string(),
+    })
+    .expect("context request should succeed");
+    assert_eq!(awaited["t_func"], "t");
+    assert!(awaited["binding_id"].as_str().is_some());
+    assert_eq!(awaited["hook"], "getTranslations");
+    assert_eq!(awaited["source_key_policy"], "namespace_relative");
 }
 
 #[test]
@@ -240,6 +454,8 @@ function Page() {
     };
     let result = scan::translation_context_at(params).expect("should succeed");
     assert_eq!(result["namespace"], "default_ns");
+    assert!(result["t_func"].is_null());
+    assert!(result["binding_id"].is_null());
     assert_eq!(result["found_hook"], false);
     assert_eq!(result["has_any_hook"], true);
 }
@@ -281,6 +497,42 @@ function Page() {
     assert_eq!(selected["t_func"], "adminT");
     assert_eq!(selected["found_hook"], true);
     assert_eq!(selected["ambiguous"], false);
+}
+
+#[test]
+fn translation_context_binding_id_identifies_the_resolved_declaration() {
+    let source = r#"
+const { t } = useTranslation("outer");
+function Page() {
+  const before = <p>Before</p>;
+  {
+    const { t } = useTranslation("inner");
+    const inside = <p>Inside</p>;
+  }
+  return <p>After</p>;
+}
+"#;
+    let context_at = |row| {
+        scan::translation_context_at(scan::TranslationContextParams {
+            source: source.to_string(),
+            lang: "tsx".to_string(),
+            row,
+            col: Some(12),
+            callee: Some("t".to_string()),
+            member_call: false,
+            fallback_namespace: "translation".to_string(),
+        })
+        .expect("context should resolve")
+    };
+
+    let before = context_at(3);
+    let inside = context_at(6);
+    let after = context_at(8);
+    assert_eq!(before["namespace"], "outer");
+    assert_eq!(inside["namespace"], "inner");
+    assert_eq!(after["namespace"], "outer");
+    assert_eq!(before["binding_id"], after["binding_id"]);
+    assert_ne!(before["binding_id"], inside["binding_id"]);
 }
 
 #[test]

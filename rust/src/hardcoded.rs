@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
-use swc_common::{SourceMap, Spanned};
+use swc_common::{SourceMap, SourceMapper, Spanned};
 use swc_ecma_ast::*;
 
 /// Convert a Wtf8Atom (string literal value) to a Rust String
@@ -38,12 +38,54 @@ pub struct HardcodedItem {
     pub end_lnum: u32,
     pub end_col: u32,
     pub text: String,
-    pub kind: String, // "jsx_text" or "jsx_literal"
+    pub source_text: String,
+    pub kind: String,
+    pub replacement_context: ReplacementContext,
 }
 
-fn normalize_whitespace(text: &str) -> String {
-    let result: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    result.trim().to_string()
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplacementContext {
+    JsxChild,
+    JsxExpression,
+}
+
+fn clean_jsx_text(text: &str) -> String {
+    let normalized_newlines = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized_newlines.split('\n').collect();
+    let last_non_empty = lines
+        .iter()
+        .rposition(|line| line.chars().any(|ch| ch != ' ' && ch != '\t'));
+    let Some(last_non_empty) = last_non_empty else {
+        return String::new();
+    };
+
+    let mut cleaned = String::new();
+    for (index, raw_line) in lines.iter().enumerate() {
+        let line = raw_line.replace('\t', " ");
+        let line = if index == 0 {
+            line.as_str()
+        } else {
+            line.trim_start_matches(' ')
+        };
+        let line = if index + 1 == lines.len() {
+            line
+        } else {
+            line.trim_end_matches(' ')
+        };
+
+        if !line.is_empty() {
+            cleaned.push_str(line);
+            if index != last_non_empty {
+                cleaned.push(' ');
+            }
+        }
+    }
+    cleaned
+}
+
+fn span_source(cm: &SourceMap, span: swc_common::Span) -> String {
+    cm.span_to_snippet(span).unwrap_or_default()
 }
 
 /// Evaluate a literal expression (string, template without substitutions)
@@ -56,7 +98,7 @@ fn eval_literal(expr: &Expr) -> Option<String> {
             }
             let mut result = String::new();
             for quasi in &tpl.quasis {
-                result.push_str(&quasi.raw);
+                result.push_str(&wtf8_to_string(quasi.cooked.as_ref()?));
             }
             Some(result)
         }
@@ -347,15 +389,17 @@ impl<'a> HardcodedVisitor<'a> {
             return;
         }
 
-        let normalized = normalize_whitespace(&text.value);
-        if normalized.len() >= self.min_length {
+        let normalized = clean_jsx_text(&text.value);
+        if normalized.trim().len() >= self.min_length {
             self.items.push(HardcodedItem {
                 lnum: start_line,
                 col: start_col,
                 end_lnum: end_line,
                 end_col,
                 text: normalized,
+                source_text: span_source(self.cm, text.span),
                 kind: "jsx_text".to_string(),
+                replacement_context: ReplacementContext::JsxChild,
             });
         }
     }
@@ -386,7 +430,9 @@ impl<'a> HardcodedVisitor<'a> {
                     end_lnum,
                     end_col,
                     text: literal,
+                    source_text: span_source(self.cm, expr.span()),
                     kind: "jsx_literal".to_string(),
+                    replacement_context: ReplacementContext::JsxExpression,
                 });
             }
         }

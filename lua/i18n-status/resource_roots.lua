@@ -239,16 +239,7 @@ function M.project_root(start_dir, roots)
     return git_root
   end
 
-  local paths = { start_dir }
-  for _, root in ipairs(roots or {}) do
-    if root and root.path and root.path ~= "" then
-      paths[#paths + 1] = root.path
-    end
-  end
-  if #paths == 0 then
-    return start_dir
-  end
-  if #paths == 1 then
+  if not roots or #roots == 0 then
     local dir = start_dir
     while dir and dir ~= "" and dir ~= "/" do
       if
@@ -266,6 +257,52 @@ function M.project_root(start_dir, roots)
       dir = parent
     end
     return start_dir
+  end
+
+  local paths = { start_dir }
+  for _, root in ipairs(roots) do
+    local expected = root and root.path and fs.canonical_path(root.path, nil) or nil
+    if not expected then
+      return start_dir
+    end
+
+    local owner = nil
+    local dir = start_dir
+    while dir and dir ~= "" do
+      local candidates = {}
+      if root.kind == "i18next" then
+        candidates = {
+          fs.path_join(dir, "public", "locales"),
+          fs.path_join(dir, "locales"),
+        }
+      elseif M.is_next_intl_kind(root.kind) then
+        candidates = { fs.path_join(dir, "messages") }
+      else
+        return start_dir
+      end
+
+      for _, candidate in ipairs(candidates) do
+        local resolved = fs.canonical_path(candidate, nil)
+        if resolved == expected then
+          owner = dir
+          break
+        end
+      end
+      if owner then
+        break
+      end
+
+      local parent = fs.dirname(dir)
+      if parent == dir then
+        break
+      end
+      dir = parent
+    end
+
+    if not owner then
+      return start_dir
+    end
+    paths[#paths + 1] = owner
   end
 
   local common = paths[1]

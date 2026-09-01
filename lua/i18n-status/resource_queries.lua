@@ -31,16 +31,34 @@ function M.new(resources, roots)
   end
 
   ---@param start_dir string
+  ---@param root_list I18nStatusRootInfo[]|nil
+  ---@return I18nStatusRootInfo[]
+  local function exact_roots(start_dir, root_list)
+    if root_list then
+      return root_list
+    end
+    local cache = resources.ensure_index(start_dir, { exact = true })
+    return (cache and cache.roots) or {}
+  end
+
+  ---@param start_dir string
   ---@param lang string
   ---@param namespace string
+  ---@param framework string|nil
+  ---@param root_list I18nStatusRootInfo[]|nil
   ---@return string|nil
-  function service.namespace_path(start_dir, lang, namespace)
-    local root_list = resources.roots(start_dir)
-    for _, root in ipairs(root_list) do
-      if root.kind == "i18next" then
+  function service.namespace_path(start_dir, lang, namespace, framework, root_list)
+    local requested_kind = nil
+    if framework == "i18next" then
+      requested_kind = "i18next"
+    elseif roots.is_next_intl_kind(framework) then
+      requested_kind = "next-intl"
+    end
+    for _, root in ipairs(exact_roots(start_dir, root_list)) do
+      if root.kind == "i18next" and (not requested_kind or requested_kind == "i18next") then
         return fs.path_join(root.path, lang, namespace .. ".json")
       end
-      if roots.is_next_intl_kind(root.kind) then
+      if roots.is_next_intl_kind(root.kind) and (not requested_kind or requested_kind == "next-intl") then
         local root_file = fs.path_join(root.path, lang .. ".json")
         if fs.file_exists(root_file) then
           return root_file
@@ -71,7 +89,7 @@ function M.new(resources, roots)
   ---@param start_dir string
   ---@return string[]
   function service.namespaces(start_dir)
-    local cache = resources.ensure_index(start_dir)
+    local cache = resources.ensure_index(start_dir, { exact = true })
     return cache.namespaces or {}
   end
 
@@ -114,9 +132,10 @@ function M.new(resources, roots)
 
   ---@param start_dir string
   ---@param path string
+  ---@param root_list I18nStatusRootInfo[]|nil
   ---@return I18nStatusResourceInfo|nil
-  function service.resource_info(start_dir, path)
-    return roots.resource_info_from_roots(resources.roots(start_dir), path)
+  function service.resource_info(start_dir, path, root_list)
+    return roots.resource_info_from_roots(exact_roots(start_dir, root_list), path)
   end
 
   ---@param bufnr integer
@@ -135,9 +154,10 @@ function M.new(resources, roots)
   ---@param start_dir string
   ---@param lang string
   ---@param path string
+  ---@param root_list I18nStatusRootInfo[]|nil
   ---@return boolean
-  function service.is_next_intl_root_file(start_dir, lang, path)
-    for _, root in ipairs(resources.roots(start_dir)) do
+  function service.is_next_intl_root_file(start_dir, lang, path, root_list)
+    for _, root in ipairs(exact_roots(start_dir, root_list)) do
       if roots.is_next_intl_kind(root.kind) then
         local candidate = fs.path_join(root.path, lang .. ".json")
         if candidate == path then
@@ -153,9 +173,10 @@ function M.new(resources, roots)
   ---@param start_dir string
   ---@param lang string
   ---@param path string
+  ---@param root_list I18nStatusRootInfo[]|nil
   ---@return string
-  function service.key_path_for_file(namespace, key_path, start_dir, lang, path)
-    if service.is_next_intl_root_file(start_dir, lang, path) then
+  function service.key_path_for_file(namespace, key_path, start_dir, lang, path, root_list)
+    if service.is_next_intl_root_file(start_dir, lang, path, root_list) then
       if key_path == "" then
         return namespace
       end
