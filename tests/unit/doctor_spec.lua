@@ -305,7 +305,7 @@ describe("doctor", function()
     helpers.write_file(
       root .. "/frontend/src/app/feature.tsx",
       [[
-      useTranslation("feature")
+      const { t } = useTranslation("feature")
       t("item.label")
     ]]
     )

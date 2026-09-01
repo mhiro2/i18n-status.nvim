@@ -13,8 +13,8 @@ pub(super) struct ConstBinding {
     pub(super) order: usize,
 }
 
-fn wtf8_to_string(atom: &swc_atoms::Wtf8Atom) -> String {
-    atom.as_wtf8().as_str().unwrap_or_default().to_string()
+fn wtf8_to_string(atom: &swc_atoms::Wtf8Atom) -> Option<String> {
+    atom.as_wtf8().as_str().map(ToOwned::to_owned)
 }
 
 pub(super) fn resolve_const_at_line(
@@ -60,11 +60,11 @@ where
     F: Fn(&str) -> Option<String>,
 {
     match expr {
-        Expr::Lit(Lit::Str(s)) => Some(wtf8_to_string(&s.value)),
+        Expr::Lit(Lit::Str(s)) => wtf8_to_string(&s.value),
         Expr::Tpl(tpl) => {
             let mut result = String::new();
             for (i, quasi) in tpl.quasis.iter().enumerate() {
-                result.push_str(&quasi.raw);
+                result.push_str(&wtf8_to_string(quasi.cooked.as_ref()?)?);
                 if let Some(expr) = tpl.exprs.get(i) {
                     let value = eval_string_expr_with_resolver(expr, resolve_ident)?;
                     result.push_str(&value);
@@ -126,12 +126,17 @@ where
         Expr::Tpl(tpl) => {
             let mut accum: Vec<String> = Vec::new();
             for (i, quasi) in tpl.quasis.iter().enumerate() {
-                let quasi_str: &str = &quasi.raw;
+                let Some(cooked) = &quasi.cooked else {
+                    return Vec::new();
+                };
+                let Some(quasi_str) = wtf8_to_string(cooked) else {
+                    return Vec::new();
+                };
                 if accum.is_empty() {
-                    accum.push(quasi_str.to_string());
+                    accum.push(quasi_str);
                 } else {
                     for value in &mut accum {
-                        value.push_str(quasi_str);
+                        value.push_str(&quasi_str);
                     }
                 }
                 if let Some(expr) = tpl.exprs.get(i) {

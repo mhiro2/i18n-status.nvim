@@ -4,8 +4,10 @@
 ---@field namespace string
 ---@field lnum integer
 ---@field col integer
+---@field end_lnum integer
 ---@field end_col integer
 ---@field fallback boolean
+---@field refactorable boolean
 
 ---@class I18nStatusHardcodedItem
 ---@field lnum integer

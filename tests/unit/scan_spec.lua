@@ -62,6 +62,33 @@ describe("scan", function()
     assert.are.equal("auth:login.title", items[1].key)
   end)
 
+  it("keeps namespaces bound to each translator alias", function()
+    local buf = make_buf({
+      "function Page() {",
+      '  const { t: commonT } = useTranslation("common")',
+      '  const { t: adminT } = useTranslation("admin")',
+      '  return [commonT("title"), adminT("save")]',
+      "}",
+    }, "typescript")
+    local items = scan.extract(buf, { fallback_namespace = "translation" })
+    assert.are.equal(2, #items)
+    assert.are.equal("common:title", items[1].key)
+    assert.are.equal("admin:save", items[2].key)
+  end)
+
+  it("returns Neovim byte ranges for multibyte source", function()
+    local line = 'const 前置き = "値"; t("title")'
+    local buf = make_buf({ line }, "typescript")
+    local items = scan.extract(buf, { fallback_namespace = "common" })
+    local start_col = line:find('"title"', 1, true) - 1
+
+    assert.are.equal(1, #items)
+    assert.are.equal(start_col, items[1].col)
+    assert.are.equal(0, items[1].end_lnum)
+    assert.are.equal(start_col + #'"title"', items[1].end_col)
+    assert.is_true(items[1].refactorable)
+  end)
+
   it("extracts asynchronously", function()
     local buf = make_buf({
       'const { t } = useTranslation("auth")',
@@ -166,7 +193,7 @@ describe("scan", function()
 
   it("extracts directly from text when parser exists", function()
     local text = table.concat({
-      'const t = useTranslation("auth")',
+      'const { t } = useTranslation("auth")',
       't("login.title")',
     }, "\n")
     local items = scan.extract_text(text, "typescript", { fallback_namespace = "common" })

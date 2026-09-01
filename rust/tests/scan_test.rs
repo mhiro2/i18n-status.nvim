@@ -127,6 +127,29 @@ t(`welcome`);
 }
 
 #[test]
+fn template_literal_keys_use_cooked_semantic_values() {
+    let result = extract(r#"t(`rename.\u0074itle`);"#, "tsx", "common");
+
+    let items = result["items"]
+        .as_array()
+        .expect("items should be an array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:rename.title");
+    assert_eq!(items[0]["raw"], "rename.title");
+    assert_eq!(items[0]["refactorable"], true);
+}
+
+#[test]
+fn template_literal_keys_reject_non_unicode_cooked_values() {
+    let result = extract(r#"t(`prefix\uD800suffix`);"#, "tsx", "common");
+    let items = result["items"]
+        .as_array()
+        .expect("items should be an array");
+
+    assert!(items.is_empty());
+}
+
+#[test]
 fn const_reference_resolution() {
     let source = r#"
 const KEY = "my_key";
@@ -138,6 +161,7 @@ t(KEY);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["key"], "common:my_key");
     assert_eq!(items[0]["raw"], "my_key");
+    assert_eq!(items[0]["refactorable"], false);
 }
 
 #[test]
@@ -184,6 +208,9 @@ function Page() {
         source: source.to_string(),
         lang: "tsx".to_string(),
         row: 3,
+        col: None,
+        callee: None,
+        member_call: false,
         fallback_namespace: "translation".to_string(),
     };
     let result = scan::translation_context_at(params).expect("should succeed");
@@ -206,10 +233,99 @@ function Page() {
         source: source.to_string(),
         lang: "tsx".to_string(),
         row: 0,
+        col: None,
+        callee: None,
+        member_call: false,
         fallback_namespace: "default_ns".to_string(),
     };
     let result = scan::translation_context_at(params).expect("should succeed");
     assert_eq!(result["namespace"], "default_ns");
+    assert_eq!(result["found_hook"], false);
+    assert_eq!(result["has_any_hook"], true);
+}
+
+#[test]
+fn translation_context_uses_requested_symbol_and_rejects_ambiguity() {
+    let source = r#"
+function Page() {
+  const { t: commonT } = useTranslation("common");
+  const { t: adminT } = useTranslation("admin");
+  return <p>Hello</p>;
+}
+"#;
+    let ambiguous = scan::translation_context_at(scan::TranslationContextParams {
+        source: source.to_string(),
+        lang: "tsx".to_string(),
+        row: 4,
+        col: None,
+        callee: None,
+        member_call: false,
+        fallback_namespace: "translation".to_string(),
+    })
+    .expect("context query should succeed");
+    assert_eq!(ambiguous["namespace"], "translation");
+    assert_eq!(ambiguous["found_hook"], false);
+    assert_eq!(ambiguous["ambiguous"], true);
+
+    let selected = scan::translation_context_at(scan::TranslationContextParams {
+        source: source.to_string(),
+        lang: "tsx".to_string(),
+        row: 4,
+        col: None,
+        callee: Some("adminT".to_string()),
+        member_call: false,
+        fallback_namespace: "translation".to_string(),
+    })
+    .expect("context query should succeed");
+    assert_eq!(selected["namespace"], "admin");
+    assert_eq!(selected["t_func"], "adminT");
+    assert_eq!(selected["found_hook"], true);
+    assert_eq!(selected["ambiguous"], false);
+}
+
+#[test]
+fn translation_context_does_not_borrow_hook_namespace_for_member_call() {
+    let source = r#"
+function Page() {
+  const { t } = useTranslation("home");
+  return i18n.t("title");
+}
+"#;
+    let result = scan::translation_context_at(scan::TranslationContextParams {
+        source: source.to_string(),
+        lang: "tsx".to_string(),
+        row: 3,
+        col: None,
+        callee: Some("t".to_string()),
+        member_call: true,
+        fallback_namespace: "translation".to_string(),
+    })
+    .expect("context query should succeed");
+    assert_eq!(result["namespace"], "translation");
+    assert_eq!(result["found_hook"], false);
+}
+
+#[test]
+fn translation_context_respects_non_translator_shadowing() {
+    let source = r#"
+const { t } = useTranslation("outer");
+async function Page() {
+  const t = getTranslations("not-awaited");
+  return t("ignored");
+}
+"#;
+    let call_col = source.lines().nth(4).unwrap().find("t(").unwrap() as u32;
+    let result = scan::translation_context_at(scan::TranslationContextParams {
+        source: source.to_string(),
+        lang: "tsx".to_string(),
+        row: 4,
+        col: Some(call_col),
+        callee: Some("t".to_string()),
+        member_call: false,
+        fallback_namespace: "translation".to_string(),
+    })
+    .expect("context query should succeed");
+    assert_eq!(result["namespace"], "translation");
     assert_eq!(result["found_hook"], false);
     assert_eq!(result["has_any_hook"], true);
 }
@@ -309,6 +425,7 @@ t(`${prefix}.not_found`);
     let items = result["items"].as_array().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["key"], "common:errors.not_found");
+    assert_eq!(items[0]["refactorable"], false);
 }
 
 #[test]
@@ -459,4 +576,503 @@ fn extract_root_resource_uses_top_level_namespace() {
     assert_eq!(items[0]["namespace"], "common");
     assert_eq!(items[1]["key"], "admin:save");
     assert_eq!(items[1]["namespace"], "admin");
+}
+
+#[test]
+fn source_ranges_use_neovim_byte_columns() {
+    let source = "\tconst 前置き😀 = \"値\"; t(\"title\");";
+    let result = extract(source, "typescript", "common");
+    let items = result["items"].as_array().unwrap();
+    let expected_col = source.find("\"title\"").unwrap() as u64;
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["lnum"], 0);
+    assert_eq!(items[0]["col"], expected_col);
+    assert_eq!(items[0]["end_lnum"], 0);
+    assert_eq!(items[0]["end_col"], expected_col + 7);
+    assert_eq!(items[0]["refactorable"], true);
+}
+
+#[test]
+fn computed_references_keep_multiline_ranges_but_refuse_refactoring() {
+    let source = r#"t(
+  enabled
+    ? "first"
+    : "second"
+);"#;
+    let result = extract(source, "typescript", "common");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 2);
+    for item in items {
+        assert_eq!(item["lnum"], 1);
+        assert_eq!(item["end_lnum"], 3);
+        assert_eq!(item["refactorable"], false);
+    }
+}
+
+#[test]
+fn translator_aliases_keep_their_symbol_bound_namespaces() {
+    let source = r#"
+function Page() {
+  const { t: commonT } = useTranslation("common");
+  const { t: adminT } = useTranslation("admin");
+  return [commonT("title"), adminT("save")];
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["key"], "common:title");
+    assert_eq!(items[1]["key"], "admin:save");
+}
+
+#[test]
+fn nested_translator_shadow_uses_the_innermost_symbol() {
+    let source = r#"
+function Page() {
+  const { t } = useTranslation("outer");
+  const before = t("before");
+  function Dialog() {
+    const { t } = useTranslation("inner");
+    return t("title");
+  }
+  return [before, t("after"), Dialog];
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["key"], "outer:before");
+    assert_eq!(items[1]["key"], "inner:title");
+    assert_eq!(items[2]["key"], "outer:after");
+}
+
+#[test]
+fn ordinary_lexical_bindings_shadow_translation_symbols() {
+    let source = r#"
+function Page() {
+  const { t } = useTranslation("outer");
+  function ParameterShadow(t) {
+    return t("parameter");
+  }
+  try {
+    throw new Error("failure");
+  } catch (t) {
+    t("catch");
+  }
+  {
+    const t = makeFormatter();
+    t("local");
+  }
+  return t("visible");
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "outer:visible");
+}
+
+#[test]
+fn var_binding_shadows_a_translator_across_its_function_scope() {
+    let source = r#"
+function Page() {
+  const { t } = useTranslation("outer");
+  function Nested() {
+    t("before");
+    if (enabled) {
+      var t = makeFormatter();
+    }
+    t("after");
+  }
+  return [t("visible"), Nested];
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "outer:visible");
+}
+
+#[test]
+fn translator_reassignment_stops_later_calls_from_using_the_old_namespace() {
+    let source = r#"
+function Page() {
+  let { t } = useTranslation("outer");
+  t("before");
+  t = makeFormatter();
+  t("after");
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "outer:before");
+}
+
+#[test]
+fn assignment_before_an_inner_declaration_does_not_invalidate_the_outer_translator() {
+    let source = r#"
+function Page() {
+  let { t } = useTranslation("outer");
+  {
+    t = makeFormatter();
+    let t = makeFormatter();
+  }
+  return t("visible");
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "outer:visible");
+}
+
+#[test]
+fn loop_assignment_targets_invalidate_translation_symbols() {
+    let source = r#"
+let { t } = useTranslation("outer");
+for (t of formatters) { t("for-of"); }
+let { t: second } = useTranslation("second");
+for (second in formatters) { second("for-in"); }
+"#;
+    let result = extract(source, "tsx", "translation");
+
+    assert!(result["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn destructuring_assignments_invalidate_translation_symbols() {
+    let source = r#"
+let { t } = useTranslation("outer");
+({ t } = formatter);
+t("object");
+let { t: second } = useTranslation("second");
+[second] = formatters;
+second("array");
+"#;
+    let result = extract(source, "tsx", "translation");
+
+    assert!(result["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn using_and_import_equals_bindings_do_not_fall_back_to_bare_t() {
+    let source = r#"
+import t = require("./formatter");
+t("import-equals");
+{
+  using t = makeFormatter();
+  t("using");
+}
+"#;
+    let result = extract(source, "typescript", "translation");
+
+    assert!(result["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn named_class_expression_binding_shadows_outer_translator() {
+    let source = r#"
+const { t } = useTranslation("outer");
+const Formatter = class t { method() { return t("class-name"); } };
+"#;
+    let result = extract(source, "typescript", "translation");
+
+    assert!(result["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn update_expressions_invalidate_translation_symbols() {
+    let source = r#"
+let { t } = useTranslation("outer");
+t++;
+t("after-update");
+"#;
+    let result = extract(source, "tsx", "translation");
+
+    assert!(result["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn enum_and_namespace_bindings_shadow_outer_translators() {
+    let source = r#"
+const { t } = useTranslation("outer");
+{ enum t { A } t("enum"); }
+{ namespace t { export const A = 1; } t("namespace"); }
+"#;
+    let result = extract(source, "typescript", "translation");
+
+    assert!(result["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn namespace_bindings_do_not_leak_into_outer_scopes() {
+    let source = r#"
+const { t } = useTranslation("outer");
+namespace N {
+  const t = makeFormatter();
+  t("inside");
+}
+t("outside");
+"#;
+    let result = extract(source, "typescript", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "outer:outside");
+}
+
+#[test]
+fn enum_initializers_can_use_outer_translators() {
+    let source = r#"
+const { t } = useTranslation("outer");
+enum E { A = t("inside") }
+"#;
+    let result = extract(source, "typescript", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "outer:inside");
+}
+
+#[test]
+fn translator_binding_is_not_callable_before_its_declaration() {
+    let source = r#"
+function Page() {
+  const before = t("before"); const { t } = useTranslation("common");
+  return t("after");
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "common:after");
+}
+
+#[test]
+fn mixed_framework_aliases_resolve_independently() {
+    let source = r#"
+async function Page() {
+  const { t: reactT } = useTranslation("react");
+  const intlT = useTranslations("client");
+  const serverT = await getTranslations("server");
+  const promiseT = getTranslations("invalid");
+  return [reactT("one"), intlT("two"), serverT("three"), promiseT("ignored")];
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["key"], "react:one");
+    assert_eq!(items[1]["key"], "client:two");
+    assert_eq!(items[2]["key"], "server:three");
+}
+
+#[test]
+fn hook_aliases_resolve_by_import_identity() {
+    let source = r#"
+import { useTranslation as useI18n } from "react-i18next";
+function Page() {
+  const { t } = useI18n("auth");
+  return t("title");
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "auth:title");
+}
+
+#[test]
+fn commonjs_hook_aliases_resolve_by_trusted_require_identity() {
+    let cases = [
+        (
+            r#"const { useTranslation } = require("react-i18next");"#,
+            "useTranslation",
+        ),
+        (
+            r#"const { useTranslation: useI18n } = require('react-i18next');"#,
+            "useI18n",
+        ),
+        (
+            r#"const useI18n = require("react-i18next").useTranslation;"#,
+            "useI18n",
+        ),
+    ];
+
+    for (binding, hook) in cases {
+        let source = format!(
+            r#"{binding}
+function Page() {{
+  const {{ t }} = {hook}("auth");
+  return t("title");
+}}"#
+        );
+        let result = extract(&source, "tsx", "translation");
+        let items = result["items"].as_array().unwrap();
+
+        assert_eq!(items.len(), 1, "{binding}");
+        assert_eq!(items[0]["key"], "auth:title", "{binding}");
+    }
+}
+
+#[test]
+fn commonjs_hooks_reject_untrusted_or_shadowed_require_calls() {
+    let cases = [
+        r#"
+const { useTranslation } = require("formatters");
+const { t } = useTranslation("wrong");
+t("ignored");
+"#,
+        r#"
+function Page(require) {
+  const { useTranslation } = require("react-i18next");
+  const { t } = useTranslation("wrong");
+  return t("ignored");
+}
+"#,
+        r#"
+function Page() {
+  const { useTranslation } = require("react-i18next");
+  var require = makeRequire();
+  const { t } = useTranslation("wrong");
+  return t("ignored");
+}
+"#,
+        r#"
+const packageName = "react-i18next";
+const { useTranslation } = require(packageName);
+const { t } = useTranslation("wrong");
+t("ignored");
+"#,
+    ];
+
+    for source in cases {
+        let result = extract(source, "tsx", "translation");
+        assert!(result["items"].as_array().unwrap().is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn awaited_hook_detection_unwraps_typescript_assertions() {
+    let source = r#"
+async function Page() {
+  const t = <Translator>(await getTranslations("server"));
+  return t("title");
+}
+"#;
+    let result = extract(source, "typescript", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "server:title");
+}
+
+#[test]
+fn shadowed_or_untrusted_hook_names_do_not_create_translators() {
+    let source = r#"
+import { useTranslation as useFormatter } from "formatters";
+function ParameterShadow(useTranslation) {
+  const { t: first } = useTranslation("wrong");
+  return first("ignored");
+}
+function UnknownImport() {
+  const { t: second } = useFormatter("wrong");
+  return second("ignored");
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    assert!(result["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn jsx_callback_parameters_shadow_outer_translators() {
+    let source = r#"
+function Page() {
+  const { t } = useTranslation("outer");
+  return <List render={(t) => t("ignored")} footer={t("visible")} />;
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "outer:visible");
+}
+
+#[test]
+fn default_parameter_expressions_collect_nested_symbol_scopes() {
+    let source = r#"
+const { t } = useTranslation("outer");
+function Page(callback = (t) => t("ignored")) {
+  return callback;
+}
+"#;
+    let result = extract(source, "tsx", "translation");
+    assert!(result["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn constructor_parameters_shadow_outer_translators() {
+    let source = r#"
+const { t } = useTranslation("outer");
+class Regular { constructor(t) { t("ignored"); } }
+class ParameterProperty { constructor(private t: Formatter) { t("ignored"); } }
+"#;
+    let result = extract(source, "tsx", "translation");
+    assert!(result["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn object_accessors_and_static_blocks_keep_callable_scopes() {
+    let source = r#"
+const { t } = useTranslation("outer");
+const object = {
+  set value(t) { t("setter"); },
+  get value() { var t = makeFormatter(); return t("getter"); }
+};
+class Example { static { var t = makeFormatter(); t("static"); } }
+"#;
+    let result = extract(source, "tsx", "translation");
+    assert!(result["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn scope_end_is_exclusive_for_an_adjacent_outer_call() {
+    let source = r#"const { t } = useTranslation("outer"); function Inner() { const { t } = useTranslation("inner"); }t("after");"#;
+    let result = extract(source, "tsx", "translation");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["key"], "outer:after");
+}
+
+#[test]
+fn resource_ranges_also_use_byte_columns() {
+    let source = r#"{"日本語":"value"}"#;
+    let result = scan::extract_resource(scan::ExtractResourceParams {
+        source: source.to_string(),
+        namespace: "common".to_string(),
+        is_root: false,
+        range: None,
+    })
+    .expect("extract_resource should succeed");
+    let items = result["items"].as_array().unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["col"], 1);
+    assert_eq!(items[0]["end_lnum"], 0);
+    assert_eq!(items[0]["end_col"], 12);
+    assert_eq!(items[0]["refactorable"], false);
 }

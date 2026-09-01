@@ -122,20 +122,29 @@ function M.apply(bufnr, items, resolved, config)
           table.insert(virt_text, { after_key_prefix .. text, text_hl(config) })
           table.insert(virt_text, { " " .. marker, status_hl(config, res.status) })
         end
+        local item_position = position
+        if item.end_lnum ~= nil and item.end_lnum ~= row then
+          item_position = "eol"
+        end
         local opts = {
           virt_text = virt_text,
-          virt_text_pos = position == "after_key" and "inline" or "eol",
+          virt_text_pos = item_position == "after_key" and "inline" or "eol",
         }
         local col = 0
-        if position == "after_key" then
+        if item_position == "after_key" then
           col = item.end_col
           opts.virt_text_pos = "inline"
         end
         vim.api.nvim_buf_set_extmark(bufnr, ns_id, row, col, opts)
         state.inline_by_buf[bufnr][row] = state.inline_by_buf[bufnr][row] or {}
+        local cursor_end_col = item.end_col
+        if item.end_lnum ~= nil and item.end_lnum ~= row then
+          local source_line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1] or ""
+          cursor_end_col = #source_line
+        end
         table.insert(state.inline_by_buf[bufnr][row], {
           col = item.col,
-          end_col = item.end_col,
+          end_col = cursor_end_col,
           resolved = res,
         })
       end

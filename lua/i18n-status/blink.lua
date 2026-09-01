@@ -36,15 +36,17 @@ end
 
 ---@param text string
 ---@return integer|nil
+---@return boolean
 local function last_call_start(text)
   local last = nil
+  local member_call = false
   for s in text:gmatch("()t%s*%(") do
-    last = s
+    if not last or s > last then
+      last = s
+      member_call = s > 1 and text:sub(s - 1, s - 1) == "."
+    end
   end
-  for s in text:gmatch("()%.t%s*%(") do
-    last = s
-  end
-  return last
+  return last, member_call
 end
 
 ---@param line string
@@ -135,9 +137,17 @@ local function get_completion_items(ctx)
     else
       local hint, reason = resources.namespace_hint(start_dir)
       local fallback_ns = reason == "single" and hint or nil
-      local ctx_result = scan.translation_context_at(bufnr, row, { fallback_namespace = fallback_ns })
-      ns = ctx_result.namespace
-      ns = ns or fallback_ns
+      local _, member_call = last_call_start(line:sub(1, col))
+      local ctx_result = scan.translation_context_at(bufnr, row, {
+        fallback_namespace = fallback_ns,
+        col = col,
+        callee = "t",
+        member_call = member_call,
+      })
+      if ctx_result.shadowed then
+        return {}
+      end
+      ns = ctx_result.found_hook and ctx_result.namespace or fallback_ns
     end
   end
 

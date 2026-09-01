@@ -93,14 +93,25 @@ local function build_candidates(bufnr, items, fallback_ns, extract_cfg, existing
   local candidates = {}
 
   for idx, item in ipairs(ordered) do
-    local context = scan.translation_context_at(bufnr, item.lnum, { fallback_namespace = fallback_ns })
+    local context = scan.translation_context_at(bufnr, item.lnum, {
+      fallback_namespace = fallback_ns,
+      col = item.col,
+    })
+    local context_error = nil
+    if context.ambiguous then
+      context_error = "multiple translation bindings are visible at this location"
+    elseif context.shadowed then
+      context_error = "the translation function is shadowed at this location"
+    elseif not context.found_hook then
+      context_error = "no callable translation binding is visible at this location"
+    end
     local namespace = context.namespace or fallback_ns or "common"
     local segment = ascii_slug(item.text, separator) or "key"
     local base_key = string.format("%s:%s", namespace, segment)
 
     local proposed_key = base_key
-    local status = "ready"
-    if existing_keys[base_key] then
+    local status = context_error and "error" or "ready"
+    if not context_error and existing_keys[base_key] then
       status = "conflict_existing"
     else
       proposed_key = ensure_unique_new_key(base_key, existing_keys, generated_keys, separator)
@@ -121,6 +132,8 @@ local function build_candidates(bufnr, items, fallback_ns, extract_cfg, existing
       mode = "new",
       selected = false,
       status = status,
+      context_error = context_error,
+      error = context_error,
     }
   end
 

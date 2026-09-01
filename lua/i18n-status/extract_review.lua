@@ -24,6 +24,7 @@ local EXTRACT_REVIEW_TRACK_NS = vim.api.nvim_create_namespace("i18n-status-extra
 ---@field selected boolean
 ---@field status 'ready'|'conflict_existing'|'invalid_key'|'error'
 ---@field error string|nil
+---@field context_error string|nil
 ---@field mark_id integer|nil
 
 ---@class I18nStatusExtractApplySummary
@@ -101,69 +102,12 @@ local function toggle_keymap_help(ctx)
   })
 end
 
----@param line string
----@param display_col integer
----@return integer
-local function display_col_to_byte_col(line, display_col)
-  if line == "" then
-    return 0
-  end
-  local target = math.max(0, display_col or 0)
-  if target == 0 then
-    return 0
-  end
-  local total_width = vim.fn.strdisplaywidth(line)
-  if target >= total_width then
-    return #line
-  end
-
-  local byte_col = 0
-  local width = 0
-  local line_len = #line
-  while byte_col < line_len do
-    local first_byte = line:byte(byte_col + 1) or 0
-    local char_len = 1
-    if first_byte >= 0xF0 then
-      char_len = 4
-    elseif first_byte >= 0xE0 then
-      char_len = 3
-    elseif first_byte >= 0xC2 then
-      char_len = 2
-    end
-    local next_byte_col = math.min(byte_col + char_len, line_len)
-    local ch = line:sub(byte_col + 1, next_byte_col)
-    local ch_width = vim.api.nvim_strwidth(ch)
-    if width + ch_width > target then
-      return byte_col
-    end
-    width = width + ch_width
-    byte_col = next_byte_col
-    if width == target then
-      return byte_col
-    end
-  end
-
-  return line_len
-end
-
 ---@param bufnr integer
 ---@param candidate I18nStatusExtractCandidate
 ---@return integer start_col
 ---@return integer end_col
-local function byte_columns_for_candidate(bufnr, candidate)
-  local start_line = vim.api.nvim_buf_get_lines(bufnr, candidate.lnum, candidate.lnum + 1, false)[1] or ""
-  local end_line = start_line
-  if candidate.end_lnum ~= candidate.lnum then
-    end_line = vim.api.nvim_buf_get_lines(bufnr, candidate.end_lnum, candidate.end_lnum + 1, false)[1] or ""
-  end
-
-  local start_col = display_col_to_byte_col(start_line, candidate.col)
-  local end_col = display_col_to_byte_col(end_line, candidate.end_col)
-  if candidate.end_lnum == candidate.lnum and end_col < start_col then
-    end_col = start_col
-  end
-
-  return start_col, end_col
+local function byte_columns_for_candidate(_, candidate)
+  return candidate.col, candidate.end_col
 end
 
 ---@param ctx I18nStatusExtractReviewCtx

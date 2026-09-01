@@ -58,6 +58,20 @@ fn detects_jsx_literal() {
 }
 
 #[test]
+fn reports_neovim_byte_columns_after_multibyte_source() {
+    let source = r#"const prefix = "あ😀"; const App = () => <div>日本語</div>;"#;
+    let result = extract(source, "tsx");
+    let items = result["items"].as_array().unwrap();
+    let start = source.find("日本語").unwrap() as u64;
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["lnum"], 0);
+    assert_eq!(items[0]["col"], start);
+    assert_eq!(items[0]["end_lnum"], 0);
+    assert_eq!(items[0]["end_col"], start + "日本語".len() as u64);
+}
+
+#[test]
 fn excluded_inside_trans_component() {
     let source = r#"const App = () => <Trans>Hello World</Trans>;"#;
     let result = extract(source, "tsx");

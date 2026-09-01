@@ -62,7 +62,9 @@ describe("ops.rename", function()
             namespace = "common",
             lnum = 0,
             col = col,
+            end_lnum = 0,
             end_col = end_col,
+            refactorable = true,
           },
         }
       end
@@ -120,7 +122,10 @@ describe("ops.rename", function()
       resources.ensure_index(root)
 
       local col, end_col = literal_range(buf, "rename.title")
-      scan.extract = function()
+      scan.extract = function(bufnr)
+        if bufnr ~= buf then
+          return {}
+        end
         return {
           {
             key = "common:rename.title",
@@ -128,7 +133,9 @@ describe("ops.rename", function()
             namespace = "common",
             lnum = 0,
             col = col,
+            end_lnum = 0,
             end_col = end_col,
+            refactorable = true,
           },
         }
       end
@@ -183,7 +190,9 @@ describe("ops.rename", function()
             namespace = "common",
             lnum = 0,
             col = col,
+            end_lnum = 0,
             end_col = end_col,
+            refactorable = true,
           },
         }
       end
@@ -234,7 +243,10 @@ describe("ops.rename", function()
       resources.ensure_index(root)
 
       local col, end_col = literal_range(buf, "rename.title")
-      scan.extract = function()
+      scan.extract = function(bufnr)
+        if bufnr ~= buf then
+          return {}
+        end
         return {
           {
             key = "common:rename.title",
@@ -242,7 +254,9 @@ describe("ops.rename", function()
             namespace = "common",
             lnum = 0,
             col = col,
+            end_lnum = 0,
             end_col = end_col,
+            refactorable = true,
           },
         }
       end
@@ -279,13 +293,212 @@ describe("ops.rename", function()
 
       assert.is_false(ok)
       assert.is_truthy(err)
-      assert.is_true(err:find("resource files were renamed", 1, true) ~= nil)
+      assert.is_true(err:find("failed to read translation reference", 1, true) ~= nil)
       local ja = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
       local en = vim.json.decode(helpers.read_file(root .. "/locales/en/common.json"))
-      assert.is_nil(ja.rename.title)
-      assert.is_nil(en.rename.title)
-      assert.are.equal("ログイン", ja.rename.heading)
-      assert.are.equal("Login", en.rename.heading)
+      assert.are.equal("ログイン", ja.rename.title)
+      assert.are.equal("Login", en.rename.title)
+      assert.is_nil(ja.rename.heading)
+      assert.is_nil(en.rename.heading)
+    end)
+  end)
+
+  it("uses byte ranges without corrupting multibyte source", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
+    vim.fn.mkdir(root .. "/src", "p")
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf(root .. "/src/app.ts", 'const 前置き = "値"; t("rename.title")')
+      local config = config_mod.setup({ primary_lang = "ja", inline = { visible_only = false } })
+      resources.ensure_index(root)
+
+      local col, end_col = literal_range(buf, "rename.title")
+      scan.extract = function(bufnr)
+        if bufnr ~= buf then
+          return {}
+        end
+        return {
+          {
+            key = "common:rename.title",
+            raw = "rename.title",
+            namespace = "common",
+            lnum = 0,
+            col = col,
+            end_lnum = 0,
+            end_col = end_col,
+            refactorable = true,
+          },
+        }
+      end
+
+      local ok, err = ops.rename({
+        item = {
+          key = "common:rename.title",
+          namespace = "common",
+          hover = {
+            values = {
+              ja = { file = root .. "/locales/ja/common.json", value = "ログイン" },
+              en = { file = root .. "/locales/en/common.json", value = "Login" },
+            },
+          },
+        },
+        source_buf = buf,
+        new_key = "common:rename.heading",
+        config = config,
+      })
+
+      assert.is_true(ok, err or "rename failed")
+      assert.are.equal('const 前置き = "値"; t("rename.heading")', vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1])
+    end)
+  end)
+
+  it("applies multiple edits on the same line from right to left", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
+    vim.fn.mkdir(root .. "/src", "p")
+
+    helpers.with_cwd(root, function()
+      local source = 'const labels = [t("rename.title"), t("rename.title")]'
+      local buf = make_buf(root .. "/src/app.ts", source)
+      local config = config_mod.setup({ primary_lang = "ja", inline = { visible_only = false } })
+      resources.ensure_index(root)
+
+      local first = assert(source:find('"rename.title"', 1, true)) - 1
+      local second = assert(source:find('"rename.title"', first + 2, true)) - 1
+      scan.extract = function(bufnr)
+        if bufnr ~= buf then
+          return {}
+        end
+        local function item_at(col)
+          return {
+            key = "common:rename.title",
+            raw = "rename.title",
+            namespace = "common",
+            lnum = 0,
+            col = col,
+            end_lnum = 0,
+            end_col = col + #'"rename.title"',
+            refactorable = true,
+          }
+        end
+        return { item_at(first), item_at(second) }
+      end
+
+      local ok, err = ops.rename({
+        item = {
+          key = "common:rename.title",
+          namespace = "common",
+          hover = {
+            values = {
+              ja = { file = root .. "/locales/ja/common.json", value = "ログイン" },
+              en = { file = root .. "/locales/en/common.json", value = "Login" },
+            },
+          },
+        },
+        source_buf = buf,
+        new_key = "common:rename.heading",
+        config = config,
+      })
+
+      assert.is_true(ok, err or "rename failed")
+      assert.are.equal(
+        'const labels = [t("rename.heading"), t("rename.heading")]',
+        vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
+      )
+    end)
+  end)
+
+  it("refuses computed references before changing resources", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
+    vim.fn.mkdir(root .. "/src", "p")
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf(root .. "/src/app.ts", "t(")
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+        "t(",
+        "  enabled",
+        '    ? "rename.title"',
+        '    : "other"',
+        ")",
+      })
+      local config = config_mod.setup({ primary_lang = "ja", inline = { visible_only = false } })
+      resources.ensure_index(root)
+
+      scan.extract = function(bufnr)
+        if bufnr ~= buf then
+          return {}
+        end
+        return {
+          {
+            key = "common:rename.title",
+            raw = "rename.title",
+            namespace = "common",
+            lnum = 1,
+            col = 2,
+            end_lnum = 3,
+            end_col = 13,
+            refactorable = false,
+          },
+        }
+      end
+
+      local ok, err = ops.rename({
+        item = {
+          key = "common:rename.title",
+          namespace = "common",
+          hover = {
+            values = {
+              ja = { file = root .. "/locales/ja/common.json", value = "ログイン" },
+              en = { file = root .. "/locales/en/common.json", value = "Login" },
+            },
+          },
+        },
+        source_buf = buf,
+        new_key = "common:rename.heading",
+        config = config,
+      })
+
+      assert.is_false(ok)
+      assert.is_truthy(err and err:find("computed translation reference", 1, true))
+      local ja = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      local en = vim.json.decode(helpers.read_file(root .. "/locales/en/common.json"))
+      assert.are.equal("ログイン", ja.rename.title)
+      assert.are.equal("Login", en.rename.title)
+      assert.is_nil(ja.rename.heading)
+      assert.is_nil(en.rename.heading)
+    end)
+  end)
+
+  it("rejects unsafe key syntax before changing source or resources", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
+    vim.fn.mkdir(root .. "/src", "p")
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf(root .. "/src/app.ts", 't("rename.title")')
+      local config = config_mod.setup({ primary_lang = "ja", inline = { visible_only = false } })
+      resources.ensure_index(root)
+
+      for _, new_key in ipairs({ 'common:rename."heading', [[common:rename.\heading]] }) do
+        local ok, err = ops.rename({
+          item = { key = "common:rename.title", namespace = "common" },
+          source_buf = buf,
+          new_key = new_key,
+          config = config,
+        })
+
+        assert.is_false(ok)
+        assert.is_truthy(err and err:find("invalid key path format", 1, true))
+      end
+      assert.are.equal('t("rename.title")', vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1])
+      local ja = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      assert.are.equal("ログイン", ja.rename.title)
     end)
   end)
 
@@ -303,7 +516,10 @@ describe("ops.rename", function()
       resources.ensure_index(root)
 
       local col, end_col = literal_range(buf, "rename.title")
-      scan.extract = function()
+      scan.extract = function(bufnr)
+        if bufnr ~= buf then
+          return {}
+        end
         return {
           {
             key = "common:rename.title",
@@ -311,7 +527,9 @@ describe("ops.rename", function()
             namespace = "common",
             lnum = 0,
             col = col,
+            end_lnum = 0,
             end_col = end_col,
+            refactorable = true,
           },
         }
       end

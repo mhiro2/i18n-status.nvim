@@ -144,7 +144,10 @@ describe("failure scenarios", function()
       resources.ensure_index(root)
 
       local original_extract = scan.extract
-      scan.extract = function()
+      scan.extract = function(bufnr)
+        if bufnr ~= buf then
+          return {}
+        end
         return {
           {
             key = "common:rename.title",
@@ -152,7 +155,9 @@ describe("failure scenarios", function()
             namespace = "common",
             lnum = 0,
             col = 2,
+            end_lnum = 0,
             end_col = 16,
+            refactorable = true,
           },
         }
       end

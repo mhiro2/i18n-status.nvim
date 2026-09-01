@@ -70,17 +70,35 @@ end
 
 ---@param input string
 ---@param fallback_ns string
----@return string, string, string, boolean
+---@return string|nil key
+---@return string|nil namespace
+---@return string|nil key_path
+---@return boolean explicit_namespace
+---@return string|nil error
 local function normalize_key(input, fallback_ns)
   local key = vim.trim(input)
-  local ns = key:match("^(.-):")
-  local explicit_ns = ns ~= nil
-  if not ns then
-    ns = fallback_ns
-    key = ns .. ":" .. key
+  local first_colon = key:find(":", 1, true)
+  if first_colon and key:find(":", first_colon + 1, true) then
+    return nil, nil, nil, false, "new key can only contain one ':' separator"
   end
-  local key_path = key:match("^[^:]+:(.+)$") or ""
-  return key, ns, key_path, explicit_ns
+
+  local explicit_ns = first_colon ~= nil
+  local ns = explicit_ns and key:sub(1, first_colon - 1) or fallback_ns
+  local key_path = explicit_ns and key:sub(first_colon + 1) or key
+  if not ns or ns == "" then
+    return nil, nil, nil, explicit_ns, "namespace is empty"
+  end
+  if key_path == "" or key_path:match("^%.") or key_path:match("%.$") or key_path:match("%.%.") then
+    return nil, nil, nil, explicit_ns, "invalid key path"
+  end
+  if not ns:match("^[%w_%-%.]+$") then
+    return nil, nil, nil, explicit_ns, "invalid namespace format"
+  end
+  if not key_path:match("^[%w_%-%.]+$") then
+    return nil, nil, nil, explicit_ns, "invalid key path format"
+  end
+
+  return ns .. ":" .. key_path, ns, key_path, explicit_ns, nil
 end
 
 ---@param bufnr integer
@@ -89,13 +107,21 @@ end
 ---@param new_ns string
 ---@param explicit_ns boolean
 ---@param fallback_ns string
----@return string[] edit_errors
-local function rename_in_buffer(bufnr, old_key, new_key, new_ns, explicit_ns, fallback_ns)
+---@return table[]|nil edits
+---@return string|nil error
+local function plan_buffer_rename(bufnr, old_key, new_key, new_ns, explicit_ns, fallback_ns)
   local items = rpc_scan_extract(bufnr, fallback_ns)
   local edits = {}
-  local edit_errors = {}
   for _, item in ipairs(items) do
     if item.key == old_key then
+      if item.refactorable ~= true then
+        return nil,
+          string.format(
+            "cannot safely rename computed translation reference in buffer %d at line %d",
+            bufnr,
+            item.lnum + 1
+          )
+      end
       local new_raw = new_key
       if not item.raw:find(":", 1, true) then
         if explicit_ns and item.namespace ~= new_ns then
@@ -104,11 +130,32 @@ local function rename_in_buffer(bufnr, old_key, new_key, new_ns, explicit_ns, fa
           new_raw = new_key:match("^[^:]+:(.+)$") or new_key
         end
       end
+      local end_lnum = item.end_lnum
+      if
+        type(item.lnum) ~= "number"
+        or type(item.col) ~= "number"
+        or type(end_lnum) ~= "number"
+        or type(item.end_col) ~= "number"
+      then
+        return nil, string.format("invalid translation reference range in buffer %d", bufnr)
+      end
+      local ok_old, old_chunks =
+        pcall(vim.api.nvim_buf_get_text, bufnr, item.lnum, item.col, end_lnum, item.end_col, {})
+      if not ok_old or type(old_chunks) ~= "table" then
+        return nil, string.format("failed to read translation reference in buffer %d", bufnr)
+      end
+      local old_text = table.concat(old_chunks, "\n")
+      local quote = old_text:sub(1, 1)
+      if #old_text < 2 or (quote ~= '"' and quote ~= "'" and quote ~= "`") or old_text:sub(-1) ~= quote then
+        return nil, string.format("translation reference is not a direct literal in buffer %d", bufnr)
+      end
       table.insert(edits, {
         lnum = item.lnum,
         col = item.col,
+        end_lnum = end_lnum,
         end_col = item.end_col,
-        new_raw = new_raw,
+        old_text = old_text,
+        new_text = vim.json.encode(new_raw),
       })
     end
   end
@@ -118,26 +165,34 @@ local function rename_in_buffer(bufnr, old_key, new_key, new_ns, explicit_ns, fa
     end
     return a.lnum > b.lnum
   end)
+
+  return edits, nil
+end
+
+---@param bufnr integer
+---@param edits table[]
+---@return string[] edit_errors
+local function apply_buffer_rename(bufnr, edits)
+  local edit_errors = {}
   for _, edit in ipairs(edits) do
     if vim.api.nvim_buf_is_valid(bufnr) then
-      local quote = '"'
       local ok_old, old_chunks =
-        pcall(vim.api.nvim_buf_get_text, bufnr, edit.lnum, edit.col, edit.lnum, edit.end_col, {})
-      if ok_old and type(old_chunks) == "table" then
-        local old_text = old_chunks[1] or ""
-        local old_quote = old_text:sub(1, 1)
-        if old_quote == '"' or old_quote == "'" or old_quote == "`" then
-          quote = old_quote
-        end
-      end
-      local new_text = quote .. edit.new_raw .. quote
-      local ok_set, set_err =
-        pcall(vim.api.nvim_buf_set_text, bufnr, edit.lnum, edit.col, edit.lnum, edit.end_col, { new_text })
-      if not ok_set then
+        pcall(vim.api.nvim_buf_get_text, bufnr, edit.lnum, edit.col, edit.end_lnum, edit.end_col, {})
+      local current_text = ok_old and type(old_chunks) == "table" and table.concat(old_chunks, "\n") or nil
+      if current_text ~= edit.old_text then
         table.insert(
           edit_errors,
-          string.format("buf=%d line=%d col=%d error=%s", bufnr, edit.lnum + 1, edit.col + 1, tostring(set_err))
+          string.format("buf=%d line=%d error=translation reference changed before apply", bufnr, edit.lnum + 1)
         )
+      else
+        local ok_set, set_err =
+          pcall(vim.api.nvim_buf_set_text, bufnr, edit.lnum, edit.col, edit.end_lnum, edit.end_col, { edit.new_text })
+        if not ok_set then
+          table.insert(
+            edit_errors,
+            string.format("buf=%d line=%d col=%d error=%s", bufnr, edit.lnum + 1, edit.col + 1, tostring(set_err))
+          )
+        end
       end
     end
   end
@@ -200,7 +255,10 @@ function M.rename(opts)
     return false, "new key is empty"
   end
 
-  local new_key, new_ns, new_path, explicit_ns = normalize_key(new_key_input, fallback_ns)
+  local new_key, new_ns, new_path, explicit_ns, normalize_err = normalize_key(new_key_input, fallback_ns)
+  if not new_key or not new_ns or not new_path then
+    return false, normalize_err or "invalid new key"
+  end
   if new_key == old_key then
     return true
   end
@@ -218,6 +276,20 @@ function M.rename(opts)
   local langs = active_languages(cache, project)
   if #langs == 0 then
     return false, "no languages detected"
+  end
+
+  local buffer_plans = {}
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if is_target_rename_buf(buf) then
+      local fb = resources.fallback_namespace_for_buf(buf)
+      local edits, plan_err = plan_buffer_rename(buf, old_key, new_key, new_ns, explicit_ns, fb)
+      if not edits then
+        return false, plan_err or "failed to plan source rename"
+      end
+      if #edits > 0 then
+        table.insert(buffer_plans, { bufnr = buf, edits = edits })
+      end
+    end
   end
 
   local file_cache = {}
@@ -353,22 +425,17 @@ function M.rename(opts)
     end
   end
 
-  local updated_bufs = {}
   local buffer_edit_errors = {}
 
-  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    if is_target_rename_buf(buf) then
-      local fb = resources.fallback_namespace_for_buf(buf)
-      local edit_errors = rename_in_buffer(buf, old_key, new_key, new_ns, explicit_ns, fb)
-      for _, edit_err in ipairs(edit_errors) do
-        table.insert(buffer_edit_errors, edit_err)
-      end
-      table.insert(updated_bufs, buf)
+  for _, plan in ipairs(buffer_plans) do
+    local edit_errors = apply_buffer_rename(plan.bufnr, plan.edits)
+    for _, edit_err in ipairs(edit_errors) do
+      table.insert(buffer_edit_errors, edit_err)
     end
   end
 
-  for _, buf in ipairs(updated_bufs) do
-    core.refresh_now(buf, opts.config)
+  for _, plan in ipairs(buffer_plans) do
+    core.refresh_now(plan.bufnr, opts.config)
   end
 
   if #buffer_edit_errors > 0 then

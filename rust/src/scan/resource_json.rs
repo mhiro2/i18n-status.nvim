@@ -56,7 +56,7 @@ impl<'a> JsonLeafScanner<'a> {
             self.line += 1;
             self.col = 0;
         } else {
-            self.col += 1;
+            self.col += ch.len_utf8() as u32;
         }
         Some(ch)
     }
@@ -391,8 +391,10 @@ pub(super) fn extract_resource(params: ExtractResourceParams) -> Result<Value> {
                 namespace,
                 lnum: leaf.lnum,
                 col: leaf.col,
+                end_lnum: leaf.lnum,
                 end_col: leaf.end_col,
                 fallback: false,
+                refactorable: false,
             });
         } else {
             if leaf.path.is_empty() {
@@ -405,8 +407,10 @@ pub(super) fn extract_resource(params: ExtractResourceParams) -> Result<Value> {
                 namespace: params.namespace.clone(),
                 lnum: leaf.lnum,
                 col: leaf.col,
+                end_lnum: leaf.lnum,
                 end_col: leaf.end_col,
                 fallback: false,
+                refactorable: false,
             });
         }
     }

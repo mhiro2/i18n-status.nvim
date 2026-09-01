@@ -55,11 +55,21 @@ pub(crate) fn parse_module(source: &str, lang: &str) -> Result<(Module, Lrc<Sour
 pub(super) fn span_to_loc(cm: &SourceMap, span: Span) -> (u32, u32, u32) {
     let lo = cm.lookup_char_pos(span.lo);
     let hi = cm.lookup_char_pos(span.hi);
+    let lo_line_start = lo.file.analyze().lines[lo.line - 1];
+    let hi_line_start = hi.file.analyze().lines[hi.line - 1];
     (
         lo.line as u32 - 1,
-        lo.col_display as u32,
-        hi.col_display as u32,
+        span.lo.0 - lo_line_start.0,
+        span.hi.0 - hi_line_start.0,
     )
+}
+
+pub(crate) fn span_to_byte_range(cm: &SourceMap, span: Span) -> (u32, u32, u32, u32) {
+    let lo = cm.lookup_char_pos(span.lo);
+    let hi = cm.lookup_char_pos(span.hi);
+    let lo_col = span.lo.0 - lo.file.line_begin_pos(span.lo).0;
+    let hi_col = span.hi.0 - hi.file.line_begin_pos(span.hi).0;
+    (lo.line as u32 - 1, lo_col, hi.line as u32 - 1, hi_col)
 }
 
 pub(super) fn span_to_lines(cm: &SourceMap, span: Span) -> (u32, u32) {

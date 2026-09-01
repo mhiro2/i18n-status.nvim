@@ -80,8 +80,10 @@ local function regex_extract(value, fallback_ns)
         namespace = ns,
         lnum = line_num,
         col = s - 1,
+        end_lnum = line_num,
         end_col = e,
         fallback = fallback,
+        refactorable = false,
       })
       col = e + 1
     end
@@ -125,13 +127,19 @@ end
 ---@param source string
 ---@param lang string
 ---@param row integer
+---@param col integer|nil
+---@param callee string|nil
+---@param member_call boolean|nil
 ---@param fallback_ns string
 ---@return table|nil
-local function request_translation_context(source, lang, row, fallback_ns)
+local function request_translation_context(source, lang, row, col, callee, member_call, fallback_ns)
   local result, err = rpc.request_sync("scan/translationContextAt", {
     source = source,
     lang = lang,
     row = row,
+    col = col or vim.NIL,
+    callee = callee or vim.NIL,
+    member_call = member_call or false,
     fallback_namespace = fallback_ns,
   })
   if err then
@@ -270,37 +278,69 @@ end
 
 ---@param bufnr integer
 ---@param row integer
----@param opts? { fallback_namespace?: string }
----@return { namespace: string|nil, t_func: string, found_hook: boolean, has_any_hook: boolean }
+---@param opts? { fallback_namespace?: string, col?: integer, callee?: string, member_call?: boolean }
+---@return { namespace: string|nil, t_func: string, found_hook: boolean, has_any_hook: boolean, ambiguous: boolean, shadowed: boolean }
 function M.translation_context_at(bufnr, row, opts)
   opts = opts or {}
   local fallback_ns = opts.fallback_namespace or ""
   local lang = lang_for_buf(bufnr)
   if lang == "" then
-    return { namespace = fallback_ns, t_func = "t", found_hook = false, has_any_hook = false }
+    return {
+      namespace = fallback_ns,
+      t_func = "t",
+      found_hook = false,
+      has_any_hook = false,
+      ambiguous = false,
+      shadowed = false,
+    }
   end
 
   local snapshot = buf_snapshot(bufnr)
   local lines = snapshot.lines
   local source = snapshot.source
-  local result = request_translation_context(source, lang, row, fallback_ns)
+  local result = request_translation_context(source, lang, row, opts.col, opts.callee, opts.member_call, fallback_ns)
   local line = lines[row + 1]
   if not result and should_retry_translation_context(vim.bo[bufnr].filetype, line) then
     if row + 1 <= #lines then
-      result = request_translation_context(source_with_replaced_line(lines, row + 1, ""), lang, row, fallback_ns)
+      result = request_translation_context(
+        source_with_replaced_line(lines, row + 1, ""),
+        lang,
+        row,
+        nil,
+        opts.callee,
+        opts.member_call,
+        fallback_ns
+      )
     end
     if not result and row > 0 then
-      result = request_translation_context(source_from_prefix(lines, row), lang, row - 1, fallback_ns)
+      result = request_translation_context(
+        source_from_prefix(lines, row),
+        lang,
+        row - 1,
+        nil,
+        opts.callee,
+        opts.member_call,
+        fallback_ns
+      )
     end
   end
   if not result then
-    return { namespace = fallback_ns, t_func = "t", found_hook = false, has_any_hook = false }
+    return {
+      namespace = fallback_ns,
+      t_func = "t",
+      found_hook = false,
+      has_any_hook = false,
+      ambiguous = false,
+      shadowed = false,
+    }
   end
   return {
     namespace = result.namespace,
     t_func = result.t_func or "t",
     found_hook = result.found_hook or false,
     has_any_hook = result.has_any_hook or false,
+    ambiguous = result.ambiguous or false,
+    shadowed = result.shadowed or false,
   }
 end
 

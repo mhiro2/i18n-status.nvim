@@ -76,6 +76,58 @@ describe("blink", function()
     end)
   end)
 
+  it("does not complete through a shadowed translation symbol", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+    with_cwd(root, function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+        'const { t } = useTranslation("common")',
+        "function render(t) {",
+        '  t("',
+        "}",
+      })
+      vim.bo[buf].filetype = "typescript"
+      vim.api.nvim_set_current_buf(buf)
+      vim.api.nvim_win_set_cursor(0, { 3, 5 })
+
+      local result = nil
+      blink.complete({ bufnr = buf, line = '  t("', cursor = { 3, 5 } }, function(items)
+        result = items
+      end)
+
+      assert.are.same({}, result)
+    end)
+  end)
+
+  it("does not borrow a hook namespace for member calls", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/auth.json", '{"login":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/ja/common.json", '{"home":{"title":"ホーム"}}')
+    with_cwd(root, function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+        'const { t } = useTranslation("auth")',
+        'i18n.t("',
+      })
+      vim.bo[buf].filetype = "typescript"
+      vim.api.nvim_set_current_buf(buf)
+      vim.api.nvim_win_set_cursor(0, { 2, 8 })
+
+      local result = nil
+      blink.complete({ bufnr = buf, line = 'i18n.t("', cursor = { 2, 8 } }, function(items)
+        result = items
+      end)
+
+      local labels = {}
+      for _, item in ipairs(result) do
+        labels[item.label] = true
+      end
+      assert.is_true(labels["auth:login.title"])
+      assert.is_true(labels["common:home.title"])
+    end)
+  end)
+
   it("prioritizes missing-like values (empty or key path)", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"a":{"ok":"OK"},"z":{"missing":"z.missing"}}')

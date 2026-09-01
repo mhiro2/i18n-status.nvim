@@ -74,7 +74,7 @@ describe("fs", function()
       local git_root = fs.find_git_root(cwd)
 
       assert.is_not_nil(git_root)
-      assert.is_true(fs.is_dir(fs.path_join(git_root, ".git")))
+      assert.is_true(fs.file_exists(fs.path_join(git_root, ".git")))
     end)
 
     it("returns nil when no git root exists", function()
