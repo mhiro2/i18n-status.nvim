@@ -1,4 +1,4 @@
-.PHONY: deps deps-plenary deps-grammars treesitter-build treesitter-install fmt lint stylua stylua-check selene rustfmt rustfmt-check rust-lint license-check test rust-build rust-test lua-test
+.PHONY: deps deps-plenary deps-grammars treesitter-build treesitter-install fmt lint stylua stylua-check selene rustfmt rustfmt-check rust-lint license-check test rust-build rust-test lua-test installer-test release-contract-test
 
 CC ?= cc
 NVIM ?= nvim
@@ -83,7 +83,13 @@ rust-build:
 rust-test:
 	cd rust && cargo test
 
-test: lua-test rust-test
+test: installer-test release-contract-test lua-test rust-test
+
+installer-test:
+	bash tests/installer_spec.sh
+
+release-contract-test:
+	bash tests/release_contract_spec.sh
 
 lua-test: deps rust-build
 	PLENARY_PATH="$(PLENARY_PATH)" TREESITTER_INSTALL_DIR="$(TREESITTER_INSTALL_DIR)" \

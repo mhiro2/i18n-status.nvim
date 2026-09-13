@@ -1,3 +1,4 @@
+pub mod contract;
 pub mod doctor;
 pub mod hardcoded;
 pub mod resolve;

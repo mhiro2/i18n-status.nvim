@@ -105,45 +105,6 @@ end
 function M.check()
   health.start("i18n-status")
 
-  -- Check Rust binary
-  health.start("Core Binary")
-  local rpc_mod = require("i18n-status.rpc")
-  if rpc_mod.is_running() then
-    ok("i18n-status-core process is running")
-  else
-    info("i18n-status-core process is not running (will start on first use)")
-  end
-  -- Check binary exists
-  local source = debug.getinfo(1, "S").source:sub(2)
-  local plugin_root = vim.fs.dirname(vim.fs.dirname(vim.fs.dirname(source)))
-  local binary_candidates = {
-    vim.fs.joinpath(plugin_root, "rust", "target", "release", "i18n-status-core"),
-    vim.fs.joinpath(plugin_root, "rust", "target", "debug", "i18n-status-core"),
-    vim.fs.joinpath(plugin_root, "bin", "i18n-status-core"),
-  }
-  local data_dir = vim.fn.stdpath("data")
-  if data_dir then
-    table.insert(binary_candidates, vim.fs.joinpath(data_dir, "i18n-status", "bin", "i18n-status-core"))
-  end
-  local binary_found = false
-  for _, path in ipairs(binary_candidates) do
-    if vim.uv.fs_stat(path) then
-      ok("binary found: " .. path)
-      binary_found = true
-      break
-    end
-  end
-  if not binary_found then
-    local exepath = vim.fn.exepath("i18n-status-core")
-    if exepath and exepath ~= "" then
-      ok("binary found in PATH: " .. exepath)
-      binary_found = true
-    end
-  end
-  if not binary_found then
-    warn("i18n-status-core binary not found. Build with: cd rust && cargo build --release")
-  end
-
   local plugin = package.loaded["i18n-status"]
   local cfg = nil
   if plugin and type(plugin.get_config) == "function" then
@@ -153,6 +114,53 @@ function M.check()
   if not cfg then
     cfg = config_mod.setup(nil)
     using_defaults = true
+  end
+
+  -- Check Rust binary
+  health.start("Core Binary")
+  local rpc_mod = require("i18n-status.rpc")
+  local configured, configure_error = pcall(rpc_mod.configure, cfg.core)
+  if not configured then
+    warn(tostring(configure_error))
+  end
+  local ready, ready_error = rpc_mod.ensure_ready(3000)
+  local core_status = rpc_mod.status()
+  info(
+    string.format(
+      "required contract: %s %s, protocol %d",
+      core_status.expected.name,
+      core_status.expected.version,
+      core_status.expected.protocol_version
+    )
+  )
+  if core_status.state == "ready" and core_status.core then
+    ok(
+      string.format(
+        "core handshake complete: %s %s, protocol %d",
+        core_status.core.name,
+        core_status.core.version,
+        core_status.core.protocol_version
+      )
+    )
+  elseif core_status.state == "initializing" then
+    info("core handshake is in progress")
+  elseif core_status.state == "failed" then
+    warn("core handshake failed: " .. tostring(core_status.error))
+  elseif not ready then
+    warn("core handshake did not complete: " .. tostring(ready_error))
+  else
+    info("core process is not ready (it starts during setup or on first request)")
+  end
+  local binary_path, binary_source = rpc_mod.resolve_binary()
+  if binary_path then
+    local stat = vim.uv.fs_stat(binary_path)
+    if stat and stat.type == "file" and vim.fn.executable(binary_path) == 1 then
+      ok("binary selected (" .. tostring(binary_source) .. "): " .. binary_path)
+    else
+      warn("selected core path is not an executable file: " .. binary_path)
+    end
+  else
+    warn("matching core binary not found. Run bash ./scripts/download-binary.sh or configure core.path")
   end
 
   local start_dir = resources.start_dir(vim.api.nvim_get_current_buf())

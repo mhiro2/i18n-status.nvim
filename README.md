@@ -95,6 +95,7 @@ Examples:
 ## 🧰 Requirements
 
 - **Neovim** >= 0.12
+- **Bash**: required by the installer; Windows users can use Git Bash or MSYS2
 - **Tree-sitter** (optional): `json` / `jsonc` parsers for better resource editing UX
 - **[blink.cmp](https://github.com/saghen/blink.cmp)** (optional): i18n key completion
 
@@ -105,7 +106,8 @@ Set up the plugin with minimal options, then configure language-cycling helpers 
 ```lua
 {
   "mhiro2/i18n-status.nvim",
-  build = "./scripts/download-binary.sh",
+  version = "*",
+  build = "bash ./scripts/download-binary.sh",
   config = function()
     local i18n_status = require("i18n-status")
     i18n_status.setup({
@@ -125,19 +127,8 @@ Set up the plugin with minimal options, then configure language-cycling helpers 
 }
 ```
 
-`download-binary.sh` resolves binary version in this order:
-
-1. `I18N_STATUS_CORE_TAG` environment variable
-2. current plugin git tag (if `HEAD` is tagged)
-3. latest GitHub Release (fallback)
-
-If binary download prerequisites are missing or download fails, it falls back to `cargo build --release`.
-
-If you prefer local build:
-
-```bash
-cd rust && cargo build --release
-```
+The installer downloads and verifies the core release pinned by the plugin.
+Run `:checkhealth i18n-status` if installation or startup fails.
 
 ```lua
 -- Example keymaps:
@@ -157,6 +148,16 @@ vim.api.nvim_create_autocmd("LspAttach", {
     end, { buffer = bufnr, desc = "i18n-status: goto translation or LSP definition" })
   end,
 })
+```
+
+### Building from source
+
+Rust/Cargo is needed for Windows, musl Linux, and other environments where the
+release binary cannot run. The installer builds from source in those cases.
+To build manually:
+
+```bash
+cd rust && cargo build --locked --release
 ```
 
 ## ⚙️ Configuration
@@ -204,6 +205,11 @@ For full option and command details, see `:help i18n-status`.
     exclude_components = { "Trans", "Translation" },
     key_separator = "-", -- "." | "_" | "-"
   },
+  core = {
+    -- Optional explicit executable; PATH binaries are not selected implicitly.
+    -- The configured binary must pass the version/protocol handshake.
+    path = nil,
+  },
 }
 ```
 
@@ -235,6 +241,7 @@ Doctor runs are latest-wins: starting another scan cancels any pending or active
 ## ✅ Health check
 
 Run `:checkhealth i18n-status` to verify core binary, configuration, resource discovery, optional Treesitter parsers, and blink.cmp integration.
+The core section reports the selected executable and the required/active version and protocol contract.
 
 ## 🩺 Doctor
 

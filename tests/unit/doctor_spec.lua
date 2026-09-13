@@ -465,10 +465,10 @@ describe("doctor", function()
     assert.are.equal(0, vim.v.shell_error)
 
     local rpc = require("i18n-status.rpc")
+    local ready, ready_error = rpc.ensure_ready()
+    assert.is_true(ready, ready_error)
     local doctor_done = false
     local doctor_error = nil
-    local initialize_result = nil
-    local initialize_error = nil
     local scan_result = nil
     local scan_error = nil
 
@@ -488,10 +488,6 @@ describe("doctor", function()
     end, { timeout_ms = 2000 })
 
     local started_at = vim.uv.hrtime()
-    rpc.request("initialize", {}, function(err, result)
-      initialize_error = err
-      initialize_result = result
-    end)
     rpc.request("scan/extract", {
       source = 't("ready")',
       lang = "typescript",
@@ -502,7 +498,7 @@ describe("doctor", function()
     end)
 
     local interactive_done = vim.wait(500, function()
-      return initialize_result ~= nil and scan_result ~= nil
+      return scan_result ~= nil
     end, 5)
     local interactive_elapsed_ms = (vim.uv.hrtime() - started_at) / 1000000
     local interactive_preceded_doctor = not doctor_done
@@ -518,8 +514,6 @@ describe("doctor", function()
     assert.is_true(interactive_done, "interactive RPC was blocked behind Doctor")
     assert.is_true(interactive_elapsed_ms < 500, "interactive RPC exceeded its latency budget")
     assert.is_true(interactive_preceded_doctor, "Doctor completed before the isolation assertion")
-    assert.is_nil(initialize_error)
-    assert.are.equal("i18n-status-core", initialize_result.name)
     assert.is_nil(scan_error)
     assert.are.equal("common:ready", scan_result.items[1].key)
     assert.is_nil(doctor_error)

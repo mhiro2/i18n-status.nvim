@@ -7,6 +7,7 @@ mod scan;
 mod util;
 
 use anyhow::{Context, Result};
+use i18n_status_core::contract::{self, InitializeParams, InitializeResult};
 use resource::index::IndexCache;
 use rpc::{
     INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, Notification,
@@ -341,6 +342,18 @@ impl Server {
             }
 
             let id = request.id.clone();
+            if !self.initialized && request.method != "initialize" && request.method != "shutdown" {
+                let response = Response::error(
+                    id,
+                    INVALID_REQUEST,
+                    "core is not initialized; complete the version handshake first".to_string(),
+                );
+                if let Err(error) = self.transport.send_response(&response) {
+                    eprintln!("i18n-status-core: send error: {error}");
+                }
+                continue;
+            }
+
             if request.method == "doctor/diagnose" {
                 match serde_json::from_value(request.params) {
                     Ok(params) => self.doctor_scheduler.submit(DoctorJob { params, id }),
@@ -376,17 +389,25 @@ impl Server {
     }
 
     fn dispatch(&mut self, method: &str, params: Value, id: Option<Value>) -> Response {
+        if !self.initialized && method != "initialize" && method != "shutdown" {
+            return Response::error(
+                id,
+                INVALID_REQUEST,
+                "core is not initialized; complete the version handshake first".to_string(),
+            );
+        }
+
         match method {
-            "initialize" => {
-                self.initialized = true;
-                Response::success(
-                    id,
-                    json!({
-                        "name": "i18n-status-core",
-                        "version": env!("CARGO_PKG_VERSION")
-                    }),
-                )
-            }
+            "initialize" => match serde_json::from_value::<InitializeParams>(params) {
+                Ok(params) => match contract::validate_client(&params) {
+                    Ok(()) => {
+                        self.initialized = true;
+                        Response::success(id, json!(InitializeResult::current()))
+                    }
+                    Err(error) => Response::error(id, INVALID_REQUEST, error),
+                },
+                Err(error) => Response::error(id, INVALID_PARAMS, error.to_string()),
+            },
 
             "shutdown" => {
                 eprintln!("i18n-status-core: shutdown requested");
@@ -505,6 +526,17 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use i18n_status_core::contract::{CLIENT_NAME, CORE_NAME, CORE_VERSION, PROTOCOL_VERSION};
+
+    fn initialize_params(version: &str, protocol_version: u32) -> Value {
+        json!({
+            "client": {
+                "name": CLIENT_NAME,
+                "version": version,
+            },
+            "protocol_version": protocol_version,
+        })
+    }
 
     fn doctor_job(id: u64, deadline_ms: u64) -> DoctorJob {
         DoctorJob {
@@ -670,5 +702,65 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(outstanding_tasks.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn rejects_normal_requests_before_initialization() {
+        let mut server = Server::new();
+        let response = server.dispatch("scan/extract", json!({}), Some(json!(1)));
+
+        assert_eq!(
+            response.error.expect("expected error").code,
+            INVALID_REQUEST
+        );
+        assert!(!server.initialized);
+    }
+
+    #[test]
+    fn rejects_an_incompatible_client_without_initializing() {
+        let mut server = Server::new();
+        let response = server.dispatch(
+            "initialize",
+            initialize_params("9.9.9", PROTOCOL_VERSION),
+            Some(json!(1)),
+        );
+
+        assert_eq!(
+            response.error.expect("expected error").code,
+            INVALID_REQUEST
+        );
+        assert!(!server.initialized);
+    }
+
+    #[test]
+    fn initializes_only_with_the_exact_contract() {
+        let mut server = Server::new();
+        let response = server.dispatch(
+            "initialize",
+            initialize_params(CORE_VERSION, PROTOCOL_VERSION),
+            Some(json!(1)),
+        );
+        let result = response.result.expect("expected initialize result");
+
+        assert_eq!(result["core"]["name"], CORE_NAME);
+        assert_eq!(result["core"]["version"], CORE_VERSION);
+        assert_eq!(result["protocol_version"], PROTOCOL_VERSION);
+        assert!(server.initialized);
+    }
+
+    #[test]
+    fn rejects_a_different_protocol_version() {
+        let mut server = Server::new();
+        let response = server.dispatch(
+            "initialize",
+            initialize_params(CORE_VERSION, PROTOCOL_VERSION + 1),
+            Some(json!(1)),
+        );
+
+        assert_eq!(
+            response.error.expect("expected error").code,
+            INVALID_REQUEST
+        );
+        assert!(!server.initialized);
     }
 }

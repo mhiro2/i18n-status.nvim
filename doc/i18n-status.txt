@@ -24,6 +24,7 @@ When you open a translation JSON file, it can show another language inline
 
 Requirements:
   - Neovim 0.12+
+  - Bash for the installer (Git Bash or MSYS2 on Windows)
   - optional Tree-sitter parser for json/jsonc resource editing
   - optional blink.cmp for completion
 
@@ -84,7 +85,32 @@ Everything else is auto-detected:
   - languages
   - namespaces
   - resource roots (locales/, public/locales/ or messages/)
-  - core binary path (plugin `bin/`, local rust build, stdpath(data), PATH)
+  - source-matched core binary (plugin `bin/` or local rust build)
+
+core-contract.json names the exact core release this checkout needs. The
+install script downloads that version and never a "latest" build, so any
+checkout receives the core it was written against. Release archives are
+accepted only after checksum, regular-member, manifest, and live handshake
+verification; integrity mismatches abort the installation.
+
+Building from source:
+Rust/Cargo is required only for local builds. The installer builds from source
+when no release fits: an unpublished core version, musl Linux, Windows, missing
+download tools, or a release binary that cannot execute on this host. Windows
+uses that path through Git Bash or MSYS2 and installs bin/i18n-status-core.exe.
+A network or server failure stops the install with a retry message instead of
+falling back to a source build.
+
+Normal RPC requests are sent only after the plugin and core agree on core name,
+version, and protocol version.
+
+Release maintenance:
+Lua-only releases keep core-contract.json and rust/ unchanged and reuse the
+published core release named by the contract. The release workflow checks that
+tag's source and publication status, then publishes the plugin without new
+core artifacts. When the core changes, set the version in core-contract.json
+and rust/Cargo.toml to the new release version and update rust/Cargo.lock.
+Bump protocol_version as well when the wire format breaks older clients.
 
 Namespace is inferred from useTranslation(s)/getTranslations or explicit ns:key.
 If none is found, a best-effort fallback is used and :checkhealth will warn.
@@ -143,6 +169,9 @@ Full default settings:
       exclude_components = { "Trans", "Translation" },
       key_separator = "-", -- "." | "_" | "-"
     },
+    core = {
+      path = nil, -- optional explicit executable; PATH is not searched
+    },
   })
 <
 
@@ -192,6 +221,13 @@ extract.exclude_components (default: { "Trans", "Translation" })
 extract.key_separator (default: "-")
     Delimiter used for auto-generated extract keys.
     Must be one of ".", "_" or "-".
+
+core.path (default: nil)
+    Explicit path to an i18n-status-core executable. When unset, only the
+    plugin-managed bin/ binary and local rust/target builds are considered.
+    PATH and stdpath(data) binaries are not selected implicitly. The executable
+    must match the core name, version, and RPC protocol from
+    core-contract.json exactly.
 
 doctor.float.width (default: 0.8)
     Relative width of the Doctor/review floating window (0-1).
@@ -450,7 +486,8 @@ Run:
 
 Health checks report:
   - i18n-status-core binary availability
-  - core process status
+  - selected core path, process status, and the version/protocol handshake
+    (including startup timeouts and mismatches)
   - configuration (primary_lang)
   - resource roots / languages / parse errors
   - optional Tree-sitter parser availability for json / jsonc
