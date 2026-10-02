@@ -94,12 +94,12 @@ accepted only after checksum, regular-member, manifest, and live handshake
 verification; integrity mismatches abort the installation.
 
 Building from source:
-Rust/Cargo is required only for local builds. The installer builds from source
-when no release fits: an unpublished core version, musl Linux, Windows, missing
-download tools, or a release binary that cannot execute on this host. Windows
-uses that path through Git Bash or MSYS2 and installs bin/i18n-status-core.exe.
-A network or server failure stops the install with a retry message instead of
-falling back to a source build.
+Rust 1.95+ and Cargo are required only for local builds. The installer builds
+from source when no release fits: an unpublished core version, musl Linux,
+Windows, missing download tools, or a release binary that cannot execute on
+this host. Windows uses that path through Git Bash or MSYS2 and installs
+bin/i18n-status-core.exe. A network or server failure stops the install with a
+retry message instead of falling back to a source build.
 
 Normal RPC requests are sent only after the plugin and core agree on core name,
 version, and protocol version.

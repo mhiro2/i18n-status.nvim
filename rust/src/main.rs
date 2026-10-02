@@ -204,7 +204,7 @@ fn run_doctor_job_with(
     let deadline = job.deadline();
     let response_id = job.id.clone();
     if outstanding_tasks
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
             (count < MAX_OUTSTANDING_DOCTOR_TASKS).then_some(count + 1)
         })
         .is_err()

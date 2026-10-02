@@ -3,7 +3,7 @@ name = "i18n-status-core"
 version = "0.6.0"
 license = "MIT"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 
 [[bin]]
 name = "i18n-status-core"

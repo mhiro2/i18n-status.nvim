@@ -87,10 +87,10 @@ fn is_missing(value: Option<&str>, key: &str, raw: &str) -> bool {
                 return true;
             }
             // Check against key path (after namespace colon)
-            if let Some(key_path) = key.split_once(':').map(|(_, path)| path) {
-                if v == key_path {
-                    return true;
-                }
+            if let Some(key_path) = key.split_once(':').map(|(_, path)| path)
+                && v == key_path
+            {
+                return true;
             }
             false
         }
@@ -175,14 +175,14 @@ pub fn compute(params: ComputeParams) -> Result<Value> {
             if missing {
                 any_missing = true;
                 missing_langs.push(lang.to_string());
-            } else if let Some(pv) = primary_value {
-                if let Some(v) = value {
-                    if v != pv {
-                        any_localized = true;
-                        localized_langs.push(lang.to_string());
-                    }
-                    compare_values.push((lang, v));
+            } else if let Some(pv) = primary_value
+                && let Some(v) = value
+            {
+                if v != pv {
+                    any_localized = true;
+                    localized_langs.push(lang.to_string());
                 }
+                compare_values.push((lang, v));
             }
         }
 

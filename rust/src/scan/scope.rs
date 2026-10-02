@@ -600,12 +600,11 @@ fn destructured_t_name(name: &Pat) -> Option<String> {
                         return Some("t".to_string());
                     }
                     ObjectPatProp::KeyValue(kv) => {
-                        if let PropName::Ident(key) = &kv.key {
-                            if key.sym.as_ref() == "t" {
-                                if let Pat::Ident(value) = &*kv.value {
-                                    return Some(value.sym.to_string());
-                                }
-                            }
+                        if let PropName::Ident(key) = &kv.key
+                            && key.sym.as_ref() == "t"
+                            && let Pat::Ident(value) = &*kv.value
+                        {
+                            return Some(value.sym.to_string());
                         }
                     }
                     _ => {}
@@ -972,22 +971,22 @@ impl<'a> ScopeCollector<'a> {
                 self.add_pattern_bindings(&declarator.name, binding_scope, declarator.span.hi.0);
             if let Some(init) = &declarator.init {
                 self.record_commonjs_hooks(&declarator.name, init, &binding_indices);
-                if let Some((call, awaited)) = extract_hook_call(init) {
-                    if let Some(hook_name) = get_callee_name(&call.callee) {
-                        let (call_line, _, _) = span_to_loc(self.cm, call.span);
-                        let (namespace, namespace_resolution) =
-                            resolve_namespace(&call.args, call_line, self.const_bindings);
-                        self.pending_translators.push(PendingTranslator {
-                            binding_indices,
-                            pattern: declarator.name.clone(),
-                            hook_name,
-                            awaited,
-                            namespace,
-                            namespace_resolution,
-                            extract_safe: use_translation_options_are_extract_safe(&call.args),
-                            call_pos: call.span.lo.0,
-                        });
-                    }
+                if let Some((call, awaited)) = extract_hook_call(init)
+                    && let Some(hook_name) = get_callee_name(&call.callee)
+                {
+                    let (call_line, _, _) = span_to_loc(self.cm, call.span);
+                    let (namespace, namespace_resolution) =
+                        resolve_namespace(&call.args, call_line, self.const_bindings);
+                    self.pending_translators.push(PendingTranslator {
+                        binding_indices,
+                        pattern: declarator.name.clone(),
+                        hook_name,
+                        awaited,
+                        namespace,
+                        namespace_resolution,
+                        extract_safe: use_translation_options_are_extract_safe(&call.args),
+                        call_pos: call.span.lo.0,
+                    });
                 }
             }
         }
@@ -1122,17 +1121,17 @@ impl Visit for ScopeCollector<'_> {
     }
 
     fn visit_ts_module_decl(&mut self, declaration: &TsModuleDecl) {
-        if !declaration.global {
-            if let TsModuleName::Ident(identifier) = &declaration.id {
-                let scope = self.lexical_scope();
-                self.add_binding(
-                    identifier.sym.to_string(),
-                    None,
-                    false,
-                    scope,
-                    declaration.span.hi.0,
-                );
-            }
+        if !declaration.global
+            && let TsModuleName::Ident(identifier) = &declaration.id
+        {
+            let scope = self.lexical_scope();
+            self.add_binding(
+                identifier.sym.to_string(),
+                None,
+                false,
+                scope,
+                declaration.span.hi.0,
+            );
         }
         if let Some(body) = &declaration.body {
             self.visit_ts_namespace_body_scoped(body);

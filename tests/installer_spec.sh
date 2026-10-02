@@ -137,7 +137,7 @@ write_executable "$MOCK_RESPONDER" \
 # shellcheck disable=SC2016
 write_executable "${MOCK_BIN}/rustc" \
   '#!/usr/bin/env bash' \
-  'if [ "${1:-}" = "-vV" ]; then printf "rustc 1.85.0\nhost: %s\n" "${MOCK_RUST_HOST:?}"; else exit 1; fi'
+  'if [ "${1:-}" = "-vV" ]; then printf "rustc 1.95.0\nhost: %s\n" "${MOCK_RUST_HOST:?}"; else exit 1; fi'
 
 # shellcheck disable=SC2016
 write_executable "${MOCK_BIN}/cargo" \

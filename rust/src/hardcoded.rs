@@ -110,10 +110,10 @@ fn eval_literal(expr: &Expr) -> Option<String> {
 /// Check if an expression is inside a t() call
 fn is_inside_t_call(ancestors: &[AncestorInfo]) -> bool {
     for ancestor in ancestors.iter().rev() {
-        if let AncestorKind::CallExpr(name) = &ancestor.kind {
-            if name == "t" {
-                return true;
-            }
+        if let AncestorKind::CallExpr(name) = &ancestor.kind
+            && name == "t"
+        {
+            return true;
         }
     }
     false
@@ -185,11 +185,11 @@ impl<'a> HardcodedVisitor<'a> {
             ModuleDecl::ExportDecl(export) => self.visit_decl(&export.decl),
             ModuleDecl::ExportDefaultExpr(export) => self.visit_expr(&export.expr),
             ModuleDecl::ExportDefaultDecl(export) => {
-                if let DefaultDecl::Fn(fn_expr) = &export.decl {
-                    if let Some(body) = &fn_expr.function.body {
-                        for s in &body.stmts {
-                            self.visit_stmt(s);
-                        }
+                if let DefaultDecl::Fn(fn_expr) = &export.decl
+                    && let Some(body) = &fn_expr.function.body
+                {
+                    for s in &body.stmts {
+                        self.visit_stmt(s);
                     }
                 }
             }
@@ -313,10 +313,10 @@ impl<'a> HardcodedVisitor<'a> {
             }
             Expr::Object(obj) => {
                 for prop in &obj.props {
-                    if let PropOrSpread::Prop(prop) = prop {
-                        if let Prop::KeyValue(kv) = prop.as_ref() {
-                            self.visit_expr(&kv.value);
-                        }
+                    if let PropOrSpread::Prop(prop) = prop
+                        && let Prop::KeyValue(kv) = prop.as_ref()
+                    {
+                        self.visit_expr(&kv.value);
                     }
                 }
             }
@@ -333,12 +333,11 @@ impl<'a> HardcodedVisitor<'a> {
 
         // Visit attributes
         for attr in &jsx.opening.attrs {
-            if let JSXAttrOrSpread::JSXAttr(attr) = attr {
-                if let Some(JSXAttrValue::JSXExprContainer(container)) = &attr.value {
-                    if let JSXExpr::Expr(expr) = &container.expr {
-                        self.visit_expr(expr);
-                    }
-                }
+            if let JSXAttrOrSpread::JSXAttr(attr) = attr
+                && let Some(JSXAttrValue::JSXExprContainer(container)) = &attr.value
+                && let JSXExpr::Expr(expr) = &container.expr
+            {
+                self.visit_expr(expr);
             }
         }
 

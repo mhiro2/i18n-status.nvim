@@ -152,9 +152,9 @@ vim.api.nvim_create_autocmd("LspAttach", {
 
 ### Building from source
 
-Rust/Cargo is needed for Windows, musl Linux, and other environments where the
-release binary cannot run. The installer builds from source in those cases.
-To build manually:
+Rust 1.95+ and Cargo are needed for Windows, musl Linux, and other environments
+where the release binary cannot run. The installer builds from source in those
+cases. To build manually:
 
 ```bash
 cd rust && cargo build --locked --release

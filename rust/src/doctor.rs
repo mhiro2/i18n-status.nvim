@@ -195,77 +195,74 @@ fn process_source(
         };
     }
 
-    if let Ok(result) = extracted {
-        if let Some(items) = result.get("items").and_then(|v| v.as_array()) {
-            for item in items {
-                if let Some(key) = item.get("key").and_then(|v| v.as_str()) {
-                    if should_ignore_key(key, &params.ignore_patterns) {
-                        continue;
+    if let Ok(result) = extracted
+        && let Some(items) = result.get("items").and_then(|v| v.as_array())
+    {
+        for item in items {
+            if let Some(key) = item.get("key").and_then(|v| v.as_str()) {
+                if should_ignore_key(key, &params.ignore_patterns) {
+                    continue;
+                }
+                keys.push(key.to_string());
+
+                let primary_value = index_data
+                    .index
+                    .get(&params.primary_lang)
+                    .and_then(|m| m.get(key))
+                    .and_then(|e| e.value.as_deref());
+
+                let raw = item.get("raw").and_then(|v| v.as_str()).unwrap_or("");
+                let key_path = key.split_once(':').map(|(_, path)| path).unwrap_or(key);
+                let is_missing = match primary_value {
+                    None => true,
+                    Some(v) => {
+                        v.is_empty() || v == key || (!raw.is_empty() && v == raw) || v == key_path
                     }
-                    keys.push(key.to_string());
+                };
 
-                    let primary_value = index_data
-                        .index
-                        .get(&params.primary_lang)
-                        .and_then(|m| m.get(key))
-                        .and_then(|e| e.value.as_deref());
+                if is_missing {
+                    let lnum = item.get("lnum").and_then(|v| v.as_u64()).map(|v| v as u32);
+                    let col = item.get("col").and_then(|v| v.as_u64()).map(|v| v as u32);
 
-                    let raw = item.get("raw").and_then(|v| v.as_str()).unwrap_or("");
-                    let key_path = key.split_once(':').map(|(_, path)| path).unwrap_or(key);
-                    let is_missing = match primary_value {
-                        None => true,
-                        Some(v) => {
-                            v.is_empty()
-                                || v == key
-                                || (!raw.is_empty() && v == raw)
-                                || v == key_path
+                    issues.push(DoctorIssue {
+                        kind: "missing".to_string(),
+                        message: format!(
+                            "Key '{}' is missing in primary language '{}'",
+                            key, params.primary_lang
+                        ),
+                        severity: 2,
+                        file: file.map(|p| p.to_string()),
+                        key: Some(key.to_string()),
+                        lnum,
+                        col,
+                    });
+                } else if let Some(pv) = primary_value {
+                    let base_ph = extract_placeholders(pv);
+                    for lang in &params.languages {
+                        if lang == &params.primary_lang {
+                            continue;
                         }
-                    };
+                        let other_value = index_data
+                            .index
+                            .get(lang.as_str())
+                            .and_then(|m| m.get(key))
+                            .and_then(|e| e.value.as_deref());
 
-                    if is_missing {
-                        let lnum = item.get("lnum").and_then(|v| v.as_u64()).map(|v| v as u32);
-                        let col = item.get("col").and_then(|v| v.as_u64()).map(|v| v as u32);
-
-                        issues.push(DoctorIssue {
-                            kind: "missing".to_string(),
-                            message: format!(
-                                "Key '{}' is missing in primary language '{}'",
-                                key, params.primary_lang
-                            ),
-                            severity: 2,
-                            file: file.map(|p| p.to_string()),
-                            key: Some(key.to_string()),
-                            lnum,
-                            col,
-                        });
-                    } else if let Some(pv) = primary_value {
-                        let base_ph = extract_placeholders(pv);
-                        for lang in &params.languages {
-                            if lang == &params.primary_lang {
-                                continue;
-                            }
-                            let other_value = index_data
-                                .index
-                                .get(lang.as_str())
-                                .and_then(|m| m.get(key))
-                                .and_then(|e| e.value.as_deref());
-
-                            if let Some(ov) = other_value {
-                                let other_ph = extract_placeholders(ov);
-                                if !placeholder_equal(&base_ph, &other_ph) {
-                                    issues.push(DoctorIssue {
-                                        kind: "mismatch".to_string(),
-                                        message: format!(
-                                            "Placeholder mismatch for '{}' between '{}' and '{}'",
-                                            key, params.primary_lang, lang
-                                        ),
-                                        severity: 2,
-                                        file: file.map(|p| p.to_string()),
-                                        key: Some(key.to_string()),
-                                        lnum: None,
-                                        col: None,
-                                    });
-                                }
+                        if let Some(ov) = other_value {
+                            let other_ph = extract_placeholders(ov);
+                            if !placeholder_equal(&base_ph, &other_ph) {
+                                issues.push(DoctorIssue {
+                                    kind: "mismatch".to_string(),
+                                    message: format!(
+                                        "Placeholder mismatch for '{}' between '{}' and '{}'",
+                                        key, params.primary_lang, lang
+                                    ),
+                                    severity: 2,
+                                    file: file.map(|p| p.to_string()),
+                                    key: Some(key.to_string()),
+                                    lnum: None,
+                                    col: None,
+                                });
                             }
                         }
                     }
