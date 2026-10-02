@@ -217,12 +217,12 @@ pub(super) fn collect_consts(module: &Module, cm: &SourceMap) -> Vec<ConstBindin
                     self.visit_expr(&export.expr, scope_start, scope_end)
                 }
                 ModuleDecl::ExportDefaultDecl(export) => {
-                    if let DefaultDecl::Fn(fn_expr) = &export.decl {
-                        if let Some(body) = &fn_expr.function.body {
-                            let (body_start, body_end) = span_to_lines(self.cm, body.span);
-                            for stmt in &body.stmts {
-                                self.visit_stmt(stmt, body_start, body_end);
-                            }
+                    if let DefaultDecl::Fn(fn_expr) = &export.decl
+                        && let Some(body) = &fn_expr.function.body
+                    {
+                        let (body_start, body_end) = span_to_lines(self.cm, body.span);
+                        for stmt in &body.stmts {
+                            self.visit_stmt(stmt, body_start, body_end);
                         }
                     }
                 }
@@ -348,22 +348,22 @@ pub(super) fn collect_consts(module: &Module, cm: &SourceMap) -> Vec<ConstBindin
         fn collect_var_decl(&mut self, var_decl: &VarDecl, scope_start: u32, scope_end: u32) {
             if var_decl.kind == VarDeclKind::Const {
                 for decl in &var_decl.decls {
-                    if let Pat::Ident(ident) = &decl.name {
-                        if let Some(init) = &decl.init {
-                            let (decl_line, _, _) = span_to_loc(self.cm, decl.span());
-                            if let Some(value) = eval_string_expr_with_resolver(init, &|name| {
-                                resolve_const_at_line(name, decl_line, &self.const_bindings)
-                            }) {
-                                self.const_bindings.push(ConstBinding {
-                                    name: ident.sym.to_string(),
-                                    value,
-                                    scope_start,
-                                    scope_end,
-                                    decl_line,
-                                    order: self.next_order,
-                                });
-                                self.next_order += 1;
-                            }
+                    if let Pat::Ident(ident) = &decl.name
+                        && let Some(init) = &decl.init
+                    {
+                        let (decl_line, _, _) = span_to_loc(self.cm, decl.span());
+                        if let Some(value) = eval_string_expr_with_resolver(init, &|name| {
+                            resolve_const_at_line(name, decl_line, &self.const_bindings)
+                        }) {
+                            self.const_bindings.push(ConstBinding {
+                                name: ident.sym.to_string(),
+                                value,
+                                scope_start,
+                                scope_end,
+                                decl_line,
+                                order: self.next_order,
+                            });
+                            self.next_order += 1;
                         }
                     }
                     if let Some(init) = &decl.init {

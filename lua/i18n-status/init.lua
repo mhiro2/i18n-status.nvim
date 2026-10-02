@@ -166,14 +166,18 @@ function M.setup(opts)
   treesitter.register_language_aliases()
   local need_refresh_all = false
   if not config then
-    config = config_mod.setup(opts)
+    local next_config = config_mod.setup(opts)
+    rpc.configure(next_config.core)
+    config = next_config
     state.init(config.primary_lang, {})
     rpc.start()
     need_refresh_all = true
   elseif opts ~= nil then
     local prev_primary = config.primary_lang
     local merged_opts = util.tbl_deep_merge(config, opts)
-    config = config_mod.setup(merged_opts)
+    local next_config = config_mod.setup(merged_opts)
+    rpc.configure(next_config.core)
+    config = next_config
     if config.primary_lang ~= prev_primary then
       state.update_primary(config.primary_lang, prev_primary)
     end

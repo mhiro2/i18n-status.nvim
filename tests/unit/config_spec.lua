@@ -223,6 +223,24 @@ describe("config validation", function()
     vim.notify = original_notify
   end)
 
+  it("validates an explicit core path", function()
+    local notify_calls = {}
+    local original_notify = vim.notify
+    vim.notify = function(msg, level)
+      table.insert(notify_calls, { msg = msg, level = level })
+    end
+
+    local configured = config.setup({ core = { path = "/opt/i18n-status-core" } })
+    assert.are.equal("/opt/i18n-status-core", configured.core.path)
+
+    local invalid = config.setup({ core = { path = "" } })
+    assert.is_nil(invalid.core.path)
+    assert.are.equal(1, #notify_calls)
+    assert.is_truthy(notify_calls[1].msg:find("core.path", 1, true))
+
+    vim.notify = original_notify
+  end)
+
   it("handles nil opts", function()
     local cfg = config.setup(nil)
     assert.are.equal("en", cfg.primary_lang)

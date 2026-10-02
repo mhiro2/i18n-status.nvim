@@ -78,10 +78,10 @@ impl<'a> CallVisitor<'a> {
         };
 
         let (lnum, col, end_lnum, end_col) = span_to_byte_range(self.cm, first_arg.expr.span());
-        if let Some(range) = self.range {
-            if lnum < range.start_line || lnum > range.end_line {
-                return;
-            }
+        if let Some(range) = self.range
+            && (lnum < range.start_line || lnum > range.end_line)
+        {
+            return;
         }
 
         let values = eval_string_exprs(&first_arg.expr, lnum, self.const_bindings);
@@ -125,14 +125,12 @@ impl<'a> CallVisitor<'a> {
             return (value.to_string(), namespace.to_string(), false);
         }
 
-        if let Some(binding_name) = binding_name {
-            if let Some(binding) = self.scopes.resolve(binding_name, call_pos) {
-                if binding.is_callable_translator_at(call_pos) {
-                    if let Some(namespace) = &binding.namespace {
-                        return (format!("{}:{}", namespace, value), namespace.clone(), false);
-                    }
-                }
-            }
+        if let Some(binding_name) = binding_name
+            && let Some(binding) = self.scopes.resolve(binding_name, call_pos)
+            && binding.is_callable_translator_at(call_pos)
+            && let Some(namespace) = &binding.namespace
+        {
+            return (format!("{}:{}", namespace, value), namespace.clone(), false);
         }
 
         let namespace = self.fallback_namespace.to_string();

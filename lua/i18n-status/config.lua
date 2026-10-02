@@ -5,6 +5,7 @@
 ---@field doctor I18nStatusDoctorConfig
 ---@field auto_hover I18nStatusAutoHoverConfig
 ---@field extract I18nStatusExtractConfig
+---@field core I18nStatusCoreConfig
 local M = {}
 
 local util = require("i18n-status.util")
@@ -37,6 +38,9 @@ local util = require("i18n-status.util")
 ---@field min_length integer
 ---@field exclude_components string[]
 ---@field key_separator "."|"_"|"-"
+
+---@class I18nStatusCoreConfig
+---@field path string|nil
 
 ---@type I18nStatusConfig
 local defaults = {
@@ -76,6 +80,7 @@ local defaults = {
     exclude_components = { "Trans", "Translation" },
     key_separator = "-",
   },
+  core = {},
 }
 
 ---@param opts I18nStatusConfig|nil
@@ -104,6 +109,17 @@ local function validate(config)
   if config.primary_lang ~= nil and type(config.primary_lang) ~= "string" then
     table.insert(warnings, "primary_lang must be a string, got " .. type(config.primary_lang))
     config.primary_lang = defaults.primary_lang
+  end
+
+  -- Validate core.path
+  if config.core ~= nil and type(config.core) ~= "table" then
+    table.insert(warnings, "core must be a table, got " .. type(config.core))
+    config.core = defaults.core
+  elseif config.core and config.core.path ~= nil then
+    if type(config.core.path) ~= "string" or vim.trim(config.core.path) == "" then
+      table.insert(warnings, "core.path must be a non-empty string, got " .. type(config.core.path))
+      config.core.path = nil
+    end
   end
 
   -- Validate inline.position
