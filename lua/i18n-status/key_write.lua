@@ -31,29 +31,46 @@ local function copy_languages(languages)
   return vim.deepcopy(languages or {})
 end
 
+---Classify the value stored at a dotted key path inside a resource table.
 ---@param data table
 ---@param key_path string
----@return 'absent'|'leaf'|'branch'|'ancestor'
-local function nested_target_state(data, key_path)
+---@return 'absent'|'leaf'|'branch'|'ancestor' state
+---@return any value Existing leaf value when state is 'leaf'
+function M.target_state(data, key_path)
   local current = data
   local parts = vim.split(key_path, ".", { plain = true })
   for index, key in ipairs(parts) do
     if not json.is_object(current) then
-      return "ancestor"
+      return "ancestor", nil
     end
     local value = current[key]
     if index == #parts then
       if value == nil then
-        return "absent"
+        return "absent", nil
       end
-      return type(value) == "table" and "branch" or "leaf"
+      if type(value) == "table" then
+        return "branch", nil
+      end
+      return "leaf", value
     end
     if value == nil then
-      return "absent"
+      return "absent", nil
     end
     current = value
   end
-  return "absent"
+  return "absent", nil
+end
+
+---@param state 'absent'|'leaf'|'branch'|'ancestor'
+---@return string|nil
+function M.target_state_error(state)
+  if state == "ancestor" then
+    return "target key conflicts with an existing ancestor"
+  end
+  if state == "branch" then
+    return "target key has existing descendants"
+  end
+  return nil
 end
 
 ---@param namespace string
@@ -88,12 +105,10 @@ local function prepare_entry(namespace, key_path, translations, start_dir, base_
   end
 
   local path_in_file = resources.key_path_for_file(namespace, key_path, start_dir, lang, sanitized_path, root_list)
-  local target_state = nested_target_state(data, path_in_file)
-  if target_state == "ancestor" then
-    return nil, "target key conflicts with an existing ancestor"
-  end
-  if target_state == "branch" then
-    return nil, "target key has existing descendants"
+  local target_state = M.target_state(data, path_in_file)
+  local target_err = M.target_state_error(target_state)
+  if target_err then
+    return nil, target_err
   end
   if opts.create_only and target_state == "leaf" then
     return nil, "target key already exists"

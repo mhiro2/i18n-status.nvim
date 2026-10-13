@@ -50,7 +50,7 @@ describe("review actions", function()
       return true, nil
     end)
     add_stub(resources, "read_json_table", function()
-      return {}, { indent = 2 }
+      return vim.empty_dict(), { indent = 2 }
     end)
     add_stub(resources, "key_path_for_file", function()
       return "greeting"
@@ -112,7 +112,7 @@ describe("review actions", function()
       return true, nil
     end)
     add_stub(resources, "read_json_table", function()
-      return {}, {}
+      return vim.empty_dict(), {}
     end)
     add_stub(resources, "key_path_for_file", function()
       return "greeting"
