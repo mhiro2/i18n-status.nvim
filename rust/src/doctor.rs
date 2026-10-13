@@ -128,6 +128,28 @@ struct FileResult {
     scan_failed: bool,
 }
 
+fn scan_error_issue(file: Option<&str>, message: String) -> DoctorIssue {
+    DoctorIssue {
+        kind: "scan_error".to_string(),
+        message,
+        severity: 2,
+        file: file.map(ToOwned::to_owned),
+        key: None,
+        lnum: None,
+        col: None,
+    }
+}
+
+/// A file whose source could not be analyzed; its keys are unknown, so unused detection must
+/// not trust the collected key set.
+fn scan_failure(file: Option<&str>, message: String) -> FileResult {
+    FileResult {
+        keys: Vec::new(),
+        issues: vec![scan_error_issue(file, message)],
+        scan_failed: true,
+    }
+}
+
 fn is_cancelled(token_path: Option<&str>) -> bool {
     match token_path {
         Some(path) if !path.is_empty() => Path::new(path).exists(),
@@ -172,12 +194,8 @@ fn process_file(
     }
     let source = match std::fs::read_to_string(file_path) {
         Ok(s) => s,
-        Err(_) => {
-            return FileResult {
-                keys: Vec::new(),
-                issues: Vec::new(),
-                scan_failed: false,
-            };
+        Err(err) => {
+            return scan_failure(Some(&file_str), format!("Failed to read source: {err}"));
         }
     };
     let lang = lang_from_extension(file_path);
@@ -201,20 +219,7 @@ fn process_source(
     });
 
     if let Err(err) = &extracted {
-        issues.push(DoctorIssue {
-            kind: "scan_error".to_string(),
-            message: format!("Failed to analyze source: {}", err),
-            severity: 2,
-            file: file.map(|p| p.to_string()),
-            key: None,
-            lnum: None,
-            col: None,
-        });
-        return FileResult {
-            keys,
-            issues,
-            scan_failed: true,
-        };
+        return scan_failure(file, format!("Failed to analyze source: {}", err));
     }
 
     if let Ok(result) = extracted
@@ -438,8 +443,17 @@ pub fn diagnose(
                 }),
             );
         }
-        let Ok(entry) = entry else {
-            continue;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                // An unreadable directory hides source files, so unused results would be wrong.
+                has_scan_failures = true;
+                issues.push(scan_error_issue(
+                    None,
+                    format!("Failed to collect source files: {err}"),
+                ));
+                continue;
+            }
         };
         let path = entry.path();
         if path.is_file() && is_js_ts_file(path) {

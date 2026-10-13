@@ -169,6 +169,67 @@ fn diagnose_reports_scan_error_and_skips_unused_when_parse_fails() {
 }
 
 #[test]
+fn diagnose_reports_unreadable_sources_and_skips_unused() {
+    let root = unique_temp_dir("doctor-read-error");
+    let locales_dir = root.join("locales");
+    let en_common = locales_dir.join("en/common.json");
+    let invalid_source = root.join("src/invalid.ts");
+
+    write_file(&en_common, r#"{"hello":"Hello"}"#);
+    fs::create_dir_all(
+        invalid_source
+            .parent()
+            .expect("source should have a parent"),
+    )
+    .expect("failed to create source directory");
+    fs::write(&invalid_source, b"t(\"hello\"); // \xff\xfe\n").expect("failed to write source");
+
+    let params = DiagnoseParams {
+        project_root: root.to_string_lossy().to_string(),
+        roots: vec![RootConfig {
+            kind: "i18next".to_string(),
+            path: locales_dir.to_string_lossy().to_string(),
+        }],
+        primary_lang: "en".to_string(),
+        languages: vec!["en".to_string()],
+        fallback_namespace: "common".to_string(),
+        ignore_patterns: vec![],
+        open_buf_paths: vec![],
+        open_buffers: vec![],
+        cancel_token_path: None,
+        deadline_ms: doctor::DEFAULT_DEADLINE_MS,
+    };
+
+    let result = doctor::diagnose(params, &|_, _| {}, &|| false).expect("diagnose should succeed");
+    let issues = result["issues"]
+        .as_array()
+        .expect("issues should be an array");
+    let kinds: Vec<_> = issues
+        .iter()
+        .filter_map(|issue| issue["kind"].as_str())
+        .collect();
+
+    let read_error = issues
+        .iter()
+        .find(|issue| issue["kind"].as_str() == Some("scan_error"))
+        .expect("unreadable source should be reported");
+    assert!(
+        read_error["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with("Failed to read source")),
+        "{read_error}"
+    );
+    assert_eq!(
+        read_error["file"].as_str(),
+        Some(invalid_source.to_string_lossy().as_ref())
+    );
+    assert!(kinds.contains(&"unused_skipped"), "{kinds:?}");
+    assert!(!kinds.contains(&"unused"), "{kinds:?}");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn diagnose_cancels_during_file_collection() {
     let root = unique_temp_dir("doctor-cancel-collect");
     let locales_dir = root.join("locales");
