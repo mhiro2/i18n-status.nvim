@@ -406,7 +406,7 @@ Supported:
 - Literal concatenation (e.g. `"a" + "b"`)
 - Template literals (e.g. `` `a.b` ``)
 - Template literals with const interpolations (e.g. `` `${prefix}.key` `` where `prefix` is a `const`)
-- `const` string references in the same scope
+- `const` string references resolved through lexical scope (a parameter, `let`/`var`, or non-static `const` with the same name shadows outer constants)
 - TypeScript type assertions (`"key" as const`, `"key" satisfies string`, `key!`)
 - Conditional (ternary) expressions — both branches are emitted (e.g. `cond ? "a" : "b"` → 2 keys)
 
@@ -415,6 +415,7 @@ Not supported:
 - Runtime-dependent values
 - Expressions with function calls
 - Conditional const bindings (`const K = cond ? "a" : "b"; t(K)` — use `t(cond ? "a" : "b")` directly instead)
+- Expressions that expand to more than 64 distinct keys (or 64 KiB of key text), and constant substitution beyond 1 MiB per file; they are treated as dynamic
 
 ## 📄 License
 

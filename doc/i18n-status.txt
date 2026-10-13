@@ -504,7 +504,8 @@ Supported:
   - literal concatenation ("a" + "b")
   - template literals (`a.b`)
   - template literals with const interpolations (`${prefix}.key`)
-  - const string references in the same scope
+  - const string references resolved through lexical scope (a parameter,
+    let/var, or non-static const with the same name shadows outer consts)
   - TypeScript type assertions ("key" as const, satisfies, !)
   - conditional (ternary) expressions — both branches emitted
 
@@ -513,6 +514,9 @@ Not supported:
   - expressions with function calls
   - conditional const bindings (const K = cond ? "a" : "b"; t(K))
     Use t(cond ? "a" : "b") directly instead.
+  - expressions that expand to more than 64 distinct keys (or 64 KiB of key
+    text), and constant substitution beyond 1 MiB per file; they are treated
+    as dynamic
 
 Rename safety:
   Rename rewrites only direct string literals and template literals without
