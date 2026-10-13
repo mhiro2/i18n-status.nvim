@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use swc_ecma_ast::{Expr, ModuleItem, Stmt};
 
 use super::*;
@@ -55,4 +57,61 @@ fn eval_string_exprs_resolves_identifiers_through_the_resolver() {
     });
 
     assert_eq!(values, vec!["home.title".to_string()]);
+}
+
+#[test]
+fn eval_string_exprs_deduplicates_equivalent_branches() {
+    let mut source = "t(\"\"".to_string();
+    for _ in 0..14 {
+        source.push_str(" + (flag ? \"a\" : \"a\")");
+    }
+    source.push_str(");");
+    let expr = first_call_arg(&source);
+
+    assert_eq!(eval_string_exprs(&expr, &no_idents), vec!["a".repeat(14)]);
+}
+
+#[test]
+fn eval_string_exprs_rejects_expansions_over_the_candidate_limit() {
+    let mut source = "t(\"\"".to_string();
+    for index in 0..7 {
+        write!(source, " + (flag{index} ? \"a\" : \"b\")").expect("write to string");
+    }
+    source.push_str(");");
+    let expr = first_call_arg(&source);
+
+    assert!(2usize.pow(7) > MAX_STRING_CANDIDATES);
+    assert!(eval_string_exprs(&expr, &no_idents).is_empty());
+}
+
+#[test]
+fn eval_string_exprs_keeps_expansions_at_the_candidate_limit() {
+    let mut source = "t(\"\"".to_string();
+    for index in 0..6 {
+        write!(source, " + (flag{index} ? \"a\" : \"b\")").expect("write to string");
+    }
+    source.push_str(");");
+    let expr = first_call_arg(&source);
+
+    assert_eq!(
+        eval_string_exprs(&expr, &no_idents).len(),
+        MAX_STRING_CANDIDATES
+    );
+}
+
+#[test]
+fn eval_string_exprs_rejects_literals_over_the_byte_limit() {
+    let source = format!("t(\"{}\");", "a".repeat(MAX_CANDIDATE_BYTES + 1));
+    let expr = first_call_arg(&source);
+
+    assert!(eval_string_exprs(&expr, &no_idents).is_empty());
+}
+
+#[test]
+fn eval_string_exprs_rejects_conditional_branches_over_the_byte_limit() {
+    let half = "a".repeat(MAX_CANDIDATE_BYTES / 2 + 1);
+    let source = format!("t(flag ? \"{half}x\" : \"{half}y\");");
+    let expr = first_call_arg(&source);
+
+    assert!(eval_string_exprs(&expr, &no_idents).is_empty());
 }

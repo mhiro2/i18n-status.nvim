@@ -1,4 +1,12 @@
+use std::collections::HashSet;
+
 use swc_ecma_ast::*;
+
+/// Upper bound on the distinct strings a single expression may expand to. Expressions that
+/// exceed it are treated as unevaluable rather than enumerated.
+pub(super) const MAX_STRING_CANDIDATES: usize = 64;
+/// Upper bound on the total bytes of the candidate strings produced for one expression.
+pub(super) const MAX_CANDIDATE_BYTES: usize = 64 * 1024;
 
 /// Upper bound on the bytes that const substitution may produce while analyzing one source.
 pub(super) const MAX_CONST_SUBSTITUTION_BYTES: usize = 1024 * 1024;
@@ -63,78 +71,94 @@ pub(super) fn string_operand_idents<'a>(expr: &'a Expr, idents: &mut Vec<&'a Ide
     }
 }
 
-fn eval_string_exprs_multi<F>(expr: &Expr, resolve_ident: &F) -> Vec<String>
+/// Keep a candidate list only when it stays within the count and byte limits.
+fn within_limits(candidates: Vec<String>) -> Option<Vec<String>> {
+    let total_bytes: usize = candidates.iter().map(String::len).sum();
+    (candidates.len() <= MAX_STRING_CANDIDATES && total_bytes <= MAX_CANDIDATE_BYTES)
+        .then_some(candidates)
+}
+
+/// Combine every prefix with every suffix, dropping duplicates. Returns `None` when the
+/// distinct result set would exceed the candidate limits.
+fn concat_candidates(prefixes: &[String], suffixes: &[String]) -> Option<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut results = Vec::new();
+    let mut total_bytes = 0usize;
+    for prefix in prefixes {
+        for suffix in suffixes {
+            let value = format!("{prefix}{suffix}");
+            if seen.contains(&value) {
+                continue;
+            }
+            total_bytes = total_bytes.saturating_add(value.len());
+            if results.len() == MAX_STRING_CANDIDATES || total_bytes > MAX_CANDIDATE_BYTES {
+                return None;
+            }
+            seen.insert(value.clone());
+            results.push(value);
+        }
+    }
+    Some(results)
+}
+
+/// Expand an expression into its distinct candidate strings. An empty list means some required
+/// part is dynamic; `None` means the expansion exceeded the candidate limits.
+fn eval_string_candidates<F>(expr: &Expr, resolve_ident: &F) -> Option<Vec<String>>
 where
     F: Fn(&Ident) -> Option<String>,
 {
     match expr {
         Expr::Cond(cond) => {
-            let mut results = eval_string_exprs_multi(&cond.cons, resolve_ident);
-            results.extend(eval_string_exprs_multi(&cond.alt, resolve_ident));
-            results
+            // Each branch contributes what it can; an unresolvable branch adds nothing.
+            let mut results = eval_string_candidates(&cond.cons, resolve_ident)?;
+            for value in eval_string_candidates(&cond.alt, resolve_ident)? {
+                if !results.contains(&value) {
+                    results.push(value);
+                }
+            }
+            within_limits(results)
         }
         Expr::Bin(bin) if bin.op == BinaryOp::Add => {
-            let lefts = eval_string_exprs_multi(&bin.left, resolve_ident);
-            let rights = eval_string_exprs_multi(&bin.right, resolve_ident);
-            if lefts.is_empty() || rights.is_empty() {
-                return Vec::new();
-            }
-            let mut results = Vec::with_capacity(lefts.len() * rights.len());
-            for left in &lefts {
-                for right in &rights {
-                    results.push(format!("{}{}", left, right));
-                }
-            }
-            results
+            let lefts = eval_string_candidates(&bin.left, resolve_ident)?;
+            let rights = eval_string_candidates(&bin.right, resolve_ident)?;
+            concat_candidates(&lefts, &rights)
         }
         Expr::Tpl(tpl) => {
-            let mut accum: Vec<String> = Vec::new();
+            let mut accum = vec![String::new()];
             for (i, quasi) in tpl.quasis.iter().enumerate() {
-                let Some(cooked) = &quasi.cooked else {
-                    return Vec::new();
+                let Some(quasi_str) = quasi.cooked.as_ref().and_then(wtf8_to_string) else {
+                    return Some(Vec::new());
                 };
-                let Some(quasi_str) = wtf8_to_string(cooked) else {
-                    return Vec::new();
-                };
-                if accum.is_empty() {
-                    accum.push(quasi_str);
-                } else {
-                    for value in &mut accum {
-                        value.push_str(&quasi_str);
-                    }
+                for value in &mut accum {
+                    value.push_str(&quasi_str);
                 }
                 if let Some(expr) = tpl.exprs.get(i) {
-                    let values = eval_string_exprs_multi(expr, resolve_ident);
-                    if values.is_empty() {
-                        return Vec::new();
+                    let values = eval_string_candidates(expr, resolve_ident)?;
+                    accum = concat_candidates(&accum, &values)?;
+                    if accum.is_empty() {
+                        return Some(accum);
                     }
-                    let mut next = Vec::with_capacity(accum.len() * values.len());
-                    for prefix in &accum {
-                        for value in &values {
-                            next.push(format!("{}{}", prefix, value));
-                        }
-                    }
-                    accum = next;
                 }
             }
-            accum
+            within_limits(accum)
         }
-        Expr::Paren(paren) => eval_string_exprs_multi(&paren.expr, resolve_ident),
-        Expr::TsAs(ts_as) => eval_string_exprs_multi(&ts_as.expr, resolve_ident),
-        Expr::TsSatisfies(ts_sat) => eval_string_exprs_multi(&ts_sat.expr, resolve_ident),
-        Expr::TsNonNull(ts_nn) => eval_string_exprs_multi(&ts_nn.expr, resolve_ident),
-        Expr::TsConstAssertion(ts_const) => eval_string_exprs_multi(&ts_const.expr, resolve_ident),
-        _ => eval_string_expr(expr, resolve_ident).into_iter().collect(),
+        Expr::Paren(paren) => eval_string_candidates(&paren.expr, resolve_ident),
+        Expr::TsAs(ts_as) => eval_string_candidates(&ts_as.expr, resolve_ident),
+        Expr::TsSatisfies(ts_sat) => eval_string_candidates(&ts_sat.expr, resolve_ident),
+        Expr::TsNonNull(ts_nn) => eval_string_candidates(&ts_nn.expr, resolve_ident),
+        Expr::TsConstAssertion(ts_const) => eval_string_candidates(&ts_const.expr, resolve_ident),
+        _ => within_limits(eval_string_expr(expr, resolve_ident).into_iter().collect()),
     }
 }
 
-/// Evaluate an expression to every static string it may produce, expanding conditional
-/// branches. Returns an empty list when any required part is dynamic.
+/// Evaluate an expression to every distinct static string it may produce, expanding
+/// conditional branches. Returns an empty list when any part is dynamic or when the expansion
+/// exceeds the candidate limits.
 pub(super) fn eval_string_exprs<F>(expr: &Expr, resolve_ident: &F) -> Vec<String>
 where
     F: Fn(&Ident) -> Option<String>,
 {
-    eval_string_exprs_multi(expr, resolve_ident)
+    eval_string_candidates(expr, resolve_ident).unwrap_or_default()
 }
 
 #[cfg(test)]
