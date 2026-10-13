@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -7,7 +7,29 @@ use std::path::{Path, PathBuf};
 
 use crate::resource::index::{BuildIndexParams, IndexCache, RootConfig};
 use crate::scan;
-use crate::util::{extract_placeholders, placeholder_equal};
+use crate::util::{self, extract_placeholders, placeholder_equal};
+
+/// Upper bound on parallel source-scan workers. Each worker reserves `SERVER_STACK_SIZE` of
+/// virtual stack, so the pool stays small instead of following the machine's core count.
+const MAX_SCAN_WORKERS: usize = 8;
+
+/// Thread pool for one Doctor run's parallel source analysis. Rayon's global pool uses the
+/// default thread stack, which deeply nested source overflows inside swc and aborts the whole
+/// process; these workers get the same stack as the server thread so parallel and single-file
+/// analysis behave alike. The pool is sized to the workload and released after the run, so its
+/// stack reservation never outlives the analysis and a failed start can be retried.
+fn scan_pool(file_count: usize) -> Result<rayon::ThreadPool> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(MAX_SCAN_WORKERS)
+        .min(file_count.max(1));
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .stack_size(util::SERVER_STACK_SIZE)
+        .thread_name(|index| format!("i18n-status-doctor-scan-{index}"))
+        .build()
+        .map_err(|err| anyhow!("failed to start doctor scan workers: {err}"))
+}
 
 #[derive(Debug, Deserialize)]
 pub struct DiagnoseParams {
@@ -436,7 +458,10 @@ pub fn diagnose(
         }),
     );
 
-    // Process files in parallel batches using rayon
+    // Process files in parallel batches on a large-stack pool started only when there are files
+    let pool = (!source_files.is_empty())
+        .then(|| scan_pool(total_files))
+        .transpose()?;
     let batch_size = 50;
     let mut processed = 0usize;
 
@@ -453,10 +478,15 @@ pub fn diagnose(
             return Ok(make_result(issues, used_keys_set, true));
         }
 
-        let results: Vec<FileResult> = chunk
-            .par_iter()
-            .map(|file_path| process_file(file_path, &params, &index_data))
-            .collect();
+        let Some(pool) = &pool else {
+            break;
+        };
+        let results: Vec<FileResult> = pool.install(|| {
+            chunk
+                .par_iter()
+                .map(|file_path| process_file(file_path, &params, &index_data))
+                .collect()
+        });
 
         for result in results {
             if result.scan_failed {
