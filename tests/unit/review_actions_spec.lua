@@ -197,6 +197,9 @@ describe("review actions", function()
     add_stub(resources, "start_dir", function()
       return "/project"
     end)
+    add_stub(resources, "ensure_index", function()
+      return { index = { en = {}, ja = {} }, languages = { "en", "ja" } }
+    end)
     add_stub(key_write, "write_translations", function(namespace, key_path, translations, root, languages, opts)
       written = {
         namespace = namespace,

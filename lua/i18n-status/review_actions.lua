@@ -460,18 +460,33 @@ local function add_key(deps, ctx)
     return
   end
 
-  local languages = ctx.cache and ctx.cache.languages or {}
+  local root = resources.start_dir(ctx.source_buf or vim.api.nvim_get_current_buf())
+  -- Decide which locales lack the key from the current resources, not the review snapshot.
+  local cache = resources.ensure_index(root, { exact = true })
+  local languages = cache and cache.languages or {}
   if #languages == 0 then
     vim.notify("No languages available", vim.log.levels.WARN)
     return
   end
 
-  local root = resources.start_dir(ctx.source_buf or vim.api.nvim_get_current_buf())
+  -- Only fill locales that lack the key; existing translations in other locales are kept as-is.
+  local missing_langs = {}
+  for _, lang in ipairs(languages) do
+    local entries = cache.index and cache.index[lang]
+    if not (entries and entries[item.key]) then
+      missing_langs[#missing_langs + 1] = lang
+    end
+  end
+  if #missing_langs == 0 then
+    vim.notify("Key already exists in all languages", vim.log.levels.WARN)
+    return
+  end
+
   local namespace = item.key:match("^(.-):") or resources.fallback_namespace(root)
   local key_path = item.key:match("^[^:]+:(.+)$") or ""
 
-  collect_translations(item.key, languages, function(translations)
-    write_translations_to_files(namespace, key_path, translations, root, languages, item.key, {
+  collect_translations(item.key, missing_langs, function(translations)
+    write_translations_to_files(namespace, key_path, translations, root, missing_langs, item.key, {
       create_only = true,
     })
 
