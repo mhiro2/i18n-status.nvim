@@ -307,3 +307,60 @@ fn repeated_doctor_requests_keep_only_the_latest_pending_job() {
     drop(core);
     let _ = fs::remove_dir_all(project_root);
 }
+
+#[test]
+fn doctor_survives_deeply_nested_sources_in_parallel() {
+    let project_root = unique_temp_dir();
+    let locale_file = project_root.join("locales/en/common.json");
+    fs::create_dir_all(
+        locale_file
+            .parent()
+            .expect("locale file should have a parent"),
+    )
+    .expect("failed to create locale directory");
+    fs::write(&locale_file, r#"{"title":"Title"}"#).expect("failed to write locale file");
+    let src_dir = project_root.join("src");
+    fs::create_dir_all(&src_dir).expect("failed to create source directory");
+    // A long member chain nests the AST deeply enough to overflow a default-sized thread stack.
+    let deep_source = format!("const x = a{};\n", ".b".repeat(100_000));
+    for index in 0..4 {
+        fs::write(src_dir.join(format!("deep{index}.ts")), &deep_source)
+            .expect("failed to write deep source");
+    }
+
+    let mut core = CoreProcess::spawn();
+    core.initialize(100);
+    core.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "doctor/diagnose",
+        "params": {
+            "project_root": project_root,
+            "roots": [{
+                "kind": "i18next",
+                "path": project_root.join("locales")
+            }],
+            "primary_lang": "en",
+            "languages": ["en"],
+            "fallback_namespace": "common",
+            "open_buffers": [],
+            "deadline_ms": 120_000,
+        }
+    }));
+
+    let doctor_response = loop {
+        let message = core.receive(Duration::from_secs(120));
+        if message.get("id").and_then(Value::as_u64) == Some(1) {
+            break message;
+        }
+    };
+    assert!(doctor_response.get("error").is_none(), "{doctor_response}");
+
+    core.send(&scan_request(2));
+    let scan_response = core.receive(Duration::from_secs(30));
+    assert_eq!(scan_response["id"], 2);
+    assert!(scan_response.get("error").is_none(), "{scan_response}");
+
+    drop(core);
+    let _ = fs::remove_dir_all(project_root);
+}

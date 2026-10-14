@@ -298,6 +298,7 @@ All groups are created with `default=true` and linked to Telescope/Diagnostic gr
 | `unused` | key exists in resources but is not referenced |
 | `drift` | key differs across languages (missing/extra) |
 | `resource errors` | invalid JSON or read errors |
+| `source errors` | a source file or directory could not be read or parsed; unused detection is skipped for that run |
 | `roots missing` | no resource root found (`locales/`, `public/locales/`, or `messages/`) |
 
 

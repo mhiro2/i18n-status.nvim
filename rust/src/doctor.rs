@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -7,7 +7,29 @@ use std::path::{Path, PathBuf};
 
 use crate::resource::index::{BuildIndexParams, IndexCache, RootConfig};
 use crate::scan;
-use crate::util::{extract_placeholders, placeholder_equal};
+use crate::util::{self, extract_placeholders, placeholder_equal};
+
+/// Upper bound on parallel source-scan workers. Each worker reserves `SERVER_STACK_SIZE` of
+/// virtual stack, so the pool stays small instead of following the machine's core count.
+const MAX_SCAN_WORKERS: usize = 8;
+
+/// Thread pool for one Doctor run's parallel source analysis. Rayon's global pool uses the
+/// default thread stack, which deeply nested source overflows inside swc and aborts the whole
+/// process; these workers get the same stack as the server thread so parallel and single-file
+/// analysis behave alike. The pool is sized to the workload and released after the run, so its
+/// stack reservation never outlives the analysis and a failed start can be retried.
+fn scan_pool(file_count: usize) -> Result<rayon::ThreadPool> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(MAX_SCAN_WORKERS)
+        .min(file_count.max(1));
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .stack_size(util::SERVER_STACK_SIZE)
+        .thread_name(|index| format!("i18n-status-doctor-scan-{index}"))
+        .build()
+        .map_err(|err| anyhow!("failed to start doctor scan workers: {err}"))
+}
 
 #[derive(Debug, Deserialize)]
 pub struct DiagnoseParams {
@@ -106,6 +128,28 @@ struct FileResult {
     scan_failed: bool,
 }
 
+fn scan_error_issue(file: Option<&str>, message: String) -> DoctorIssue {
+    DoctorIssue {
+        kind: "scan_error".to_string(),
+        message,
+        severity: 2,
+        file: file.map(ToOwned::to_owned),
+        key: None,
+        lnum: None,
+        col: None,
+    }
+}
+
+/// A file whose source could not be analyzed; its keys are unknown, so unused detection must
+/// not trust the collected key set.
+fn scan_failure(file: Option<&str>, message: String) -> FileResult {
+    FileResult {
+        keys: Vec::new(),
+        issues: vec![scan_error_issue(file, message)],
+        scan_failed: true,
+    }
+}
+
 fn is_cancelled(token_path: Option<&str>) -> bool {
     match token_path {
         Some(path) if !path.is_empty() => Path::new(path).exists(),
@@ -150,12 +194,8 @@ fn process_file(
     }
     let source = match std::fs::read_to_string(file_path) {
         Ok(s) => s,
-        Err(_) => {
-            return FileResult {
-                keys: Vec::new(),
-                issues: Vec::new(),
-                scan_failed: false,
-            };
+        Err(err) => {
+            return scan_failure(Some(&file_str), format!("Failed to read source: {err}"));
         }
     };
     let lang = lang_from_extension(file_path);
@@ -179,20 +219,7 @@ fn process_source(
     });
 
     if let Err(err) = &extracted {
-        issues.push(DoctorIssue {
-            kind: "scan_error".to_string(),
-            message: format!("Failed to analyze source: {}", err),
-            severity: 2,
-            file: file.map(|p| p.to_string()),
-            key: None,
-            lnum: None,
-            col: None,
-        });
-        return FileResult {
-            keys,
-            issues,
-            scan_failed: true,
-        };
+        return scan_failure(file, format!("Failed to analyze source: {}", err));
     }
 
     if let Ok(result) = extracted
@@ -416,8 +443,17 @@ pub fn diagnose(
                 }),
             );
         }
-        let Ok(entry) = entry else {
-            continue;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                // An unreadable directory hides source files, so unused results would be wrong.
+                has_scan_failures = true;
+                issues.push(scan_error_issue(
+                    None,
+                    format!("Failed to collect source files: {err}"),
+                ));
+                continue;
+            }
         };
         let path = entry.path();
         if path.is_file() && is_js_ts_file(path) {
@@ -436,7 +472,10 @@ pub fn diagnose(
         }),
     );
 
-    // Process files in parallel batches using rayon
+    // Process files in parallel batches on a large-stack pool started only when there are files
+    let pool = (!source_files.is_empty())
+        .then(|| scan_pool(total_files))
+        .transpose()?;
     let batch_size = 50;
     let mut processed = 0usize;
 
@@ -453,10 +492,15 @@ pub fn diagnose(
             return Ok(make_result(issues, used_keys_set, true));
         }
 
-        let results: Vec<FileResult> = chunk
-            .par_iter()
-            .map(|file_path| process_file(file_path, &params, &index_data))
-            .collect();
+        let Some(pool) = &pool else {
+            break;
+        };
+        let results: Vec<FileResult> = pool.install(|| {
+            chunk
+                .par_iter()
+                .map(|file_path| process_file(file_path, &params, &index_data))
+                .collect()
+        });
 
         for result in results {
             if result.scan_failed {
