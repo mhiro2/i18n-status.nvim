@@ -50,15 +50,92 @@ function M.should_refresh(bufnr)
   return false
 end
 
+---@class I18nStatusRefreshView
+---@field range { start_line: integer, end_line: integer }|nil Scan range when only visible lines render
+---@field top integer|nil
+---@field bottom integer|nil
+
 ---@param bufnr integer
----@return boolean
-local function visible_range_unchanged(bufnr)
-  local prev = state.visible_range_by_buf[bufnr]
-  if not prev then
-    return false
+---@param config I18nStatusConfig
+---@return I18nStatusRefreshView
+local function current_view(bufnr, config)
+  if not config.inline.visible_only then
+    return {}
   end
   local top, bottom = window.visible_range(bufnr)
-  return prev.top == top and prev.bottom == bottom
+  local line_count = math.max(1, vim.api.nvim_buf_line_count(bufnr))
+  top = math.max(1, math.min(top, line_count))
+  bottom = math.max(top, math.min(bottom, line_count))
+  return {
+    range = { start_line = top - 1, end_line = bottom - 1 },
+    top = top,
+    bottom = bottom,
+  }
+end
+
+---@param project I18nStatusProjectState
+---@return string
+local function language_generation(project)
+  return string.format("%s\0%s", project.current_lang or "", project.primary_lang or "")
+end
+
+---Start a refresh request: newer requests and buffer edits make older results stale.
+---@param bufnr integer
+---@param config I18nStatusConfig
+---@return { seq: integer, tick: integer, view: I18nStatusRefreshView }
+local function begin_request(bufnr, config)
+  local seq = (refresh_seq_by_buf[bufnr] or 0) + 1
+  refresh_seq_by_buf[bufnr] = seq
+  return {
+    seq = seq,
+    tick = vim.api.nvim_buf_get_changedtick(bufnr),
+    view = current_view(bufnr, config),
+  }
+end
+
+---@param bufnr integer
+---@param request { seq: integer, tick: integer }
+---@return boolean
+local function request_stale(bufnr, request)
+  return refresh_seq_by_buf[bufnr] ~= request.seq
+    or not buf_ready(bufnr)
+    or vim.api.nvim_buf_get_changedtick(bufnr) ~= request.tick
+end
+
+---Render a result and record the buffer state it reflects.
+---@param bufnr integer
+---@param request { tick: integer, view: I18nStatusRefreshView }
+---@param project I18nStatusProjectState
+---@param items table[]
+---@param resolved table[]
+---@param config I18nStatusConfig
+local function apply_result(bufnr, request, project, items, resolved, config)
+  render.apply(bufnr, items, resolved, config)
+  state.rendered_by_buf[bufnr] = {
+    tick = request.tick,
+    language = language_generation(project),
+    top = request.view.top,
+    bottom = request.view.bottom,
+  }
+end
+
+---@param bufnr integer
+---@param config I18nStatusConfig
+---@return boolean
+local function rendered_is_current(bufnr, config)
+  local rendered = state.rendered_by_buf[bufnr]
+  if not rendered or not state.inline_by_buf[bufnr] then
+    return false
+  end
+  if rendered.tick ~= vim.api.nvim_buf_get_changedtick(bufnr) then
+    return false
+  end
+  local project = state.project_for_key(state.buf_project[bufnr])
+  if rendered.language ~= language_generation(project) then
+    return false
+  end
+  local view = current_view(bufnr, config)
+  return rendered.top == view.top and rendered.bottom == view.bottom
 end
 
 ---@param bufnr integer
@@ -68,60 +145,35 @@ local function refresh_now_async(bufnr, config)
     return
   end
 
-  local seq = (refresh_seq_by_buf[bufnr] or 0) + 1
-  refresh_seq_by_buf[bufnr] = seq
-
+  local request = begin_request(bufnr, config)
   local start_dir = resources.start_dir(bufnr)
   local fallback_ns = resources.fallback_namespace(start_dir)
 
-  local scan_range = nil
-  local visible_top = nil
-  local visible_bottom = nil
-  if config.inline.visible_only then
-    local top, bottom = window.visible_range(bufnr)
-    local line_count = math.max(1, vim.api.nvim_buf_line_count(bufnr))
-    top = math.max(1, math.min(top, line_count))
-    bottom = math.max(top, math.min(bottom, line_count))
-    visible_top = top
-    visible_bottom = bottom
-    scan_range = {
-      start_line = top - 1,
-      end_line = bottom - 1,
-    }
-  end
-  state.visible_range_by_buf[bufnr] = nil
-  if visible_top and visible_bottom then
-    state.visible_range_by_buf[bufnr] = { top = visible_top, bottom = visible_bottom }
-  end
-
-  local function stale()
-    return refresh_seq_by_buf[bufnr] ~= seq or not buf_ready(bufnr)
-  end
-
-  resources.ensure_index_async(start_dir, nil, function(cache)
-    if stale() then
+  resources.ensure_index_async(start_dir, nil, function(cache, index_err)
+    -- Keep the last rendered state when indexing fails; a later refresh retries.
+    if index_err or request_stale(bufnr, request) then
       return
     end
     local project = state.set_languages(cache.key, cache.languages)
     state.set_buf_project(bufnr, cache.key)
+    local language = language_generation(project)
 
     local info = resources.resource_info(start_dir, vim.api.nvim_buf_get_name(bufnr))
 
     local function on_items(items)
-      if stale() then
+      if request_stale(bufnr, request) then
         return
       end
       resolve.compute_async(items, project, cache.index, function(resolved)
-        if stale() then
+        if request_stale(bufnr, request) or language_generation(project) ~= language then
           return
         end
-        render.apply(bufnr, items, resolved, config)
-        state.last_changedtick[bufnr] = vim.api.nvim_buf_get_changedtick(bufnr)
+        apply_result(bufnr, request, project, items, resolved, config)
       end)
     end
 
     if info then
-      scan.extract_resource_async(bufnr, info, { range = scan_range }, on_items)
+      scan.extract_resource_async(bufnr, info, { range = request.view.range }, on_items)
       return
     end
 
@@ -131,7 +183,7 @@ local function refresh_now_async(bufnr, config)
     end
     scan.extract_async(bufnr, {
       fallback_namespace = fallback_ns,
-      range = scan_range,
+      range = request.view.range,
     }, on_items)
   end)
 end
@@ -142,37 +194,22 @@ function M.refresh_now(bufnr, config)
   if not buf_ready(bufnr) then
     return
   end
+  -- Supersede pending and in-flight asynchronous refreshes of this buffer.
+  close_timer(state.timers[bufnr])
+  state.timers[bufnr] = nil
+  local request = begin_request(bufnr, config)
+
   local start_dir = resources.start_dir(bufnr)
   local cache = resources.ensure_index(start_dir)
   local project = state.set_languages(cache.key, cache.languages)
   state.set_buf_project(bufnr, cache.key)
   local fallback_ns = resources.fallback_namespace(start_dir)
 
-  local scan_range = nil
-  local visible_top = nil
-  local visible_bottom = nil
-  if config.inline.visible_only then
-    local top, bottom = window.visible_range(bufnr)
-    local line_count = math.max(1, vim.api.nvim_buf_line_count(bufnr))
-    top = math.max(1, math.min(top, line_count))
-    bottom = math.max(top, math.min(bottom, line_count))
-    visible_top = top
-    visible_bottom = bottom
-    scan_range = {
-      start_line = top - 1,
-      end_line = bottom - 1,
-    }
-  end
-  state.visible_range_by_buf[bufnr] = nil
-  if visible_top and visible_bottom then
-    state.visible_range_by_buf[bufnr] = { top = visible_top, bottom = visible_bottom }
-  end
-
   local info = resources.resource_info(start_dir, vim.api.nvim_buf_get_name(bufnr))
 
   local items = {}
   if info then
-    items = scan.extract_resource(bufnr, info, { range = scan_range })
+    items = scan.extract_resource(bufnr, info, { range = request.view.range })
   else
     local ft = vim.bo[bufnr].filetype
     if not filetypes.is_source_filetype(ft) then
@@ -180,14 +217,12 @@ function M.refresh_now(bufnr, config)
     end
     items = scan.extract(bufnr, {
       fallback_namespace = fallback_ns,
-      range = scan_range,
+      range = request.view.range,
     })
   end
 
   local resolved = resolve.compute(items, project, cache.index)
-
-  render.apply(bufnr, items, resolved, config)
-  state.last_changedtick[bufnr] = vim.api.nvim_buf_get_changedtick(bufnr)
+  apply_result(bufnr, request, project, items, resolved, config)
 end
 
 ---@param config I18nStatusConfig
@@ -208,15 +243,13 @@ function M.refresh(bufnr, config, debounce_ms, opts)
     return
   end
   local force = opts and opts.force == true
-  if not force and state.inline_by_buf[bufnr] then
-    local tick = vim.api.nvim_buf_get_changedtick(bufnr)
-    local same_visible = true
-    if config.inline.visible_only then
-      same_visible = visible_range_unchanged(bufnr)
-    end
-    if state.last_changedtick[bufnr] == tick and same_visible then
-      return
-    end
+  if not force and rendered_is_current(bufnr, config) then
+    -- The display already matches; drop pending or in-flight requests for another state (e.g. a
+    -- range scrolled past) so they cannot replace it.
+    close_timer(state.timers[bufnr])
+    state.timers[bufnr] = nil
+    refresh_seq_by_buf[bufnr] = (refresh_seq_by_buf[bufnr] or 0) + 1
+    return
   end
   local delay = debounce_ms
   if delay == nil then

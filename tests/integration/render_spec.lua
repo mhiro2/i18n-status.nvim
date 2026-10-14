@@ -300,7 +300,7 @@ describe("render", function()
     end)
   end)
 
-  it("forces refresh on language change even when buffer unchanged", function()
+  it("re-renders after a language change even when the buffer is unchanged", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
     helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
@@ -320,16 +320,9 @@ describe("render", function()
       local ns = render.namespace()
       assert.is_true(inline_text(buf, ns):find("ログイン", 1, true) ~= nil)
 
-      -- Change language without editing buffer
+      -- The language is part of what was rendered, so an unchanged buffer still re-renders.
       state.set_current(project_key, "en")
-      -- Without force, refresh should be skipped (changedtick unchanged)
       core.refresh(buf, config, 0)
-      -- Should still show Japanese (no refresh happened)
-      assert.is_true(inline_text(buf, ns):find("ログイン", 1, true) ~= nil)
-
-      -- With force, refresh should happen
-      core.refresh(buf, config, 0, { force = true })
-      -- Should now show English
       assert.is_true(inline_text(buf, ns):find("Login", 1, true) ~= nil)
     end)
   end)
@@ -380,6 +373,58 @@ describe("render", function()
         end
       end
       assert.is_true(has_en)
+    end)
+  end)
+
+  it("discards an asynchronous result computed from an older buffer state", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"old":"古い","new":"新しい"}')
+    helpers.with_cwd(root, function()
+      local buf = make_buf({ 't("old")' }, "typescript")
+      vim.api.nvim_set_current_buf(buf)
+      local config = config_mod.setup({
+        primary_lang = "ja",
+        inline = { position = "eol", max_len = 40, visible_only = false, debounce_ms = 1 },
+      })
+      local ns = render.namespace()
+
+      local scan = require("i18n-status.scan")
+      local original_extract_async = scan.extract_async
+      local delayed = {}
+      scan.extract_async = function(bufnr, opts, cb)
+        -- Scan the text now but deliver the result only when the test releases it.
+        original_extract_async(bufnr, opts, function(items)
+          delayed[#delayed + 1] = function()
+            cb(items)
+          end
+        end)
+      end
+
+      local ok, err = pcall(function()
+        core.refresh(buf, config, 1)
+        assert.is_true(vim.wait(2000, function()
+          return #delayed == 1
+        end, 10))
+
+        -- Edit the buffer while the scan of `t("old")` is in flight, then release the old result.
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("new")' })
+        delayed[1]()
+        vim.wait(100)
+        assert.are.equal("", inline_text(buf, ns))
+        assert.is_nil(state.rendered_by_buf[buf])
+
+        core.refresh(buf, config, 1)
+        assert.is_true(vim.wait(2000, function()
+          return #delayed == 2
+        end, 10))
+        delayed[2]()
+        assert.is_true(vim.wait(2000, function()
+          return inline_text(buf, ns):find("新しい", 1, true) ~= nil
+        end, 10))
+        assert.are.equal(vim.api.nvim_buf_get_changedtick(buf), state.rendered_by_buf[buf].tick)
+      end)
+      scan.extract_async = original_extract_async
+      assert(ok, err)
     end)
   end)
 end)

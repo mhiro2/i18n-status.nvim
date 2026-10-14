@@ -5,6 +5,12 @@
 ---@field last_lang string|nil
 ---@field languages string[]
 
+---@class I18nStatusRenderedState
+---@field tick integer Buffer changedtick the rendered result was computed from
+---@field language string Display language generation of the project
+---@field top integer|nil First rendered line when only visible lines render
+---@field bottom integer|nil Last rendered line when only visible lines render
+
 ---@class I18nStatusState
 local M = {
   default_primary = nil,
@@ -13,8 +19,8 @@ local M = {
   buf_watcher_keys = {},
   inline_by_buf = {},
   resolved_by_buf = {},
-  visible_range_by_buf = {},
-  last_changedtick = {},
+  ---@type table<integer, I18nStatusRenderedState>
+  rendered_by_buf = {},
   timers = {},
 }
 
@@ -45,8 +51,7 @@ function M.init(primary, languages)
   M.buf_watcher_keys = {}
   M.inline_by_buf = {}
   M.resolved_by_buf = {}
-  M.visible_range_by_buf = {}
-  M.last_changedtick = {}
+  M.rendered_by_buf = {}
   M.timers = {}
   local project = ensure_project(DEFAULT_KEY)
   project.primary_lang = primary
@@ -192,8 +197,7 @@ end
 function M.clear_buf(bufnr)
   M.inline_by_buf[bufnr] = nil
   M.resolved_by_buf[bufnr] = nil
-  M.visible_range_by_buf[bufnr] = nil
-  M.last_changedtick[bufnr] = nil
+  M.rendered_by_buf[bufnr] = nil
   M.buf_project[bufnr] = nil
 end
 
