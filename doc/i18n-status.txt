@@ -196,7 +196,8 @@ inline.max_len (default: 80)
     Trim inline previews after this many visible characters.
 
 inline.visible_only (default: true)
-    Resolve/refresh only the currently visible lines when possible.
+    Resolve/refresh only the currently visible lines when possible. Scrolling
+    or resizing a window refreshes the lines that come into view.
 
 inline.status_only (default: false)
     Show marker icons without the previewed translation text.
@@ -285,6 +286,9 @@ The plugin creates the following user commands:
                       Supports command-line completion and warns when {lang}
                       is not part of the detected languages for the project.
 
+  The display language is per project: switching it re-renders every open
+  buffer of that project.
+
 Example keymaps:
 >
   vim.keymap.set("n", "<leader>in", "<Cmd>I18nLangNext<CR>",
@@ -325,6 +329,10 @@ Doctor checks:
 
 Note: :I18nDoctor scans project files and can be slow on large codebases.
 It runs only when you explicitly invoke it.
+Unsaved source is read from open buffers of the diagnosed project only: named
+normal or nofile buffers under the project root whose directory resolves to
+the same resource roots. Unnamed buffers, other special buffers, and buffers
+of other (including nested) projects are ignored.
 Starting another Doctor run cancels the pending or active run. Doctor work does
 not block interactive RPC, and each run has a 60-second overall deadline that
 includes resource discovery, indexing, buffer payload preparation, and project

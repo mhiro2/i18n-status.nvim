@@ -173,7 +173,7 @@ For full option and command details, see `:help i18n-status`.
   inline = {
     position = "eol", -- "eol" | "after_key"
     max_len = 80,
-    visible_only = true,
+    visible_only = true, -- render visible lines only; scrolling and resizing refresh newly shown lines
     status_only = false,
     debounce_ms = 80,
     hl = {
@@ -231,12 +231,16 @@ If none is found, a best-effort fallback is used and `:checkhealth` will warn.
 - **`:I18nExtract`**: Detect hardcoded JSX text and open the Extract Review UI (supports `:'<,'>I18nExtract` for range extraction)
 - **`:I18nRefresh`**: Force refresh current buffer
 
+Doctor reads unsaved source from open buffers of the diagnosed project only: named normal or `nofile` buffers under the project root whose directory resolves to the same resource roots. Unnamed buffers, other special buffers, and buffers of other (including nested) projects are ignored.
+
 Doctor runs are latest-wins: starting another scan cancels any pending or active scan without blocking interactive RPC. Each scan also has a 60-second overall deadline covering resource discovery, indexing, buffer payload preparation, and the project scan; a timed-out scan is cancelled and does not open an empty Review UI. If non-cooperative timed-out workers temporarily exhaust the bounded Doctor capacity, Doctor reports a busy error; retry after the earlier work finishes.
 
 ### Language
 
 - **`:I18nLang [lang]`**: With no argument, same as `:I18nLangNext`. With argument, set language explicitly (warns if unknown). Supports command-line completion.
 - **`:I18nLangNext`** / **`:I18nLangPrev`**: Cycle languages
+
+The display language is per project: switching it re-renders every open buffer of that project.
 
 ## ✅ Health check
 
