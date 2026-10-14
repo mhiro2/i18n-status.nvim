@@ -395,6 +395,8 @@ pub(super) fn extract_resource(params: ExtractResourceParams) -> Result<Value> {
                 end_col: leaf.end_col,
                 fallback: false,
                 refactorable: false,
+                framework: None,
+                source_key_policy: None,
             });
         } else {
             if leaf.path.is_empty() {
@@ -411,6 +413,8 @@ pub(super) fn extract_resource(params: ExtractResourceParams) -> Result<Value> {
                 end_col: leaf.end_col,
                 fallback: false,
                 refactorable: false,
+                framework: None,
+                source_key_policy: None,
             });
         }
     }

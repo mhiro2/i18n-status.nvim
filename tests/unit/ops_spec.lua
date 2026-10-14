@@ -174,7 +174,14 @@ describe("ops.rename", function()
     end)
   end)
 
-  it("keeps next-intl namespace moves inside each language root file", function()
+  ---@param source_line string
+  ---@param new_key string
+  ---@return boolean ok
+  ---@return string|nil err
+  ---@return table ja
+  ---@return table en
+  ---@return string source
+  local function rename_in_next_intl_root_files(source_line, new_key)
     local root = helpers.tmpdir()
     local ja_path = root .. "/messages/ja.json"
     local en_path = root .. "/messages/en.json"
@@ -182,32 +189,98 @@ describe("ops.rename", function()
     helpers.write_file(en_path, '{"common":{"rename":{"title":"Login"}}}')
     vim.fn.mkdir(root .. "/src", "p")
 
+    local ok, err, source_buf
     helpers.with_cwd(root, function()
-      local source_buf = make_buf(root .. "/src/app.ts", 't("rename.title")')
+      source_buf = make_buf(root .. "/src/app.ts", source_line)
       local config = config_mod.setup({ primary_lang = "ja", inline = { visible_only = false } })
       resources.ensure_index(root)
-      local source_span = span(source_buf, "rename.title")
-      scan.extract = function(bufnr)
-        return bufnr == source_buf and { source_span } or {}
-      end
+      -- Exercise the real scanner so translator framework metadata reaches rename planning.
+      scan.extract_for_refactor = original_extract_for_refactor
+
+      ok, err = ops.rename({
+        item = rename_item(ja_path, en_path),
+        source_buf = source_buf,
+        new_key = new_key,
+        config = config,
+      })
+      assert.is_nil(vim.uv.fs_stat(root .. "/messages/ja/account.json"))
+      assert.is_nil(vim.uv.fs_stat(root .. "/messages/en/account.json"))
+    end)
+    return ok,
+      err,
+      vim.json.decode(helpers.read_file(ja_path)),
+      vim.json.decode(helpers.read_file(en_path)),
+      vim.api.nvim_buf_get_lines(source_buf, 0, 1, false)[1]
+  end
+
+  it("renames a next-intl reference inside its bound namespace", function()
+    local ok, err, ja, en, source =
+      rename_in_next_intl_root_files('const t = useTranslations("common"); t("rename.title")', "common:rename.heading")
+
+    assert.is_true(ok, err)
+    assert.is_nil(ja.common.rename.title)
+    assert.is_nil(en.common.rename.title)
+    assert.are.equal("ログイン", ja.common.rename.heading)
+    assert.are.equal("Login", en.common.rename.heading)
+    assert.are.equal('const t = useTranslations("common"); t("rename.heading")', source)
+  end)
+
+  it("rejects moving a next-intl reference to another namespace", function()
+    local ok, err, ja, en, source =
+      rename_in_next_intl_root_files('const t = useTranslations("common"); t("rename.title")', "account:rename.heading")
+
+    assert.is_false(ok)
+    assert.is_truthy(err:find("translator stays bound to 'common'", 1, true))
+    assert.are.same({ common = { rename = { title = "ログイン" } } }, ja)
+    assert.are.same({ common = { rename = { title = "Login" } } }, en)
+    assert.are.equal('const t = useTranslations("common"); t("rename.title")', source)
+  end)
+
+  it("rejects moving an unbound reference over next-intl messages to another namespace", function()
+    local ok, err, ja, _, source = rename_in_next_intl_root_files('t("rename.title")', "account:rename.heading")
+
+    assert.is_false(ok)
+    assert.is_truthy(err:find("unknown translator", 1, true))
+    assert.are.same({ common = { rename = { title = "ログイン" } } }, ja)
+    assert.are.equal('t("rename.title")', source)
+  end)
+
+  it("keeps the explicit namespace prefix of an unbound reference over next-intl messages", function()
+    local ok, err, ja, _, source =
+      rename_in_next_intl_root_files('i18n.t("common:rename.title")', "common:rename.heading")
+
+    assert.is_true(ok, err)
+    assert.are.equal("ログイン", ja.common.rename.heading)
+    assert.are.equal('i18n.t("common:rename.heading")', source)
+  end)
+
+  it("moves an i18next reference to another namespace with an explicit prefix", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
+    vim.fn.mkdir(root .. "/src", "p")
+
+    helpers.with_cwd(root, function()
+      local source_line = 'const { t } = useTranslation("common"); t("rename.title")'
+      local source_buf = make_buf(root .. "/src/app.ts", source_line)
+      local config = config_mod.setup({ primary_lang = "ja", inline = { visible_only = false } })
+      resources.ensure_index(root)
+      scan.extract_for_refactor = original_extract_for_refactor
 
       local ok, err = ops.rename({
-        item = rename_item(ja_path, en_path),
+        item = rename_item(root .. "/locales/ja/common.json", root .. "/locales/en/common.json"),
         source_buf = source_buf,
         new_key = "account:rename.heading",
         config = config,
       })
 
       assert.is_true(ok, err)
-      local ja = vim.json.decode(helpers.read_file(ja_path))
-      local en = vim.json.decode(helpers.read_file(en_path))
-      assert.is_nil(ja.common.rename.title)
-      assert.is_nil(en.common.rename.title)
-      assert.are.equal("ログイン", ja.account.rename.heading)
-      assert.are.equal("Login", en.account.rename.heading)
-      assert.are.equal('t("account:rename.heading")', vim.api.nvim_buf_get_lines(source_buf, 0, 1, false)[1])
-      assert.is_nil(vim.uv.fs_stat(root .. "/messages/ja/account.json"))
-      assert.is_nil(vim.uv.fs_stat(root .. "/messages/en/account.json"))
+      local ja = vim.json.decode(helpers.read_file(root .. "/locales/ja/account.json"))
+      assert.are.equal("ログイン", ja.rename.heading)
+      assert.are.equal(
+        'const { t } = useTranslation("common"); t("account:rename.heading")',
+        vim.api.nvim_buf_get_lines(source_buf, 0, 1, false)[1]
+      )
     end)
   end)
 

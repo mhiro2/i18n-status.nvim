@@ -262,6 +262,8 @@ local function validate_refactor_result(result)
       and is_non_negative_integer(item.end_col)
       and type(item.fallback) == "boolean"
       and type(item.refactorable) == "boolean"
+      and (item.framework == nil or type(item.framework) == "string")
+      and (item.source_key_policy == nil or type(item.source_key_policy) == "string")
     if not valid or item.end_lnum < item.lnum or (item.end_lnum == item.lnum and item.end_col < item.col) then
       return nil, string.format("source scan returned an invalid item at index %d", index)
     end

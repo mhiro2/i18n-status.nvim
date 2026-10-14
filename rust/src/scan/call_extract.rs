@@ -4,7 +4,7 @@ use swc_ecma_visit::{Visit, VisitWith};
 
 use super::const_eval::eval_string_exprs;
 use super::parser::span_to_byte_range;
-use super::scope::ScopeAnalysis;
+use super::scope::{ScopeAnalysis, SymbolBinding};
 use super::{Range, ScanItem};
 
 pub(super) fn extract_calls(
@@ -86,9 +86,13 @@ impl<'a> CallVisitor<'a> {
             return;
         }
 
+        let binding = (!is_member_t)
+            .then(|| self.scopes.resolve(&func_name, call_pos))
+            .flatten()
+            .filter(|binding| binding.is_callable_translator_at(call_pos));
+        let refactorable = is_direct_literal(&first_arg.expr);
         for value in values {
-            let binding_name = (!is_member_t).then_some(func_name.as_str());
-            let (key, namespace, fallback) = self.resolve_namespace(&value, call_pos, binding_name);
+            let (key, namespace, fallback) = self.resolve_namespace(&value, binding);
             self.items.push(ScanItem {
                 key,
                 raw: value,
@@ -98,7 +102,9 @@ impl<'a> CallVisitor<'a> {
                 end_lnum,
                 end_col,
                 fallback,
-                refactorable: is_direct_literal(&first_arg.expr),
+                refactorable,
+                framework: binding.and_then(|binding| binding.framework),
+                source_key_policy: binding.and_then(|binding| binding.source_key_policy),
             });
         }
     }
@@ -114,19 +120,14 @@ impl<'a> CallVisitor<'a> {
     fn resolve_namespace(
         &self,
         value: &str,
-        call_pos: u32,
-        binding_name: Option<&str>,
+        binding: Option<&SymbolBinding>,
     ) -> (String, String, bool) {
         if let Some(colon_pos) = value.find(':') {
             let namespace = &value[..colon_pos];
             return (value.to_string(), namespace.to_string(), false);
         }
 
-        if let Some(binding_name) = binding_name
-            && let Some(binding) = self.scopes.resolve(binding_name, call_pos)
-            && binding.is_callable_translator_at(call_pos)
-            && let Some(namespace) = &binding.namespace
-        {
+        if let Some(namespace) = binding.and_then(|binding| binding.namespace.as_ref()) {
             return (format!("{}:{}", namespace, value), namespace.clone(), false);
         }
 
@@ -150,6 +151,7 @@ mod tests {
     use super::*;
     use crate::scan::parser::parse_module;
     use crate::scan::scope::collect_scopes_precise;
+    use crate::scan::{SourceKeyPolicy, TranslationFramework};
 
     fn extract_items(source: &str, fallback_namespace: &str) -> Vec<ScanItem> {
         let (module, cm) = parse_module(source, "tsx").expect("source should parse");
@@ -227,6 +229,40 @@ function C() { const key = readKey(); return t(key); }
 
         let keys: Vec<_> = items.iter().map(|item| item.key.as_str()).collect();
         assert_eq!(keys, ["translation:inner", "translation:outer"]);
+    }
+
+    #[test]
+    fn reports_translator_framework_and_source_key_policy() {
+        let items = extract_items(
+            r#"
+function Page() {
+  const t = useTranslations("common");
+  const { t: i18nT } = useTranslation("admin");
+  return [t("title"), i18nT("save"), i18n.t("loose")];
+}
+"#,
+            "translation",
+        );
+
+        assert_eq!(items.len(), 3);
+        assert!(matches!(
+            items[0].framework,
+            Some(TranslationFramework::NextIntl)
+        ));
+        assert!(matches!(
+            items[0].source_key_policy,
+            Some(SourceKeyPolicy::NamespaceRelative)
+        ));
+        assert!(matches!(
+            items[1].framework,
+            Some(TranslationFramework::I18next)
+        ));
+        assert!(matches!(
+            items[1].source_key_policy,
+            Some(SourceKeyPolicy::Canonical)
+        ));
+        assert!(items[2].framework.is_none());
+        assert!(items[2].source_key_policy.is_none());
     }
 
     #[test]

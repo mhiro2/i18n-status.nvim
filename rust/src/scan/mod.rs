@@ -19,6 +19,12 @@ pub struct ScanItem {
     pub end_col: u32,
     pub fallback: bool,
     pub refactorable: bool,
+    /// Framework of the translator binding that owns this call, when it is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framework: Option<TranslationFramework>,
+    /// How the source key is spelled relative to the translator binding, when it is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_key_policy: Option<SourceKeyPolicy>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,14 +73,14 @@ pub enum TranslationHook {
     GetTranslations,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranslationFramework {
     I18next,
     NextIntl,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKeyPolicy {
     Canonical,

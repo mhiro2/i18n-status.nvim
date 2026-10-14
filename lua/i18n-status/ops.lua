@@ -148,16 +148,64 @@ local function normalize_key(input, fallback_ns)
   return ns .. ":" .. key_path, ns, key_path, explicit_ns, nil
 end
 
+---@class I18nStatusRenameTarget
+---@field key string
+---@field namespace string
+---@field path string
+---@field explicit_namespace boolean
+---@field next_intl_resource boolean
+
+---Compute the source spelling of a renamed reference according to its translator semantics.
+---@param item table Scanner item
+---@param target I18nStatusRenameTarget
+---@return string|nil raw
+---@return string|nil error
+local function renamed_source_key(item, target)
+  if item.framework == "next_intl" then
+    if item.raw:find(":", 1, true) then
+      return nil, "cannot rename a next-intl reference whose key contains ':'"
+    end
+    -- next-intl binds the namespace in useTranslations/getTranslations; source keys cannot select
+    -- another namespace, so a move would leave the reference pointing at the old namespace.
+    if target.namespace ~= item.namespace then
+      return nil,
+        string.format(
+          "cannot move a next-intl reference from namespace '%s' to '%s' because its translator stays bound to '%s'",
+          item.namespace,
+          target.namespace,
+          item.namespace
+        )
+    end
+    return target.path, nil
+  end
+
+  if item.raw:find(":", 1, true) then
+    return target.key, nil
+  end
+  if target.explicit_namespace and item.namespace ~= target.namespace then
+    if item.framework == nil and target.next_intl_resource then
+      -- Without a known translator, adding an i18next `ns:` prefix may not resolve when the
+      -- reference is actually a next-intl translator over these messages.
+      return nil,
+        string.format(
+          "cannot move a reference with an unknown translator from namespace '%s' to '%s' over next-intl messages",
+          item.namespace,
+          target.namespace
+        )
+    end
+    return target.key, nil
+  end
+  return target.path, nil
+end
+
 ---@param bufnr integer
 ---@param old_key string
----@param new_key string
----@param new_ns string
----@param explicit_ns boolean
+---@param target I18nStatusRenameTarget
 ---@param fallback_ns string
 ---@param identity I18nStatusProjectIdentity
 ---@return table|nil plan
 ---@return string|nil error
-local function plan_buffer_rename(bufnr, old_key, new_key, new_ns, explicit_ns, fallback_ns, identity)
+local function plan_buffer_rename(bufnr, old_key, target, fallback_ns, identity)
   local items, snapshot = scan.extract_for_refactor(bufnr, {
     fallback_namespace = fallback_ns,
   })
@@ -176,13 +224,9 @@ local function plan_buffer_rename(bufnr, old_key, new_key, new_ns, explicit_ns, 
             item.lnum + 1
           )
       end
-      local new_raw = new_key
-      if not item.raw:find(":", 1, true) then
-        if explicit_ns and item.namespace ~= new_ns then
-          new_raw = new_key
-        else
-          new_raw = new_key:match("^[^:]+:(.+)$") or new_key
-        end
+      local new_raw, raw_err = renamed_source_key(item, target)
+      if not new_raw then
+        return nil, string.format("%s (buffer %d, line %d)", raw_err, bufnr, item.lnum + 1)
       end
       local end_lnum = item.end_lnum
       if
@@ -431,6 +475,23 @@ local function target_key_conflicts(entries, old_key, new_key)
   return false
 end
 
+---@param cache table
+---@param key string
+---@param langs string[]
+---@param base_dir string
+---@return boolean
+local function defined_in_next_intl_resources(cache, key, langs, base_dir)
+  for _, lang in ipairs(langs) do
+    local entry = cache.index and cache.index[lang] and cache.index[lang][key]
+    local file = entry and entry.file and fs.sanitize_path(entry.file, base_dir)
+    local owner = file and cache.file_meta and cache.file_meta[file]
+    if type(owner) == "table" and normalized_root_kind(owner.kind) == "next-intl" then
+      return true
+    end
+  end
+  return false
+end
+
 ---@param opts { item: I18nStatusResolved, source_buf?: integer, new_key: string, config: I18nStatusConfig }
 ---@return boolean, string?
 function M.rename(opts)
@@ -477,6 +538,15 @@ function M.rename(opts)
     return false, "no languages detected"
   end
 
+  ---@type I18nStatusRenameTarget
+  local rename_target = {
+    key = new_key,
+    namespace = new_ns,
+    path = new_path,
+    explicit_namespace = explicit_ns,
+    next_intl_resource = defined_in_next_intl_resources(cache, old_key, langs, base_dir),
+  }
+
   local buffer_plans = {}
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if project_identity.is_source_buffer(buf) then
@@ -489,7 +559,7 @@ function M.rename(opts)
         end
         if project_identity.same_project(candidate_identity, target_identity) then
           local fb = resources.fallback_namespace_for_buf(buf)
-          local plan, plan_err = plan_buffer_rename(buf, old_key, new_key, new_ns, explicit_ns, fb, candidate_identity)
+          local plan, plan_err = plan_buffer_rename(buf, old_key, rename_target, fb, candidate_identity)
           if not plan then
             return false, plan_err or "failed to plan source rename"
           end
