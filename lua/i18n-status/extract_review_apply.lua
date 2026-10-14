@@ -536,7 +536,7 @@ local function apply_candidate(ctx, candidate, deps)
   if candidate.mode == "new" then
     local translations = {}
     for _, lang in ipairs(candidate.languages) do
-      translations[lang] = lang == candidate.primary_lang and candidate.text or ""
+      translations[lang] = lang == candidate.primary_lang and candidate.message or ""
     end
     local resource_changes, _, _, prepare_err =
       key_write.prepare_translations(namespace, key_path, translations, ctx.start_dir, candidate.languages, {
@@ -610,7 +610,7 @@ local function apply_candidate(ctx, candidate, deps)
       catalog.index[language] = catalog.index[language] or {}
       catalog.index[language][candidate.proposed_key] = {
         priority = 0,
-        value = language == candidate.primary_lang and candidate.text or "",
+        value = language == candidate.primary_lang and candidate.message or "",
       }
     end
   end

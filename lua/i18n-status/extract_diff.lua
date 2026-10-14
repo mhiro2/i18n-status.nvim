@@ -73,7 +73,7 @@ function M.resource_diff_lines(candidate, languages, primary_lang, start_dir, ro
       key_in_file = resources.key_path_for_file(namespace, key_path, start_dir, lang, path, root_list)
     end
 
-    local value = lang == primary_lang and (candidate.text or "") or ""
+    local value = lang == primary_lang and (candidate.message or "") or ""
     lines[#lines + 1] = string.format(
       '%s: + "%s": %s',
       display_resource_path(start_dir, lang, namespace, candidate.framework, root_list),
