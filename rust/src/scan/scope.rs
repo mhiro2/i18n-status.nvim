@@ -1,4 +1,3 @@
-#[cfg(test)]
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
@@ -6,8 +5,8 @@ use swc_common::{SourceMap, Span, Spanned};
 use swc_ecma_ast::*;
 use swc_ecma_visit::{Visit, VisitWith};
 
-use super::const_eval::{ConstBinding, eval_string_expr};
-use super::parser::{span_to_lines, span_to_loc};
+use super::const_eval::{MAX_CONST_SUBSTITUTION_BYTES, eval_string_expr, string_operand_idents};
+use super::parser::span_to_lines;
 use super::{NamespaceResolution, SourceKeyPolicy, TranslationFramework, TranslationHook};
 
 #[derive(Debug, Clone)]
@@ -21,6 +20,8 @@ pub(super) struct SymbolBinding {
     pub(super) source_key_policy: Option<SourceKeyPolicy>,
     pub(super) namespace_resolution: Option<NamespaceResolution>,
     pub(super) extract_safe: bool,
+    /// Static string value of a `const` binding whose initializer could be evaluated.
+    pub(super) const_value: Option<String>,
     pub(super) start_line: u32,
     pub(super) end_line: u32,
     scope_start: u32,
@@ -51,6 +52,8 @@ pub(super) struct ScopeAnalysis {
     pub(super) bindings: Vec<SymbolBinding>,
     bindings_by_name: HashMap<String, NameBindingIndex>,
     translator_indices: Vec<usize>,
+    /// Remaining bytes that const substitution may produce for this source.
+    substitution_budget: Cell<usize>,
     #[cfg(test)]
     lookup_work: Cell<usize>,
 }
@@ -290,7 +293,7 @@ impl ScopeAnalysis {
         }
     }
 
-    pub(super) fn resolve(&self, name: &str, pos: u32) -> Option<&SymbolBinding> {
+    fn resolve_index(&self, name: &str, pos: u32) -> Option<usize> {
         let index = self.bindings_by_name.get(name)?;
         let (binding_index, work) = index.resolve_index(&self.bindings, pos);
         #[cfg(test)]
@@ -298,7 +301,30 @@ impl ScopeAnalysis {
             .set(self.lookup_work.get().saturating_add(work));
         #[cfg(not(test))]
         let _ = work;
-        binding_index.map(|index| &self.bindings[index])
+        binding_index
+    }
+
+    pub(super) fn resolve(&self, name: &str, pos: u32) -> Option<&SymbolBinding> {
+        self.resolve_index(name, pos)
+            .map(|index| &self.bindings[index])
+    }
+
+    /// Static string value of an identifier at its own position. Any lexical binding that is not
+    /// an evaluable `const` (parameters, `let`, `var`, dynamic consts, ...) shadows outer values.
+    pub(super) fn const_value(&self, ident: &Ident) -> Option<String> {
+        let value = self
+            .resolve(ident.sym.as_ref(), ident.span.lo.0)?
+            .const_value
+            .as_deref()?;
+        self.charge_substitution(value)
+    }
+
+    /// Substitute a const value if the per-source budget allows it. Repeated substitution can
+    /// grow output exponentially (`const b = a + a`), so the total is bounded per source.
+    fn charge_substitution(&self, value: &str) -> Option<String> {
+        let remaining = self.substitution_budget.get().checked_sub(value.len())?;
+        self.substitution_budget.set(remaining);
+        Some(value.to_owned())
     }
 
     #[cfg(test)]
@@ -381,10 +407,14 @@ struct PendingTranslator {
     pattern: Pat,
     hook_name: String,
     awaited: bool,
-    namespace: Option<String>,
-    namespace_resolution: NamespaceResolution,
+    namespace_arg: Option<Box<Expr>>,
     extract_safe: bool,
     call_pos: u32,
+}
+
+struct PendingConst {
+    binding_index: usize,
+    init: Box<Expr>,
 }
 
 struct PendingCommonJsHook {
@@ -534,14 +564,13 @@ fn get_callee_name(callee: &Callee) -> Option<String> {
 }
 
 fn resolve_namespace(
-    args: &[ExprOrSpread],
-    line: u32,
-    const_bindings: &[ConstBinding],
+    arg: Option<&Expr>,
+    analysis: &ScopeAnalysis,
 ) -> (Option<String>, NamespaceResolution) {
-    let Some(arg) = args.first() else {
+    let Some(arg) = arg else {
         return (None, NamespaceResolution::Absent);
     };
-    match eval_string_expr(&arg.expr, line, const_bindings) {
+    match eval_string_expr(arg, &|ident| analysis.const_value(ident)) {
         Some(namespace) => (Some(namespace), NamespaceResolution::Static),
         None => (None, NamespaceResolution::Dynamic),
     }
@@ -738,11 +767,7 @@ fn scope_range(cm: &SourceMap, span: Span) -> ScopeRange {
     }
 }
 
-pub(super) fn collect_scopes_precise(
-    module: &Module,
-    cm: &SourceMap,
-    const_bindings: &[ConstBinding],
-) -> ScopeAnalysis {
+pub(super) fn collect_scopes_precise(module: &Module, cm: &SourceMap) -> ScopeAnalysis {
     let module_scope = ScopeRange {
         start_line: 0,
         end_line: u32::MAX,
@@ -751,18 +776,23 @@ pub(super) fn collect_scopes_precise(
     };
     let mut collector = ScopeCollector {
         cm,
-        const_bindings,
         analysis: ScopeAnalysis::default(),
         pending_commonjs_hooks: Vec::new(),
+        pending_consts: Vec::new(),
         pending_invalidations: Vec::new(),
         pending_translators: Vec::new(),
         lexical_scopes: vec![module_scope],
         var_scopes: vec![module_scope],
     };
+    collector
+        .analysis
+        .substitution_budget
+        .set(MAX_CONST_SUBSTITUTION_BYTES);
     module.visit_with(&mut collector);
     collector.analysis.rebuild_indexes();
     collector.finalize_invalidations();
     collector.analysis.rebuild_indexes();
+    collector.finalize_consts();
     collector.finalize_commonjs_hooks();
     collector.finalize_translators();
     collector.analysis.bindings.sort_by_key(|binding| {
@@ -778,9 +808,9 @@ pub(super) fn collect_scopes_precise(
 
 struct ScopeCollector<'a> {
     cm: &'a SourceMap,
-    const_bindings: &'a [ConstBinding],
     analysis: ScopeAnalysis,
     pending_commonjs_hooks: Vec<PendingCommonJsHook>,
+    pending_consts: Vec<PendingConst>,
     pending_invalidations: Vec<PendingInvalidation>,
     pending_translators: Vec<PendingTranslator>,
     lexical_scopes: Vec<ScopeRange>,
@@ -806,6 +836,7 @@ impl<'a> ScopeCollector<'a> {
             source_key_policy: None,
             namespace_resolution: None,
             extract_safe: false,
+            const_value: None,
             start_line: scope.start_line,
             end_line: scope.end_line,
             scope_start: scope.start_pos,
@@ -891,6 +922,56 @@ impl<'a> ScopeCollector<'a> {
         }
     }
 
+    /// Evaluate `const` initializers once every binding is known, so identifiers resolve through
+    /// the complete lexical scope chain. Dependencies are evaluated first with an explicit stack;
+    /// references that form a cycle stay unevaluated and therefore dynamic.
+    fn finalize_consts(&mut self) {
+        let pending = std::mem::take(&mut self.pending_consts);
+        let analysis = &self.analysis;
+        let inits: HashMap<usize, &Expr> = pending
+            .iter()
+            .map(|pending| (pending.binding_index, pending.init.as_ref()))
+            .collect();
+        let dependencies = |index: usize| -> Vec<usize> {
+            let mut idents = Vec::new();
+            string_operand_idents(inits[&index], &mut idents);
+            idents
+                .into_iter()
+                .filter_map(|ident| analysis.resolve_index(ident.sym.as_ref(), ident.span.lo.0))
+                .filter(|dependency| inits.contains_key(dependency))
+                .collect()
+        };
+
+        let mut values: HashMap<usize, Option<String>> = HashMap::new();
+        let mut visiting: HashSet<usize> = HashSet::new();
+        for root in pending.iter().map(|pending| pending.binding_index) {
+            if !visiting.insert(root) {
+                continue;
+            }
+            let mut stack = vec![(root, dependencies(root), 0usize)];
+            while let Some((index, deps, next)) = stack.last_mut() {
+                if let Some(&dependency) = deps.get(*next) {
+                    *next += 1;
+                    if visiting.insert(dependency) {
+                        stack.push((dependency, dependencies(dependency), 0));
+                    }
+                    continue;
+                }
+                let index = *index;
+                let value = eval_string_expr(inits[&index], &|ident: &Ident| {
+                    let dependency = analysis.resolve_index(ident.sym.as_ref(), ident.span.lo.0)?;
+                    let value = values.get(&dependency)?.as_deref()?;
+                    analysis.charge_substitution(value)
+                });
+                values.insert(index, value);
+                stack.pop();
+            }
+        }
+        for (index, value) in values {
+            self.analysis.bindings[index].const_value = value;
+        }
+    }
+
     fn finalize_translators(&mut self) {
         for pending in std::mem::take(&mut self.pending_translators) {
             let Some(hook) = self
@@ -904,18 +985,22 @@ impl<'a> ScopeCollector<'a> {
             else {
                 continue;
             };
-            let (framework, source_key_policy) = hook_metadata(hook, pending.namespace.is_some());
+            let (namespace, namespace_resolution) =
+                resolve_namespace(pending.namespace_arg.as_deref(), &self.analysis);
+            let (framework, source_key_policy) = hook_metadata(hook, namespace.is_some());
             for index in pending.binding_indices {
                 let binding = &mut self.analysis.bindings[index];
                 if binding.name == translator_name {
                     binding.translator = true;
-                    binding.namespace.clone_from(&pending.namespace);
+                    binding.namespace.clone_from(&namespace);
                     binding.hook = Some(hook);
                     binding.framework = Some(framework);
                     binding.source_key_policy = Some(source_key_policy);
-                    binding.namespace_resolution = Some(pending.namespace_resolution);
+                    binding.namespace_resolution = Some(namespace_resolution);
                     binding.extract_safe =
-                        !matches!(hook, TranslationHook::UseTranslation) || pending.extract_safe;
+                        !matches!(namespace_resolution, NamespaceResolution::Dynamic)
+                            && (!matches!(hook, TranslationHook::UseTranslation)
+                                || pending.extract_safe);
                 }
             }
         }
@@ -970,20 +1055,25 @@ impl<'a> ScopeCollector<'a> {
             let binding_indices =
                 self.add_pattern_bindings(&declarator.name, binding_scope, declarator.span.hi.0);
             if let Some(init) = &declarator.init {
+                if var.kind == VarDeclKind::Const
+                    && let Pat::Ident(_) = &declarator.name
+                    && let [binding_index] = binding_indices[..]
+                {
+                    self.pending_consts.push(PendingConst {
+                        binding_index,
+                        init: init.clone(),
+                    });
+                }
                 self.record_commonjs_hooks(&declarator.name, init, &binding_indices);
                 if let Some((call, awaited)) = extract_hook_call(init)
                     && let Some(hook_name) = get_callee_name(&call.callee)
                 {
-                    let (call_line, _, _) = span_to_loc(self.cm, call.span);
-                    let (namespace, namespace_resolution) =
-                        resolve_namespace(&call.args, call_line, self.const_bindings);
                     self.pending_translators.push(PendingTranslator {
                         binding_indices,
                         pattern: declarator.name.clone(),
                         hook_name,
                         awaited,
-                        namespace,
-                        namespace_resolution,
+                        namespace_arg: call.args.first().map(|arg| arg.expr.clone()),
                         extract_safe: use_translation_options_are_extract_safe(&call.args),
                         call_pos: call.span.lo.0,
                     });
@@ -1350,13 +1440,11 @@ impl Visit for ScopeCollector<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan::const_eval::collect_consts;
     use crate::scan::parser::parse_module;
 
     fn collect_scopes(source: &str) -> ScopeAnalysis {
         let (module, cm) = parse_module(source, "tsx").expect("source should parse");
-        let const_bindings = collect_consts(&module, &cm);
-        collect_scopes_precise(&module, &cm, &const_bindings)
+        collect_scopes_precise(&module, &cm)
     }
 
     #[test]
@@ -1402,6 +1490,154 @@ function Page() {
         assert!(!binding.translator);
     }
 
+    fn only_translator(scopes: &ScopeAnalysis) -> &SymbolBinding {
+        let mut translators = scopes.translators();
+        assert_eq!(translators.len(), 1, "expected exactly one translator");
+        translators.next().expect("translator should exist")
+    }
+
+    fn assert_dynamic_namespace(source: &str) {
+        let scopes = collect_scopes(source);
+        let translator = only_translator(&scopes);
+
+        assert_eq!(translator.namespace, None);
+        assert!(matches!(
+            translator.namespace_resolution,
+            Some(NamespaceResolution::Dynamic)
+        ));
+        assert!(!translator.extract_safe);
+    }
+
+    #[test]
+    fn parameter_shadows_outer_const_namespace() {
+        assert_dynamic_namespace(
+            r#"const ns = "outer"; function F(ns) { const t = useTranslations(ns); return <p>Hello</p>; }"#,
+        );
+    }
+
+    #[test]
+    fn let_shadows_outer_const_namespace() {
+        assert_dynamic_namespace(
+            r#"
+const ns = "outer";
+function F() {
+  let ns = "inner";
+  const t = useTranslations(ns);
+  return <p>Hello</p>;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn unevaluable_const_shadows_outer_const_namespace() {
+        assert_dynamic_namespace(
+            r#"
+const ns = "outer";
+function F() {
+  const ns = pickNamespace();
+  const t = useTranslations(ns);
+  return <p>Hello</p>;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn same_line_inner_const_does_not_leak_to_outer_reference() {
+        let scopes = collect_scopes(
+            r#"const ns = "outer"; { const ns = "inner"; } const t = useTranslations(ns);"#,
+        );
+        let translator = only_translator(&scopes);
+
+        assert_eq!(translator.namespace.as_deref(), Some("outer"));
+        assert!(translator.extract_safe);
+    }
+
+    #[test]
+    fn const_namespace_resolves_through_const_chains() {
+        let scopes = collect_scopes(
+            r#"
+const base = "home";
+function F() {
+  const ns = base + ".form";
+  const t = useTranslations(ns);
+}
+"#,
+        );
+
+        assert_eq!(
+            only_translator(&scopes).namespace.as_deref(),
+            Some("home.form")
+        );
+    }
+
+    #[test]
+    fn long_forward_const_chains_resolve_without_recursion() {
+        const CHAIN: usize = 50_000;
+        let mut source = String::new();
+        for index in 0..CHAIN {
+            source.push_str(&format!("const c{index} = c{};\n", index + 1));
+        }
+        source.push_str(&format!(
+            "const c{CHAIN} = \"ns\";\nconst t = useTranslations(c0);\n"
+        ));
+        let scopes = collect_scopes(&source);
+
+        assert_eq!(only_translator(&scopes).namespace.as_deref(), Some("ns"));
+    }
+
+    #[test]
+    fn exponential_const_folding_stops_at_the_substitution_budget() {
+        let mut source = "const a0 = \"xxxxxxxxxxxxxxxx\";\n".to_string();
+        for index in 1..=40 {
+            source.push_str(&format!(
+                "const a{index} = a{} + a{};\n",
+                index - 1,
+                index - 1
+            ));
+        }
+        source.push_str("const t = useTranslations(a40);\n");
+        let scopes = collect_scopes(&source);
+
+        assert!(matches!(
+            only_translator(&scopes).namespace_resolution,
+            Some(NamespaceResolution::Dynamic)
+        ));
+        let largest = scopes
+            .bindings
+            .iter()
+            .filter_map(|binding| binding.const_value.as_ref())
+            .map(String::len)
+            .max()
+            .unwrap_or_default();
+        assert!(largest <= MAX_CONST_SUBSTITUTION_BYTES);
+    }
+
+    #[test]
+    fn short_forward_const_chains_still_resolve() {
+        let scopes = collect_scopes(
+            r#"
+const t = useTranslations(a);
+const a = b;
+const b = "ns";
+"#,
+        );
+
+        assert_eq!(only_translator(&scopes).namespace.as_deref(), Some("ns"));
+    }
+
+    #[test]
+    fn self_referential_consts_are_not_static() {
+        assert_dynamic_namespace(
+            r#"
+const a = b + "x";
+const b = a + "y";
+const t = useTranslations(a);
+"#,
+        );
+    }
+
     #[test]
     fn rejects_unawaited_get_translations_binding() {
         let scopes = collect_scopes(
@@ -1431,6 +1667,7 @@ async function Page() {
                 source_key_policy: None,
                 namespace_resolution: None,
                 extract_safe: false,
+                const_value: None,
                 start_line: 0,
                 end_line: u32::MAX,
                 scope_start: 0,
@@ -1448,6 +1685,7 @@ async function Page() {
             source_key_policy: None,
             namespace_resolution: None,
             extract_safe: false,
+            const_value: None,
             start_line: 0,
             end_line: u32::MAX,
             scope_start: 0,
@@ -1499,6 +1737,7 @@ async function Page() {
                 source_key_policy: None,
                 namespace_resolution: None,
                 extract_safe: false,
+                const_value: None,
                 start_line: 0,
                 end_line: u32::MAX,
                 scope_start: 0,

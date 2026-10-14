@@ -2,7 +2,7 @@ use swc_common::{SourceMap, Spanned};
 use swc_ecma_ast::*;
 use swc_ecma_visit::{Visit, VisitWith};
 
-use super::const_eval::{ConstBinding, eval_string_exprs};
+use super::const_eval::eval_string_exprs;
 use super::parser::span_to_byte_range;
 use super::scope::ScopeAnalysis;
 use super::{Range, ScanItem};
@@ -10,7 +10,6 @@ use super::{Range, ScanItem};
 pub(super) fn extract_calls(
     module: &Module,
     cm: &SourceMap,
-    const_bindings: &[ConstBinding],
     scopes: &ScopeAnalysis,
     fallback_namespace: &str,
     range: &Option<Range>,
@@ -18,7 +17,6 @@ pub(super) fn extract_calls(
     let mut items = Vec::new();
     let mut visitor = CallVisitor {
         cm,
-        const_bindings,
         scopes,
         fallback_namespace,
         range,
@@ -30,7 +28,6 @@ pub(super) fn extract_calls(
 
 struct CallVisitor<'a> {
     cm: &'a SourceMap,
-    const_bindings: &'a [ConstBinding],
     scopes: &'a ScopeAnalysis,
     fallback_namespace: &'a str,
     range: &'a Option<Range>,
@@ -84,7 +81,7 @@ impl<'a> CallVisitor<'a> {
             return;
         }
 
-        let values = eval_string_exprs(&first_arg.expr, lnum, self.const_bindings);
+        let values = eval_string_exprs(&first_arg.expr, &|ident| self.scopes.const_value(ident));
         if values.is_empty() {
             return;
         }
@@ -151,22 +148,13 @@ mod tests {
     use std::fmt::Write as _;
 
     use super::*;
-    use crate::scan::const_eval::collect_consts;
     use crate::scan::parser::parse_module;
     use crate::scan::scope::collect_scopes_precise;
 
     fn extract_items(source: &str, fallback_namespace: &str) -> Vec<ScanItem> {
         let (module, cm) = parse_module(source, "tsx").expect("source should parse");
-        let const_bindings = collect_consts(&module, &cm);
-        let scopes = collect_scopes_precise(&module, &cm, &const_bindings);
-        extract_calls(
-            &module,
-            &cm,
-            &const_bindings,
-            &scopes,
-            fallback_namespace,
-            &None,
-        )
+        let scopes = collect_scopes_precise(&module, &cm);
+        extract_calls(&module, &cm, &scopes, fallback_namespace, &None)
     }
 
     #[test]
@@ -213,6 +201,32 @@ function Page() {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].key, "common:title");
         assert_eq!(items[1].key, "admin:save");
+    }
+
+    #[test]
+    fn shadowed_const_keys_are_not_resolved_statically() {
+        let items = extract_items(
+            r#"
+const key = "outer";
+function A(key) { return t(key); }
+function B() { let key = "inner"; return t(key); }
+function C() { const key = readKey(); return t(key); }
+"#,
+            "translation",
+        );
+
+        assert!(items.is_empty(), "unexpected items: {items:?}");
+    }
+
+    #[test]
+    fn same_line_block_const_does_not_leak_into_outer_call() {
+        let items = extract_items(
+            r#"const key = "outer"; { const key = "inner"; t(key); } t(key);"#,
+            "translation",
+        );
+
+        let keys: Vec<_> = items.iter().map(|item| item.key.as_str()).collect();
+        assert_eq!(keys, ["translation:inner", "translation:outer"]);
     }
 
     #[test]
@@ -263,8 +277,7 @@ function Page() {
         }
 
         let (module, cm) = parse_module(&source, "tsx").expect("source should parse");
-        let const_bindings = collect_consts(&module, &cm);
-        let scopes = collect_scopes_precise(&module, &cm, &const_bindings);
+        let scopes = collect_scopes_precise(&module, &cm);
         let collection_work = scopes.lookup_work();
 
         assert!(
@@ -273,7 +286,7 @@ function Page() {
         );
 
         scopes.reset_lookup_work();
-        let items = extract_calls(&module, &cm, &const_bindings, &scopes, "translation", &None);
+        let items = extract_calls(&module, &cm, &scopes, "translation", &None);
         let extraction_work = scopes.lookup_work();
 
         assert_eq!(items.len(), 1);

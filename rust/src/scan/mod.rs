@@ -107,12 +107,10 @@ pub struct TranslationContext {
 
 pub fn extract(params: ExtractParams) -> Result<Value> {
     let (module, cm) = parser::parse_module(&params.source, &params.lang)?;
-    let const_bindings = const_eval::collect_consts(&module, &cm);
-    let scopes = scope::collect_scopes_precise(&module, &cm, &const_bindings);
+    let scopes = scope::collect_scopes_precise(&module, &cm);
     let items = call_extract::extract_calls(
         &module,
         &cm,
-        &const_bindings,
         &scopes,
         &params.fallback_namespace,
         &params.range,
@@ -127,8 +125,7 @@ pub fn extract_resource(params: ExtractResourceParams) -> Result<Value> {
 pub fn translation_context_at(params: TranslationContextParams) -> Result<Value> {
     let pos = source_byte_pos(&params.source, params.row, params.col);
     let (module, cm) = parser::parse_module(&params.source, &params.lang)?;
-    let const_bindings = const_eval::collect_consts(&module, &cm);
-    let scopes = scope::collect_scopes_precise(&module, &cm, &const_bindings);
+    let scopes = scope::collect_scopes_precise(&module, &cm);
 
     let (found_scope, ambiguous, shadowed) = if params.member_call {
         (None, false, false)
