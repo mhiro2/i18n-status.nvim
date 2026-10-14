@@ -397,6 +397,7 @@ pub(super) fn extract_resource(params: ExtractResourceParams) -> Result<Value> {
                 refactorable: false,
                 framework: None,
                 source_key_policy: None,
+                translator_namespace: None,
             });
         } else {
             if leaf.path.is_empty() {
@@ -415,6 +416,7 @@ pub(super) fn extract_resource(params: ExtractResourceParams) -> Result<Value> {
                 refactorable: false,
                 framework: None,
                 source_key_policy: None,
+                translator_namespace: None,
             });
         }
     }

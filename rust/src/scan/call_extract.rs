@@ -5,7 +5,7 @@ use swc_ecma_visit::{Visit, VisitWith};
 use super::const_eval::eval_string_exprs;
 use super::parser::span_to_byte_range;
 use super::scope::{ScopeAnalysis, SymbolBinding};
-use super::{Range, ScanItem};
+use super::{NamespaceResolution, Range, ScanItem, TranslationFramework};
 
 pub(super) fn extract_calls(
     module: &Module,
@@ -105,6 +105,7 @@ impl<'a> CallVisitor<'a> {
                 refactorable,
                 framework: binding.and_then(|binding| binding.framework),
                 source_key_policy: binding.and_then(|binding| binding.source_key_policy),
+                translator_namespace: binding.and_then(|binding| binding.namespace.clone()),
             });
         }
     }
@@ -122,6 +123,10 @@ impl<'a> CallVisitor<'a> {
         value: &str,
         binding: Option<&SymbolBinding>,
     ) -> (String, String, bool) {
+        if let Some(resolved) = binding.and_then(|binding| next_intl_key(value, binding)) {
+            return resolved;
+        }
+
         if let Some(colon_pos) = value.find(':') {
             let namespace = &value[..colon_pos];
             return (value.to_string(), namespace.to_string(), false);
@@ -134,6 +139,33 @@ impl<'a> CallVisitor<'a> {
         let namespace = self.fallback_namespace.to_string();
         (format!("{}:{}", namespace, value), namespace, true)
     }
+}
+
+/// Canonical `namespace:path` of a next-intl reference.
+///
+/// next-intl joins the bound namespace and the source key into one dot-separated message path,
+/// so nested namespaces (`useTranslations("Home.Form")`) and root translators
+/// (`useTranslations()` with `t("Home.title")`) both resolve to the top-level message object as
+/// the namespace. `:` has no meaning in next-intl keys. Translators with a dynamic namespace, or
+/// paths without a namespace segment, fall back to the generic resolution.
+fn next_intl_key(value: &str, binding: &SymbolBinding) -> Option<(String, String, bool)> {
+    if binding.framework != Some(TranslationFramework::NextIntl) {
+        return None;
+    }
+    let path = match (binding.namespace_resolution?, binding.namespace.as_deref()) {
+        (NamespaceResolution::Static, Some(namespace)) => format!("{namespace}.{value}"),
+        (NamespaceResolution::Absent, _) => value.to_string(),
+        _ => return None,
+    };
+    let (namespace, key_path) = path.split_once('.')?;
+    if namespace.is_empty() || key_path.is_empty() {
+        return None;
+    }
+    Some((
+        format!("{namespace}:{key_path}"),
+        namespace.to_string(),
+        false,
+    ))
 }
 
 fn is_direct_literal(expr: &Expr) -> bool {
@@ -263,6 +295,84 @@ function Page() {
         ));
         assert!(items[2].framework.is_none());
         assert!(items[2].source_key_policy.is_none());
+    }
+
+    #[test]
+    fn next_intl_nested_namespace_resolves_to_top_level_namespace() {
+        let items = extract_items(
+            r#"
+function Page() {
+  const t = useTranslations("Home.Form");
+  return t("fields.title");
+}
+"#,
+            "translation",
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].key, "Home:Form.fields.title");
+        assert_eq!(items[0].namespace, "Home");
+        assert_eq!(items[0].raw, "fields.title");
+        assert_eq!(items[0].translator_namespace.as_deref(), Some("Home.Form"));
+        assert!(!items[0].fallback);
+    }
+
+    #[test]
+    fn next_intl_root_translator_reads_namespace_from_the_key_path() {
+        let items = extract_items(
+            r#"
+async function Page() {
+  const t = await getTranslations();
+  return [t("Home.title"), t("Home.Form.submit")];
+}
+"#,
+            "translation",
+        );
+
+        let keys: Vec<_> = items.iter().map(|item| item.key.as_str()).collect();
+        assert_eq!(keys, ["Home:title", "Home:Form.submit"]);
+        assert!(items.iter().all(|item| item.namespace == "Home"));
+        assert!(items.iter().all(|item| !item.fallback));
+        assert!(items.iter().all(|item| item.translator_namespace.is_none()));
+        assert!(matches!(
+            items[0].source_key_policy,
+            Some(SourceKeyPolicy::Canonical)
+        ));
+    }
+
+    #[test]
+    fn next_intl_keys_do_not_treat_colon_as_namespace_separator() {
+        let items = extract_items(
+            r#"
+function Page() {
+  const t = useTranslations("Home");
+  return t("time:label");
+}
+"#,
+            "translation",
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].key, "Home:time:label");
+        assert_eq!(items[0].namespace, "Home");
+    }
+
+    #[test]
+    fn next_intl_dynamic_namespace_falls_back_without_a_source_key_policy() {
+        let items = extract_items(
+            r#"
+function Page({ ns }) {
+  const t = useTranslations(ns);
+  return t("Form.title");
+}
+"#,
+            "translation",
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].key, "translation:Form.title");
+        assert!(items[0].fallback);
+        assert!(items[0].source_key_policy.is_none());
     }
 
     #[test]

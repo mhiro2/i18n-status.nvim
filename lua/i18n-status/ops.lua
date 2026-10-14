@@ -4,6 +4,7 @@ local M = {}
 local fs = require("i18n-status.fs")
 local json = require("i18n-status.json")
 local mutation_transaction = require("i18n-status.mutation_transaction")
+local next_intl_key = require("i18n-status.next_intl_key")
 local project_identity = require("i18n-status.project_identity")
 local resource_roots = require("i18n-status.resource_roots")
 local resources = require("i18n-status.resources")
@@ -165,18 +166,25 @@ local function renamed_source_key(item, target)
     if item.raw:find(":", 1, true) then
       return nil, "cannot rename a next-intl reference whose key contains ':'"
     end
-    -- next-intl binds the namespace in useTranslations/getTranslations; source keys cannot select
-    -- another namespace, so a move would leave the reference pointing at the old namespace.
-    if target.namespace ~= item.namespace then
+    if item.source_key_policy == "canonical" then
+      -- Root translators spell the full message path, so any namespace stays reachable.
+      return next_intl_key.source_key(nil, target.key)
+    end
+    if item.source_key_policy ~= "namespace_relative" or type(item.translator_namespace) ~= "string" then
+      return nil, "cannot rename a next-intl reference whose translator namespace is not static"
+    end
+    -- The namespace stays bound in useTranslations/getTranslations, so the source key can only
+    -- select messages below it.
+    local raw = next_intl_key.source_key(item.translator_namespace, target.key)
+    if not raw then
       return nil,
         string.format(
-          "cannot move a next-intl reference from namespace '%s' to '%s' because its translator stays bound to '%s'",
-          item.namespace,
-          target.namespace,
-          item.namespace
+          "cannot move a next-intl reference to '%s' because its translator stays bound to '%s'",
+          target.key,
+          item.translator_namespace
         )
     end
-    return target.path, nil
+    return raw, nil
   end
 
   if item.raw:find(":", 1, true) then

@@ -25,6 +25,9 @@ pub struct ScanItem {
     /// How the source key is spelled relative to the translator binding, when it is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_key_policy: Option<SourceKeyPolicy>,
+    /// Namespace argument bound to the owning translator, as written in source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translator_namespace: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,7 +76,7 @@ pub enum TranslationHook {
     GetTranslations,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranslationFramework {
     I18next,
@@ -87,7 +90,7 @@ pub enum SourceKeyPolicy {
     NamespaceRelative,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NamespaceResolution {
     Absent,

@@ -76,6 +76,43 @@ describe("blink", function()
     end)
   end)
 
+  ---@param source_line string
+  ---@return string[]
+  local function complete_next_intl(source_line)
+    local root = helpers.tmpdir()
+    helpers.write_file(
+      root .. "/messages/ja.json",
+      '{"Home":{"title":"ホーム","Form":{"submit":"送信"}},"Auth":{"login":"ログイン"}}'
+    )
+    local labels = {}
+    with_cwd(root, function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { source_line, 't("' })
+      vim.bo[buf].filetype = "typescript"
+      vim.api.nvim_set_current_buf(buf)
+      vim.api.nvim_win_set_cursor(0, { 2, 3 })
+
+      blink.complete({ bufnr = buf, line = 't("', cursor = { 2, 3 } }, function(items)
+        for _, item in ipairs(items) do
+          labels[#labels + 1] = item.insertText
+        end
+      end)
+    end)
+    table.sort(labels)
+    return labels
+  end
+
+  it("completes next-intl keys relative to a nested namespace", function()
+    assert.are.same({ "submit" }, complete_next_intl('const t = useTranslations("Home.Form")'))
+  end)
+
+  it("completes full message paths for a root next-intl translator", function()
+    assert.are.same(
+      { "Auth.login", "Home.Form.submit", "Home.title" },
+      complete_next_intl("const t = useTranslations()")
+    )
+  end)
+
   it("does not complete through a shadowed translation symbol", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')

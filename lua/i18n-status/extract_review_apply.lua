@@ -77,7 +77,11 @@ local function refresh_candidate_status(candidate, catalog, fallback_existing_ke
     return candidate.proposed_key
   end
 
-  local normalized, err = M.normalize_key_input(candidate.proposed_key, candidate.namespace)
+  local input = candidate.proposed_key
+  if type(input) == "string" then
+    input = extract_candidate.qualify_key(candidate, vim.trim(input))
+  end
+  local normalized, err = M.normalize_key_input(input, candidate.namespace)
   if not normalized then
     candidate.status = "invalid_key"
     candidate.error = err

@@ -3,6 +3,7 @@ local M = {}
 
 local extract_review = require("i18n-status.extract_review")
 local hardcoded = require("i18n-status.hardcoded")
+local next_intl_key = require("i18n-status.next_intl_key")
 local project_identity = require("i18n-status.project_identity")
 local resource_catalog = require("i18n-status.resource_catalog")
 local resources = require("i18n-status.resources")
@@ -126,7 +127,8 @@ local function build_candidates(bufnr, items, fallback_ns, extract_cfg, catalogs
       generated_keys[context.framework] = generated_keys[context.framework] or {}
       local framework_generated_keys = generated_keys[context.framework]
       local segment = ascii_slug(item.text, separator) or "key"
-      local base_key = string.format("%s:%s", namespace, segment)
+      local base_key = context.framework == "next_intl" and next_intl_key.canonical_key(namespace, segment)
+        or string.format("%s:%s", namespace, segment)
 
       local proposed_key = base_key
       local status = "ready"

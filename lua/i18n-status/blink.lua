@@ -6,6 +6,7 @@ Source.__index = Source
 ---@class I18nStatusBlinkCompat
 local M = {}
 
+local next_intl_key = require("i18n-status.next_intl_key")
 local resources = require("i18n-status.resources")
 local scan = require("i18n-status.scan")
 local state = require("i18n-status.state")
@@ -129,6 +130,8 @@ local function get_completion_items(ctx)
   local prefix = current_arg_prefix(line, col)
   local explicit_ns = false
   local ns = nil
+  ---@type { namespace: string|nil }|nil
+  local next_intl_translator = nil
 
   if not contextless then
     if prefix and prefix:find(":", 1, true) then
@@ -147,7 +150,16 @@ local function get_completion_items(ctx)
       if ctx_result.shadowed then
         return {}
       end
-      ns = ctx_result.found_hook and ctx_result.namespace or fallback_ns
+      local policy = ctx_result.source_key_policy
+      if
+        ctx_result.found_hook
+        and ctx_result.framework == "next_intl"
+        and (policy == "namespace_relative" or policy == "canonical")
+      then
+        next_intl_translator = { namespace = policy == "namespace_relative" and ctx_result.namespace or nil }
+      else
+        ns = ctx_result.found_hook and ctx_result.namespace or fallback_ns
+      end
     end
   end
 
@@ -171,34 +183,39 @@ local function get_completion_items(ctx)
     return table.concat(lines, "\n")
   end
 
-  for key, entry in pairs(entries) do
-    if key ~= "__error__" then
-      local include = true
-      if ns and key:sub(1, #ns + 1) ~= ns .. ":" then
-        include = false
-      end
-      if include then
-        local insert_key = key
-        local label = key
-        if ns and not explicit_ns then
-          insert_key = key:match("^[^:]+:(.+)$") or key
-          label = insert_key
-        end
-        local sort_text = is_missing_value(key, entry.value) and "0" .. key or "1" .. key
-        table.insert(items, {
-          label = label,
-          insertText = insert_key,
-          sortText = sort_text,
-          kind = vim.lsp.protocol.CompletionItemKind.Text,
-          documentation = build_documentation(key),
-          detail = "🌐 " .. key,
-          labelDetails = { description = "i18n" },
-        })
+  ---@param key string
+  ---@return string|nil
+  local function source_key_for(key)
+    if next_intl_translator then
+      return (next_intl_key.source_key(next_intl_translator.namespace, key))
+    end
+    if ns and key:sub(1, #ns + 1) ~= ns .. ":" then
+      return nil
+    end
+    if ns and not explicit_ns then
+      return key:match("^[^:]+:(.+)$") or key
+    end
+    return key
+  end
 
-        item_count = item_count + 1
-        if item_count >= MAX_COMPLETION_ITEMS then
-          break
-        end
+  for key, entry in pairs(entries) do
+    local insert_key = key ~= "__error__" and source_key_for(key) or nil
+    if insert_key then
+      local label = insert_key
+      local sort_text = is_missing_value(key, entry.value) and "0" .. key or "1" .. key
+      table.insert(items, {
+        label = label,
+        insertText = insert_key,
+        sortText = sort_text,
+        kind = vim.lsp.protocol.CompletionItemKind.Text,
+        documentation = build_documentation(key),
+        detail = "🌐 " .. key,
+        labelDetails = { description = "i18n" },
+      })
+
+      item_count = item_count + 1
+      if item_count >= MAX_COMPLETION_ITEMS then
+        break
       end
     end
   end

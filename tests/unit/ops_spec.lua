@@ -236,6 +236,36 @@ describe("ops.rename", function()
     assert.are.equal('const t = useTranslations("common"); t("rename.title")', source)
   end)
 
+  it("renames a next-intl reference relative to a nested namespace", function()
+    local ok, err, ja, _, source =
+      rename_in_next_intl_root_files('const t = useTranslations("common.rename"); t("title")', "common:rename.heading")
+
+    assert.is_true(ok, err)
+    assert.are.same({ common = { rename = { heading = "ログイン" } } }, ja)
+    assert.are.equal('const t = useTranslations("common.rename"); t("heading")', source)
+  end)
+
+  it("rejects moving a next-intl reference outside its nested namespace", function()
+    local ok, err, ja, _, source =
+      rename_in_next_intl_root_files('const t = useTranslations("common.rename"); t("title")', "common:other.heading")
+
+    assert.is_false(ok)
+    assert.is_truthy(err:find("translator stays bound to 'common.rename'", 1, true))
+    assert.are.same({ common = { rename = { title = "ログイン" } } }, ja)
+    assert.are.equal('const t = useTranslations("common.rename"); t("title")', source)
+  end)
+
+  it("moves a root next-intl reference to another namespace with its full message path", function()
+    local ok, err, ja, en, source =
+      rename_in_next_intl_root_files('const t = useTranslations(); t("common.rename.title")', "account:rename.heading")
+
+    assert.is_true(ok, err)
+    assert.are.equal("ログイン", ja.account.rename.heading)
+    assert.are.equal("Login", en.account.rename.heading)
+    assert.is_nil(ja.common.rename.title)
+    assert.are.equal('const t = useTranslations(); t("account.rename.heading")', source)
+  end)
+
   it("rejects moving an unbound reference over next-intl messages to another namespace", function()
     local ok, err, ja, _, source = rename_in_next_intl_root_files('t("rename.title")', "account:rename.heading")
 

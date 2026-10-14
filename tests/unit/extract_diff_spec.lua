@@ -59,6 +59,7 @@ describe("extract diff", function()
       text = " Hello ",
       source_text = " Hello ",
       namespace = "Home",
+      framework = "next_intl",
       t_func = "t",
       proposed_key = "Home:greeting",
       source_key_policy = "namespace_relative",
