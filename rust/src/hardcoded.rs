@@ -286,12 +286,12 @@ impl<'a> HardcodedVisitor<'a> {
                 }
             }
             Expr::Arrow(arrow) => match &*arrow.body {
-                BlockStmtOrExpr::BlockStmt(block) => {
+                ArrowFunctionBody::FunctionBody(block) => {
                     for s in &block.stmts {
                         self.visit_stmt(s);
                     }
                 }
-                BlockStmtOrExpr::Expr(e) => self.visit_expr(e),
+                ArrowFunctionBody::Expr(e) => self.visit_expr(e),
             },
             Expr::Fn(fn_expr) => {
                 if let Some(body) = &fn_expr.function.body {
@@ -388,7 +388,7 @@ impl<'a> HardcodedVisitor<'a> {
             return;
         }
 
-        let normalized = clean_jsx_text(&text.value);
+        let normalized = clean_jsx_text(&text.value.to_string_lossy());
         if normalized.trim().len() >= self.min_length {
             self.items.push(HardcodedItem {
                 lnum: start_line,

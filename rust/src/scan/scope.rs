@@ -1082,7 +1082,7 @@ impl<'a> ScopeCollector<'a> {
         }
     }
 
-    fn visit_function_body(&mut self, function: &Function, name: Option<&Ident>) {
+    fn visit_function_scoped(&mut self, function: &Function, name: Option<&Ident>) {
         function.decorators.visit_with(self);
         for param in &function.params {
             param.decorators.visit_with(self);
@@ -1251,22 +1251,22 @@ impl Visit for ScopeCollector<'_> {
             scope,
             scope.start_pos,
         );
-        self.visit_function_body(&declaration.function, None);
+        self.visit_function_scoped(&declaration.function, None);
     }
 
     fn visit_fn_expr(&mut self, expression: &FnExpr) {
-        self.visit_function_body(&expression.function, expression.ident.as_ref());
+        self.visit_function_scoped(&expression.function, expression.ident.as_ref());
     }
 
     fn visit_function(&mut self, function: &Function) {
-        self.visit_function_body(function, None);
+        self.visit_function_scoped(function, None);
     }
 
     fn visit_arrow_expr(&mut self, arrow: &ArrowExpr) {
         let arrow_scope = scope_range(self.cm, arrow.span);
         let var_scope = match arrow.body.as_ref() {
-            BlockStmtOrExpr::BlockStmt(block) => scope_range(self.cm, block.span),
-            BlockStmtOrExpr::Expr(_) => arrow_scope,
+            ArrowFunctionBody::FunctionBody(block) => scope_range(self.cm, block.span),
+            ArrowFunctionBody::Expr(_) => arrow_scope,
         };
         self.lexical_scopes.push(arrow_scope);
         self.var_scopes.push(var_scope);
@@ -1278,6 +1278,13 @@ impl Visit for ScopeCollector<'_> {
         }
         arrow.body.visit_with(self);
         self.var_scopes.pop();
+        self.lexical_scopes.pop();
+    }
+
+    fn visit_function_body(&mut self, body: &FunctionBody) {
+        let body_scope = scope_range(self.cm, body.span);
+        self.lexical_scopes.push(body_scope);
+        body.stmts.visit_with(self);
         self.lexical_scopes.pop();
     }
 
@@ -1371,43 +1378,6 @@ impl Visit for ScopeCollector<'_> {
             self.add_constructor_param(param, constructor_scope);
         }
         constructor.params.visit_with(self);
-        body.visit_with(self);
-        self.var_scopes.pop();
-        self.lexical_scopes.pop();
-    }
-
-    fn visit_getter_prop(&mut self, getter: &GetterProp) {
-        getter.key.visit_with(self);
-        getter.type_ann.visit_with(self);
-        let Some(body) = &getter.body else {
-            return;
-        };
-        let getter_scope = scope_range(self.cm, getter.span);
-        let body_scope = scope_range(self.cm, body.span);
-        self.lexical_scopes.push(getter_scope);
-        self.var_scopes.push(body_scope);
-        body.visit_with(self);
-        self.var_scopes.pop();
-        self.lexical_scopes.pop();
-    }
-
-    fn visit_setter_prop(&mut self, setter: &SetterProp) {
-        setter.key.visit_with(self);
-        let Some(body) = &setter.body else {
-            setter.this_param.visit_with(self);
-            setter.param.visit_with(self);
-            return;
-        };
-        let setter_scope = scope_range(self.cm, setter.span);
-        let body_scope = scope_range(self.cm, body.span);
-        self.lexical_scopes.push(setter_scope);
-        self.var_scopes.push(body_scope);
-        if let Some(this_param) = &setter.this_param {
-            self.add_pattern_bindings(this_param, setter_scope, setter_scope.start_pos);
-        }
-        self.add_pattern_bindings(&setter.param, setter_scope, setter_scope.start_pos);
-        setter.this_param.visit_with(self);
-        setter.param.visit_with(self);
         body.visit_with(self);
         self.var_scopes.pop();
         self.lexical_scopes.pop();

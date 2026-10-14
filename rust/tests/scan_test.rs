@@ -1301,6 +1301,28 @@ class Example { static { var t = makeFormatter(); t("static"); } }
 }
 
 #[test]
+fn function_body_lexical_bindings_do_not_shadow_parameter_defaults() {
+    let source = r#"
+const { t } = useTranslation("outer");
+function Declaration(value = t("declaration")) { let t; }
+const arrow = (value = t("arrow")) => { let t; };
+const object = { set value(value = t("setter")) { let t; } };
+"#;
+    let result = extract(source, "tsx", "translation");
+    let keys: Vec<&str> = result["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["key"].as_str().unwrap())
+        .collect();
+
+    assert_eq!(
+        keys,
+        vec!["outer:declaration", "outer:arrow", "outer:setter"]
+    );
+}
+
+#[test]
 fn scope_end_is_exclusive_for_an_adjacent_outer_call() {
     let source = r#"const { t } = useTranslation("outer"); function Inner() { const { t } = useTranslation("inner"); }t("after");"#;
     let result = extract(source, "tsx", "translation");
