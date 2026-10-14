@@ -6,6 +6,7 @@ fn make_resource(value: &str) -> resolve::ResourceItemInput {
         value: Some(value.to_string()),
         file: None,
         priority: 0,
+        framework: None,
     }
 }
 
@@ -132,6 +133,42 @@ fn status_placeholder_mismatch() {
 
     let resolved = result["resolved"].as_array().unwrap();
     assert_eq!(resolved[0]["status"], "!");
+}
+
+fn status_for(primary: &str, other: &str) -> String {
+    let mut index: HashMap<String, HashMap<String, resolve::ResourceItemInput>> = HashMap::new();
+    let mut en = HashMap::new();
+    en.insert("common:message".to_string(), make_resource(primary));
+    index.insert("en".to_string(), en);
+    let mut ja = HashMap::new();
+    ja.insert("common:message".to_string(), make_resource(other));
+    index.insert("ja".to_string(), ja);
+
+    let items = vec![make_item("common:message", "common")];
+    let result = compute(items, index, vec!["en", "ja"]);
+    result["resolved"][0]["status"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn status_icu_plural_argument_missing_is_mismatch() {
+    assert_eq!(
+        status_for(
+            "You have {count, plural, one {# item} other {# items}}",
+            "商品があります"
+        ),
+        "!"
+    );
+}
+
+#[test]
+fn status_icu_typed_argument_spacing_is_not_mismatch() {
+    assert_eq!(
+        status_for("{count, number} items", "{count,number} 件"),
+        "\u{2260}"
+    );
 }
 
 #[test]

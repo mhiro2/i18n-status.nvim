@@ -232,11 +232,11 @@ fn process_source(
                 }
                 keys.push(key.to_string());
 
-                let primary_value = index_data
+                let primary_entry = index_data
                     .index
                     .get(&params.primary_lang)
-                    .and_then(|m| m.get(key))
-                    .and_then(|e| e.value.as_deref());
+                    .and_then(|m| m.get(key));
+                let primary_value = primary_entry.and_then(|e| e.value.as_deref());
 
                 let raw = item.get("raw").and_then(|v| v.as_str()).unwrap_or("");
                 let key_path = key.split_once(':').map(|(_, path)| path).unwrap_or(key);
@@ -264,19 +264,17 @@ fn process_source(
                         col,
                     });
                 } else if let Some(pv) = primary_value {
-                    let base_ph = extract_placeholders(pv);
+                    let base_ph = extract_placeholders(pv, primary_entry.and_then(|e| e.framework));
                     for lang in &params.languages {
                         if lang == &params.primary_lang {
                             continue;
                         }
-                        let other_value = index_data
-                            .index
-                            .get(lang.as_str())
-                            .and_then(|m| m.get(key))
-                            .and_then(|e| e.value.as_deref());
+                        let other_entry =
+                            index_data.index.get(lang.as_str()).and_then(|m| m.get(key));
 
-                        if let Some(ov) = other_value {
-                            let other_ph = extract_placeholders(ov);
+                        if let Some(ov) = other_entry.and_then(|e| e.value.as_deref()) {
+                            let other_ph =
+                                extract_placeholders(ov, other_entry.and_then(|e| e.framework));
                             if !placeholder_equal(&base_ph, &other_ph) {
                                 issues.push(DoctorIssue {
                                     kind: "mismatch".to_string(),

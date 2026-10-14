@@ -610,6 +610,7 @@ local function apply_candidate(ctx, candidate, deps)
       catalog.index[language] = catalog.index[language] or {}
       catalog.index[language][candidate.proposed_key] = {
         priority = 0,
+        framework = candidate.framework,
         value = language == candidate.primary_lang and candidate.message or "",
       }
     end

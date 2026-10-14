@@ -44,6 +44,7 @@ local function normalize_index(index)
           value = entry and entry.value or nil,
           file = entry and entry.file or nil,
           priority = entry and entry.priority or 0,
+          framework = entry and entry.framework or nil,
         }
       end
     end
