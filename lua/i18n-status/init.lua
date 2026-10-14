@@ -142,6 +142,14 @@ local function project_for_buf(bufnr)
   return state.project_for_buf(bufnr, cache)
 end
 
+---The display language is shared by every buffer of a project.
+---@param bufnr integer
+---@param project_key string|nil
+local function refresh_language_change(bufnr, project_key)
+  core.refresh(bufnr, config, 0, { force = true })
+  core.refresh_project(project_key, config, { except = bufnr })
+end
+
 ---@param bufnr integer
 local function goto_definition(bufnr)
   ensure_modules()
@@ -281,7 +289,7 @@ function M.lang_next()
   local bufnr = vim.api.nvim_get_current_buf()
   local _, key = project_for_buf(bufnr)
   state.cycle_next(key)
-  core.refresh(bufnr, config, 0, { force = true })
+  refresh_language_change(bufnr, key)
 end
 
 function M.lang_prev()
@@ -293,7 +301,7 @@ function M.lang_prev()
   local bufnr = vim.api.nvim_get_current_buf()
   local _, key = project_for_buf(bufnr)
   state.cycle_prev(key)
-  core.refresh(bufnr, config, 0, { force = true })
+  refresh_language_change(bufnr, key)
 end
 
 ---@param lang string
@@ -318,7 +326,7 @@ function M.lang_set(lang)
     return
   end
   state.set_current(key, lang)
-  core.refresh(bufnr, config, 0, { force = true })
+  refresh_language_change(bufnr, key)
 end
 
 ---@param arg_lead string

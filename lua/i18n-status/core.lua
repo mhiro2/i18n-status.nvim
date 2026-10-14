@@ -234,6 +234,22 @@ function M.refresh_all(config)
   end
 end
 
+---Re-render every buffer that belongs to a project, e.g. after its display language changed.
+---@param project_key string|nil
+---@param config I18nStatusConfig
+---@param opts? { except?: integer }
+function M.refresh_project(project_key, config, opts)
+  if not project_key then
+    return
+  end
+  local except = opts and opts.except
+  for buf, key in pairs(state.buf_project) do
+    if key == project_key and buf ~= except and M.should_refresh(buf) then
+      refresh_now_async(buf, config)
+    end
+  end
+end
+
 ---@param bufnr integer
 ---@param config I18nStatusConfig
 ---@param debounce_ms integer|nil
