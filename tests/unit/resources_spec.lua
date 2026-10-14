@@ -72,6 +72,44 @@ describe("resources", function()
     assert.are.equal("ログイン", cache.index.ja["common:login.title"].value)
   end)
 
+  it("keeps the last good index when an asynchronous rebuild fails", function()
+    local root = helpers.tmpdir()
+    write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+    local cache = ensure_index_async(root)
+    assert.are.equal("ログイン", cache.index.ja["common:login.title"].value)
+    cache.dirty = true
+
+    local original_request = rpc.request
+    rpc.request = function(method, params, cb)
+      if method == "resource/buildIndex" then
+        vim.schedule(function()
+          cb("request timed out", nil)
+        end)
+        return
+      end
+      return original_request(method, params, cb)
+    end
+    local done, failed_cache, failed_err = false, nil, nil
+    resources.ensure_index_async(root, nil, function(result, err)
+      failed_cache, failed_err, done = result, err, true
+    end)
+    local ok = vim.wait(5000, function()
+      return done
+    end)
+    rpc.request = original_request
+
+    assert.is_true(ok, "resources.ensure_index_async timed out")
+    assert.are.equal("request timed out", failed_err)
+    assert.are.equal(cache, failed_cache)
+    assert.is_true(cache.dirty)
+    assert.are.equal("ログイン", cache.index.ja["common:login.title"].value)
+
+    local recovered = ensure_index_async(root)
+    assert.are.equal(cache, recovered)
+    assert.is_false(recovered.dirty)
+    assert.are.equal("ログイン", recovered.index.ja["common:login.title"].value)
+  end)
+
   it("loads next-intl with priority", function()
     local root = helpers.tmpdir()
     write(root .. "/messages/en/common.json", '{"title":"Common"}')

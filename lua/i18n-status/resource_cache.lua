@@ -91,16 +91,16 @@ function M.new(resources, roots)
   end
 
   ---@param root_list I18nStatusRootInfo[]
-  ---@param cb fun(result: I18nStatusCache)
+  ---@param cb fun(result: I18nStatusCache|nil, err: string|nil)
   function service.build_index_async(root_list, cb)
     rpc.request("resource/buildIndex", {
       roots = root_list,
     }, function(err, result)
       if err or not result then
-        cb(empty_index_result())
+        cb(nil, tostring(err or "resource/buildIndex returned no result"))
         return
       end
-      cb(normalize_index_result(result))
+      cb(normalize_index_result(result), nil)
     end)
   end
 
@@ -376,9 +376,11 @@ function M.new(resources, roots)
     return store_built_index(key, cache, root_list, built)
   end
 
+  ---Asynchronous counterpart of ensure_index. On failure the callback receives the last good
+  ---cache (still dirty, so the next call retries) or an empty result, together with the error.
   ---@param start_dir string
   ---@param opts? { cooperative?: boolean }
-  ---@param cb fun(cache: I18nStatusCache)
+  ---@param cb fun(cache: I18nStatusCache, err: string|nil)
   function service.ensure_index_async(start_dir, opts, cb)
     opts = opts or {}
     start_dir = start_dir or vim.fn.getcwd()
@@ -387,21 +389,33 @@ function M.new(resources, roots)
     rpc.request("resource/resolveRoots", {
       start_dir = start_dir,
     }, function(roots_err, roots_result)
-      local root_list = {}
-      if not roots_err and roots_result and roots_result.roots then
-        root_list = roots.normalize_roots(roots_result.roots)
+      if roots_err or type(roots_result) ~= "table" then
+        cb(empty_index_result(), tostring(roots_err or "resource/resolveRoots returned no result"))
+        return
       end
+      local root_list = roots.normalize_roots(roots_result.roots or {})
 
       local key = roots.compute_cache_key(root_list, start_dir)
       local cache = resources.caches[key]
       local reused = cached_index_if_fresh(key, cache)
       if reused then
-        cb(reused)
+        cb(reused, nil)
         return
       end
 
-      resources.build_index_async(root_list, function(built)
-        cb(store_built_index(key, cache, root_list, built))
+      resources.build_index_async(root_list, function(built, build_err)
+        if not built then
+          if cache then
+            resources.last_cache_key = key
+            cb(cache, build_err)
+            return
+          end
+          local empty = empty_index_result()
+          empty.roots = root_list
+          cb(empty, build_err)
+          return
+        end
+        cb(store_built_index(key, cache, root_list, built), nil)
       end)
     end)
   end
