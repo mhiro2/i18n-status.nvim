@@ -377,6 +377,72 @@ local function fallback_namespace_from_cache(cache)
   return namespaces[1] or "common"
 end
 
+---@param buf integer
+---@return boolean
+local function is_project_candidate(buf)
+  if not vim.api.nvim_buf_is_loaded(buf) or vim.api.nvim_buf_get_name(buf) == "" then
+    return false
+  end
+  local buftype = vim.bo[buf].buftype
+  return (buftype == "" or buftype == "nofile") and filetypes.is_source_filetype(vim.bo[buf].filetype)
+end
+
+---Identity of a resource root set that does not depend on how its paths are spelled.
+---@param root_list I18nStatusRootInfo[]
+---@return string
+local function canonical_roots_key(root_list)
+  local canonical = {}
+  for _, root in ipairs(root_list or {}) do
+    canonical[#canonical + 1] = {
+      kind = root.kind,
+      path = fs.canonical_path(root.path, nil) or root.path,
+    }
+  end
+  return resources.cache_key(canonical, "")
+end
+
+---Loaded source buffers of the Doctor project: named buffers under the project root whose own
+---directory resolves to the same resource roots. Like inline rendering, normal and `nofile`
+---buffers qualify; unnamed buffers and other special buffers have no project identity and are
+---left out, as are buffers of other (including nested) projects.
+---@param root_list I18nStatusRootInfo[]
+---@param project_root string
+---@param deadline I18nStatusDoctorDeadline
+---@return integer[]|nil
+---@return string|nil
+local function project_buffers(root_list, project_root, deadline)
+  local canonical_root, root_err = fs.canonical_path(project_root, nil)
+  if not canonical_root then
+    return nil, "failed to resolve project root: " .. tostring(root_err or "unknown")
+  end
+  local project_key = canonical_roots_key(root_list)
+  local key_by_dir = {}
+  local buffers = {}
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if deadline_expired(deadline) then
+      return nil, "deadline"
+    end
+    local name = is_project_candidate(buf) and fs.canonical_path(vim.api.nvim_buf_get_name(buf), nil)
+    if name and fs.path_under(name, canonical_root) then
+      local dir = fs.dirname(name)
+      if key_by_dir[dir] == nil then
+        local dir_roots, dir_err = resources.resolve_roots_sync(dir, remaining_deadline_ms(deadline))
+        if dir_err then
+          if deadline_expired(deadline) or tostring(dir_err):find("timeout", 1, true) then
+            return nil, "deadline"
+          end
+          return nil, "resource preflight failed: " .. tostring(dir_err)
+        end
+        key_by_dir[dir] = canonical_roots_key(dir_roots)
+      end
+      if key_by_dir[dir] == project_key then
+        buffers[#buffers + 1] = buf
+      end
+    end
+  end
+  return buffers, nil
+end
+
 ---@param bufnr integer
 ---@param config I18nStatusConfig
 ---@param deadline I18nStatusDoctorDeadline
@@ -421,17 +487,9 @@ local function prepare_context(bufnr, config, deadline)
     return nil, "deadline"
   end
 
-  local buffers = {}
-  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    if deadline_expired(deadline) then
-      return nil, "deadline"
-    end
-    if vim.api.nvim_buf_is_loaded(buf) then
-      local ft = vim.bo[buf].filetype
-      if filetypes.is_source_filetype(ft) then
-        table.insert(buffers, buf)
-      end
-    end
+  local buffers, buffers_err = project_buffers(root_list, project_root, deadline)
+  if not buffers then
+    return nil, buffers_err
   end
 
   return {
