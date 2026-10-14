@@ -123,6 +123,25 @@ local function configure_auto_hover()
   end
 end
 
+---Window IDs reported by WinScrolled (keyed by window ID) or WinResized (`windows` list), plus
+---the window that <amatch> names.
+---@param event table
+---@param match string
+---@return integer[]
+local function changed_windows(event, match)
+  local wins = { tonumber(match) }
+  for _, win in ipairs(event.windows or {}) do
+    wins[#wins + 1] = win
+  end
+  for key in pairs(event) do
+    local win = tonumber(key)
+    if win then
+      wins[#wins + 1] = win
+    end
+  end
+  return wins
+end
+
 ---@return boolean true if Doctor is open (caller should return early)
 local function guard_doctor_open()
   local review = require("i18n-status.review")
@@ -226,6 +245,27 @@ function M.setup(opts)
             end
           end
           core.refresh(args.buf, config)
+        end
+      end,
+    })
+    -- With visible_only, scrolling or resizing a window exposes lines that have not been rendered.
+    vim.api.nvim_create_autocmd({ "WinScrolled", "WinResized" }, {
+      group = group,
+      callback = function(args)
+        if not config.inline.visible_only then
+          return
+        end
+        local seen = {}
+        for _, win in ipairs(changed_windows(vim.v.event, args.match)) do
+          if vim.api.nvim_win_is_valid(win) then
+            local buf = vim.api.nvim_win_get_buf(win)
+            if not seen[buf] then
+              seen[buf] = true
+              if core.should_refresh(buf) then
+                core.refresh(buf, config)
+              end
+            end
+          end
         end
       end,
     })
