@@ -562,4 +562,168 @@ describe("doctor review edit", function()
       pcall(vim.api.nvim_win_close, ctx.detail_win, true)
     end)
   end)
+
+  ---@param root string
+  ---@param key string
+  ---@param on_input fun(opts: table, on_confirm: fun(input: string|nil))
+  ---@param before_edit? fun() Runs after the review opens and before the edit starts
+  ---@return integer prompts
+  ---@return string[] notifications
+  local function edit_ja_value(root, key, on_input, before_edit)
+    local src = make_buf({ 't("' .. key:gsub("^[^:]+:", "") .. '")' }, "typescript")
+    local config = config_mod.setup({
+      primary_lang = "ja",
+      inline = { visible_only = false },
+    })
+    local issues = {
+      { kind = "drift_missing", key = key, severity = vim.log.levels.WARN },
+    }
+    local ctx = review.open_doctor_results(issues, { bufnr = src, cache = resources.ensure_index(root) }, config)
+    vim.api.nvim_win_set_cursor(ctx.list_win, { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = ctx.list_buf })
+
+    local prompts = 0
+    local notifications = {}
+    local original_select = vim.ui.select
+    local original_input = vim.ui.input
+    local original_notify = vim.notify
+    vim.ui.select = function(_items, _opts, on_choice)
+      on_choice("ja")
+    end
+    vim.ui.input = function(opts, on_confirm)
+      prompts = prompts + 1
+      on_input(opts, on_confirm)
+    end
+    vim.notify = function(msg)
+      notifications[#notifications + 1] = msg
+    end
+
+    if before_edit then
+      before_edit()
+    end
+    vim.api.nvim_set_current_win(ctx.list_win)
+    local ok, err = pcall(vim.api.nvim_feedkeys, "E", "x", false)
+
+    vim.ui.select = original_select
+    vim.ui.input = original_input
+    vim.notify = original_notify
+    pcall(vim.api.nvim_win_close, ctx.list_win, true)
+    pcall(vim.api.nvim_win_close, ctx.detail_win, true)
+    assert(ok, err)
+    return prompts, notifications
+  end
+
+  ---@param notifications string[]
+  ---@param needle string
+  ---@return boolean
+  local function notified(notifications, needle)
+    for _, msg in ipairs(notifications) do
+      if msg:find(needle, 1, true) then
+        return true
+      end
+    end
+    return false
+  end
+
+  it("rejects an edit when the translation changes while the prompt is open", function()
+    state.init("ja", { "ja", "en" })
+
+    local root = helpers.tmpdir()
+    local ja_path = root .. "/locales/ja/common.json"
+    helpers.write_file(ja_path, '{"title":"Existing JA"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"title":"Title"}')
+
+    helpers.with_cwd(root, function()
+      local prompts, notifications = edit_ja_value(root, "common:title", function(opts, on_confirm)
+        assert.are.equal("Existing JA", opts.default)
+        helpers.write_file(ja_path, '{"title":{"nested":"concurrent data"}}')
+        on_confirm("edited text")
+      end)
+
+      assert.are.equal(1, prompts)
+      assert.is_true(notified(notifications, "resource changed on disk since it was read"))
+      local data = vim.json.decode(helpers.read_file(ja_path))
+      assert.are.same({ title = { nested = "concurrent data" } }, data)
+    end)
+  end)
+
+  it("rejects an edit when a sibling translation changes while the prompt is open", function()
+    state.init("ja", { "ja", "en" })
+
+    local root = helpers.tmpdir()
+    local ja_path = root .. "/locales/ja/common.json"
+    helpers.write_file(ja_path, '{"title":"Existing JA"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"title":"Title"}')
+
+    helpers.with_cwd(root, function()
+      edit_ja_value(root, "common:title", function(_opts, on_confirm)
+        helpers.write_file(ja_path, '{"title":"Existing JA","other":"Concurrent"}')
+        on_confirm("edited text")
+      end)
+
+      local data = vim.json.decode(helpers.read_file(ja_path))
+      assert.are.same({ title = "Existing JA", other = "Concurrent" }, data)
+    end)
+  end)
+
+  it("edits a locale where the translation is missing", function()
+    state.init("ja", { "ja", "en" })
+
+    local root = helpers.tmpdir()
+    local ja_path = root .. "/locales/ja/common.json"
+    helpers.write_file(ja_path, '{"other":"Other JA"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"title":"Title"}')
+
+    helpers.with_cwd(root, function()
+      local prompts = edit_ja_value(root, "common:title", function(opts, on_confirm)
+        assert.are.equal("", opts.default)
+        on_confirm("Added JA")
+      end)
+
+      assert.are.equal(1, prompts)
+      local data = vim.json.decode(helpers.read_file(ja_path))
+      assert.are.same({ other = "Other JA", title = "Added JA" }, data)
+    end)
+  end)
+
+  it("prompts with an empty value when the translation was removed after the review opened", function()
+    state.init("ja", { "ja", "en" })
+
+    local root = helpers.tmpdir()
+    local ja_path = root .. "/locales/ja/common.json"
+    helpers.write_file(ja_path, '{"title":"Existing JA"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"title":"Title"}')
+
+    helpers.with_cwd(root, function()
+      local default = nil
+      edit_ja_value(root, "common:title", function(opts, on_confirm)
+        default = opts.default
+        on_confirm(nil)
+      end, function()
+        helpers.write_file(ja_path, "{}")
+      end)
+
+      assert.are.equal("", default)
+    end)
+  end)
+
+  it("refuses to replace a translation that has nested keys", function()
+    state.init("ja", { "ja", "en" })
+
+    local root = helpers.tmpdir()
+    local ja_path = root .. "/locales/ja/common.json"
+    helpers.write_file(ja_path, '{"title":{"nested":"Nested JA"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"title":"Title"}')
+
+    helpers.with_cwd(root, function()
+      local prompts, notifications = edit_ja_value(root, "common:title", function(_opts, on_confirm)
+        on_confirm("edited text")
+      end)
+
+      assert.are.equal(0, prompts)
+      assert.is_true(notified(notifications, "target key has existing descendants"))
+      local data = vim.json.decode(helpers.read_file(ja_path))
+      assert.are.same({ title = { nested = "Nested JA" } }, data)
+    end)
+  end)
 end)

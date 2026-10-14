@@ -52,20 +52,13 @@ function M.new(resources, roots)
 
     for _, entries in pairs(result.index or {}) do
       for _, entry in pairs(entries or {}) do
-        if entry then
-          if entry.value == vim.NIL then
-            entry.value = nil
-          end
-          if entry.file == vim.NIL then
-            entry.file = nil
-          else
-            entry.file = fs.normalize_path(entry.file) or entry.file
-          end
+        if entry and entry.file then
+          entry.file = fs.normalize_path(entry.file) or entry.file
         end
       end
     end
     for _, entry in ipairs(result.errors or {}) do
-      if entry.file and entry.file ~= vim.NIL then
+      if entry.file then
         entry.file = fs.normalize_path(entry.file) or entry.file
       end
     end

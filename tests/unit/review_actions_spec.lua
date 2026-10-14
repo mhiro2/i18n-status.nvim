@@ -50,7 +50,7 @@ describe("review actions", function()
       return true, nil
     end)
     add_stub(resources, "read_json_table", function()
-      return {}, { indent = 2 }
+      return vim.empty_dict(), { indent = 2 }
     end)
     add_stub(resources, "key_path_for_file", function()
       return "greeting"
@@ -112,7 +112,7 @@ describe("review actions", function()
       return true, nil
     end)
     add_stub(resources, "read_json_table", function()
-      return {}, {}
+      return vim.empty_dict(), {}
     end)
     add_stub(resources, "key_path_for_file", function()
       return "greeting"
@@ -196,6 +196,9 @@ describe("review actions", function()
     end)
     add_stub(resources, "start_dir", function()
       return "/project"
+    end)
+    add_stub(resources, "ensure_index", function()
+      return { index = { en = {}, ja = {} }, languages = { "en", "ja" } }
     end)
     add_stub(key_write, "write_translations", function(namespace, key_path, translations, root, languages, opts)
       written = {

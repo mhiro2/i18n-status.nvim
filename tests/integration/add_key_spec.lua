@@ -104,6 +104,95 @@ describe("add_key from Doctor UI", function()
     end)
   end)
 
+  it("adds only the locales that are missing the key", function()
+    state.init("en", { "en", "ja" })
+
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/en/common.json", "{}")
+    helpers.write_file(root .. "/locales/ja/common.json", '{"title":"Existing JA"}')
+
+    helpers.with_cwd(root, function()
+      local src = make_buf({ 't("title")' }, "typescript")
+      local issues = {
+        { kind = "missing", key = "common:title", severity = vim.log.levels.ERROR },
+      }
+      local config = config_mod.setup({ primary_lang = "en" })
+      local ctx = review.open_doctor_results(issues, { bufnr = src, cache = resources.ensure_index(root) }, config)
+      vim.api.nvim_win_set_cursor(ctx.list_win, { 1, 0 })
+      vim.api.nvim_exec_autocmds("CursorMoved", { buffer = ctx.list_buf })
+
+      local prompted = {}
+      local original_input = vim.ui.input
+      local original_notify = vim.notify
+      vim.ui.input = function(opts, on_confirm)
+        prompted[#prompted + 1] = opts.prompt:match("Locale: (%S+)")
+        on_confirm("Title EN")
+      end
+      vim.notify = function() end
+
+      vim.api.nvim_set_current_win(ctx.list_win)
+      vim.api.nvim_feedkeys("a", "x", false)
+
+      vim.ui.input = original_input
+      vim.notify = original_notify
+
+      assert.are.same({ "en" }, prompted)
+      local en_data = vim.json.decode(helpers.read_file(root .. "/locales/en/common.json"))
+      local ja_data = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      assert.are.same({ title = "Title EN" }, en_data)
+      assert.are.same({ title = "Existing JA" }, ja_data)
+
+      pcall(vim.api.nvim_win_close, ctx.list_win, true)
+      pcall(vim.api.nvim_win_close, ctx.detail_win, true)
+    end)
+  end)
+
+  it("rechecks missing locales against current resources", function()
+    state.init("en", { "en", "ja" })
+
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/en/common.json", "{}")
+    helpers.write_file(root .. "/locales/ja/common.json", '{"title":"Existing JA"}')
+
+    helpers.with_cwd(root, function()
+      local src = make_buf({ 't("title")' }, "typescript")
+      local issues = {
+        { kind = "missing", key = "common:title", severity = vim.log.levels.ERROR },
+      }
+      local config = config_mod.setup({ primary_lang = "en" })
+      local ctx = review.open_doctor_results(issues, { bufnr = src, cache = resources.ensure_index(root) }, config)
+      vim.api.nvim_win_set_cursor(ctx.list_win, { 1, 0 })
+      vim.api.nvim_exec_autocmds("CursorMoved", { buffer = ctx.list_buf })
+
+      -- The ja translation disappears after the review opened.
+      helpers.write_file(root .. "/locales/ja/common.json", '{"other":"Other JA"}')
+      resources.mark_dirty(root .. "/locales/ja/common.json")
+
+      local prompted = {}
+      local original_input = vim.ui.input
+      local original_notify = vim.notify
+      vim.ui.input = function(opts, on_confirm)
+        local lang = opts.prompt:match("Locale: (%S+)")
+        prompted[#prompted + 1] = lang
+        on_confirm("Title " .. lang)
+      end
+      vim.notify = function() end
+
+      vim.api.nvim_set_current_win(ctx.list_win)
+      vim.api.nvim_feedkeys("a", "x", false)
+
+      vim.ui.input = original_input
+      vim.notify = original_notify
+
+      assert.are.same({ "en", "ja" }, prompted)
+      local ja_data = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      assert.are.same({ other = "Other JA", title = "Title ja" }, ja_data)
+
+      pcall(vim.api.nvim_win_close, ctx.list_win, true)
+      pcall(vim.api.nvim_win_close, ctx.detail_win, true)
+    end)
+  end)
+
   it("does not add key when status is not missing", function()
     state.init("en", { "en", "ja" })
 

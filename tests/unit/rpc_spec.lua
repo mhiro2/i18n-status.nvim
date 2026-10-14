@@ -258,6 +258,38 @@ describe("rpc", function()
     assert.is_nil(callback_result)
   end)
 
+  it("delivers JSON null object fields as nil", function()
+    assert.is_true(rpc.start())
+    vim.wait(100, function()
+      return rpc.is_ready()
+    end, 1)
+
+    local callback_result = nil
+    rpc.request("resolve/compute", {}, function(err, result)
+      callback_result = { err = err, result = result }
+    end)
+    local request = writes[#writes].request
+    assert.are.equal("resolve/compute", request.method)
+
+    spawn_records[1].pipes[2].on_read(
+      nil,
+      string.format(
+        '{"jsonrpc":"2.0","id":%d,"result":{"values":{"ja":{"value":null,"file":null,"missing":true}},"langs":["en",null]},"error":null}\n',
+        request.id
+      )
+    )
+    vim.wait(100, function()
+      return callback_result ~= nil
+    end, 1)
+
+    assert.is_nil(callback_result.err)
+    local ja = callback_result.result.values.ja
+    assert.is_nil(ja.value)
+    assert.is_nil(ja.file)
+    assert.is_true(ja.missing)
+    assert.are.equal(vim.NIL, callback_result.result.langs[2])
+  end)
+
   it("rejects a core from a different revision and fails queued requests", function()
     auto_initialize = false
     assert.is_true(rpc.start())

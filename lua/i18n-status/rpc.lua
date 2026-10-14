@@ -362,7 +362,8 @@ local function on_stdout(data, generation)
     local line = read_buffer:sub(1, newline - 1)
     read_buffer = read_buffer:sub(newline + 1)
     if line ~= "" then
-      local ok, msg = pcall(vim.json.decode, line)
+      -- Decode JSON null object fields as nil so optional values never surface as truthy vim.NIL.
+      local ok, msg = pcall(vim.json.decode, line, { luanil = { object = true } })
       if ok and type(msg) == "table" then
         if type(msg.id) == "number" then
           local entry = take_pending(msg.id, generation)

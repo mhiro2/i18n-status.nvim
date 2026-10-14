@@ -184,7 +184,55 @@ local function edit_lang(deps, ctx, lang)
   end
 
   local info = item.hover and item.hover.values and item.hover.values[lang]
-  local current = info and info.value or ""
+  local root = resources.start_dir(ctx.source_buf or vim.api.nvim_get_current_buf())
+  local namespace = item.key:match("^(.-):") or resources.fallback_namespace(root)
+  local key_path = item.key:match("^[^:]+:(.+)$") or ""
+  local path = (info and info.file) or resources.namespace_path(root, lang, namespace)
+
+  if not path then
+    vim.notify("i18n-status review: resource path not found (" .. lang .. ")", vim.log.levels.WARN)
+    return
+  end
+
+  local base_dir = review_base_dir(ctx)
+  local sanitized_path, err = fs.sanitize_path(path, base_dir)
+  if err then
+    vim.notify("i18n-status review: invalid file path (" .. err .. ")", vim.log.levels.WARN)
+    return
+  end
+
+  local dir_ok, dir_err = fs.ensure_dir_within(fs.dirname(sanitized_path), base_dir)
+  if not dir_ok then
+    vim.notify(
+      "i18n-status review: failed to prepare resource directory (" .. (dir_err or "unknown") .. ")",
+      vim.log.levels.WARN
+    )
+    return
+  end
+
+  -- Snapshot the file (content and revision) before prompting so that any change made while the
+  -- prompt is open is rejected as a conflict instead of being silently overwritten.
+  local data, style = resources.read_json_table(sanitized_path)
+  if not data then
+    vim.notify(
+      "i18n-status review: failed to read json (" .. ((style and style.error) or "unknown") .. ")",
+      vim.log.levels.WARN
+    )
+    return
+  end
+
+  local path_in_file = resources.key_path_for_file(namespace, key_path, root, lang, sanitized_path)
+  local target_state, current_value = key_write.target_state(data, path_in_file)
+  local target_err = key_write.target_state_error(target_state)
+  if target_err then
+    vim.notify("i18n-status review: " .. target_err .. " (" .. lang .. ")", vim.log.levels.WARN)
+    return
+  end
+
+  local current = ""
+  if target_state == "leaf" then
+    current = type(current_value) == "string" and current_value or tostring(current_value)
+  end
   local prompt = build_edit_prompt(item.key, lang, "Edit locale: " .. lang)
 
   vim.ui.input({ prompt = prompt, default = current }, function(input)
@@ -192,41 +240,6 @@ local function edit_lang(deps, ctx, lang)
       return
     end
 
-    local root = resources.start_dir(ctx.source_buf or vim.api.nvim_get_current_buf())
-    local namespace = item.key:match("^(.-):") or resources.fallback_namespace(root)
-    local key_path = item.key:match("^[^:]+:(.+)$") or ""
-    local path = (info and info.file) or resources.namespace_path(root, lang, namespace)
-
-    if not path then
-      vim.notify("i18n-status review: resource path not found (" .. lang .. ")", vim.log.levels.WARN)
-      return
-    end
-
-    local base_dir = review_base_dir(ctx)
-    local sanitized_path, err = fs.sanitize_path(path, base_dir)
-    if err then
-      vim.notify("i18n-status review: invalid file path (" .. err .. ")", vim.log.levels.WARN)
-      return
-    end
-
-    local dir_ok, dir_err = fs.ensure_dir_within(fs.dirname(sanitized_path), base_dir)
-    if not dir_ok then
-      vim.notify(
-        "i18n-status review: failed to prepare resource directory (" .. (dir_err or "unknown") .. ")",
-        vim.log.levels.WARN
-      )
-      return
-    end
-    local data, style = resources.read_json_table(sanitized_path)
-    if not data then
-      vim.notify(
-        "i18n-status review: failed to read json (" .. ((style and style.error) or "unknown") .. ")",
-        vim.log.levels.WARN
-      )
-      return
-    end
-
-    local path_in_file = resources.key_path_for_file(namespace, key_path, root, lang, sanitized_path)
     local set_ok, set_err = json.set_nested(data, path_in_file, input)
     if not set_ok then
       vim.notify("i18n-status review: " .. (set_err or "failed to set key"), vim.log.levels.WARN)
@@ -447,18 +460,33 @@ local function add_key(deps, ctx)
     return
   end
 
-  local languages = ctx.cache and ctx.cache.languages or {}
+  local root = resources.start_dir(ctx.source_buf or vim.api.nvim_get_current_buf())
+  -- Decide which locales lack the key from the current resources, not the review snapshot.
+  local cache = resources.ensure_index(root, { exact = true })
+  local languages = cache and cache.languages or {}
   if #languages == 0 then
     vim.notify("No languages available", vim.log.levels.WARN)
     return
   end
 
-  local root = resources.start_dir(ctx.source_buf or vim.api.nvim_get_current_buf())
+  -- Only fill locales that lack the key; existing translations in other locales are kept as-is.
+  local missing_langs = {}
+  for _, lang in ipairs(languages) do
+    local entries = cache.index and cache.index[lang]
+    if not (entries and entries[item.key]) then
+      missing_langs[#missing_langs + 1] = lang
+    end
+  end
+  if #missing_langs == 0 then
+    vim.notify("Key already exists in all languages", vim.log.levels.WARN)
+    return
+  end
+
   local namespace = item.key:match("^(.-):") or resources.fallback_namespace(root)
   local key_path = item.key:match("^[^:]+:(.+)$") or ""
 
-  collect_translations(item.key, languages, function(translations)
-    write_translations_to_files(namespace, key_path, translations, root, languages, item.key, {
+  collect_translations(item.key, missing_langs, function(translations)
+    write_translations_to_files(namespace, key_path, translations, root, missing_langs, item.key, {
       create_only = true,
     })
 
