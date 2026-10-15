@@ -115,3 +115,24 @@ fn eval_string_exprs_rejects_conditional_branches_over_the_byte_limit() {
 
     assert!(eval_string_exprs(&expr, &no_idents).is_empty());
 }
+
+#[test]
+fn is_string_expr_accepts_only_evaluable_forms() {
+    for source in [
+        r#"f("a")"#,
+        "f(key)",
+        r#"f(`${prefix}.${"title"}`)"#,
+        r#"f(("a" + key) as const)"#,
+    ] {
+        assert!(is_string_expr(&first_call_arg(source)), "{source}");
+    }
+    for source in [
+        "f(() => key)",
+        r#"f(flag ? "a" : "b")"#,
+        "f(readKey())",
+        r#"f(`${readKey()}`)"#,
+        r#"f("a" - key)"#,
+    ] {
+        assert!(!is_string_expr(&first_call_arg(source)), "{source}");
+    }
+}
