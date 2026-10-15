@@ -300,6 +300,17 @@ function M.refresh(bufnr, config, debounce_ms, opts)
   )
 end
 
+---Refresh a buffer whose visible range may have changed. Only buffers that have started a refresh
+---are considered, so scrolling unrelated buffers stays free of resource lookups.
+---@param bufnr integer
+---@param config I18nStatusConfig
+function M.refresh_view(bufnr, config)
+  if not refresh_seq_by_buf[bufnr] or not buf_ready(bufnr) then
+    return
+  end
+  M.refresh(bufnr, config)
+end
+
 ---@param bufnr integer
 function M.cleanup_buf(bufnr)
   refresh_seq_by_buf[bufnr] = nil
