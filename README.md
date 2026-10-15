@@ -351,7 +351,8 @@ require("blink.cmp").setup({
 ```
 
 > [!NOTE]
->  - Only completes the **first argument** of `t("...")` / `something.t("...")`.
+> - Only completes inside the **first string argument** of `t("...")` / `something.t("...")`; other calls such as `get("...")`, comments, and closed arguments are ignored.
+> - Up to 100 candidates are listed, narrowed by the text typed inside the string, so every key stays reachable in large projects.
 > - Namespace is inferred from `useTranslation("ns")` / `useTranslations("ns")` / `getTranslations("ns")` scopes. next-intl candidates are relative to the bound namespace (including nested ones such as `"Home.Form"`), and a root `useTranslations()` completes full message paths.
 
 ## 🎨 Highlights

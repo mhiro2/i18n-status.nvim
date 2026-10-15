@@ -35,36 +35,76 @@ local function is_missing_value(key, value)
   return false
 end
 
----@param text string
----@return integer|nil
----@return boolean
-local function last_call_start(text)
-  local last = nil
-  local member_call = false
-  for s in text:gmatch("()t%s*%(") do
-    if not last or s > last then
-      last = s
-      member_call = s > 1 and text:sub(s - 1, s - 1) == "."
-    end
-  end
-  return last, member_call
-end
+---@class I18nStatusCompletionArg
+---@field prefix string Text typed inside the string literal before the cursor
+---@field member_call boolean Whether the translator is called as a member (`i18n.t(...)`)
 
----@param line string
----@param col integer
----@return string|nil
-local function current_arg_prefix(line, col)
-  local before = line:sub(1, col)
-  local start = last_call_start(before)
-  if not start then
+---Find the translation call whose first string argument contains the end of `before`, the line
+---text up to the cursor. Strings, template interpolations, and comments are tracked so that `t(`
+---inside strings or comments, closed arguments such as `t("a") + "`, and calls like
+---`axios.get("` do not count. Quotes directly after a word (`Don't` in JSX text) and `//` after a
+---URL scheme are text, not delimiters.
+---@param before string
+---@return I18nStatusCompletionArg|nil
+local function translation_arg_at(before)
+  local quote, quote_start = nil, nil
+  ---@type boolean|nil Member flag of a `t(` that is still waiting for its first argument
+  local pending = nil
+  ---@type boolean|nil Member flag of the call whose first argument is the open string
+  local arg_member = nil
+  -- Brace depth of the code and, per open `${`, the depth at which its template resumes.
+  local depth = 0
+  local templates = {}
+  local i, n = 1, #before
+  while i <= n do
+    local c = before:sub(i, i)
+    local prev = i > 1 and before:sub(i - 1, i - 1) or ""
+    if quote then
+      if c == "\\" then
+        i = i + 1
+      elseif c == quote then
+        quote, arg_member = nil, nil
+      elseif quote == "`" and before:sub(i, i + 1) == "${" then
+        quote, arg_member, pending = nil, nil, nil
+        depth = depth + 1
+        templates[#templates + 1] = depth
+        i = i + 1
+      end
+    elseif before:sub(i, i + 1) == "//" and not before:sub(1, i - 1):match("%a:$") then
+      return nil
+    elseif before:sub(i, i + 1) == "/*" then
+      local close = before:find("*/", i + 2, true)
+      if not close then
+        return nil
+      end
+      i = close + 1
+    elseif c == "`" or ((c == '"' or c == "'") and not prev:match("[%w_$]")) then
+      quote, quote_start = c, i
+      arg_member, pending = pending, nil
+    elseif c == "}" and templates[#templates] == depth then
+      templates[#templates] = nil
+      depth = depth - 1
+      quote, arg_member, pending = "`", nil, nil
+    else
+      local call_end = c == "t" and not prev:match("[%w_$]") and select(2, before:find("^t%s*%(", i))
+      if call_end then
+        pending = prev == "."
+        i = call_end
+      elseif not c:match("%s") then
+        pending = nil
+        if c == "{" then
+          depth = depth + 1
+        elseif c == "}" then
+          depth = depth - 1
+        end
+      end
+    end
+    i = i + 1
+  end
+  if not quote or arg_member == nil then
     return nil
   end
-  local arg_segment = before:sub(start)
-  local quote_pos = arg_segment:find("[\"'`]")
-  if not quote_pos then
-    return ""
-  end
-  return arg_segment:sub(quote_pos + 1)
+  return { prefix = before:sub(quote_start + 1), member_call = arg_member }
 end
 
 ---@param ctx table|nil
@@ -88,33 +128,30 @@ local function current_position(ctx)
   return row - 1, col, line
 end
 
+---Locate the translation argument being completed. A missing context (manual invocation) completes
+---every key without a translation call.
 ---@param ctx table|nil
----@return boolean
-local function should_complete(ctx)
+---@return boolean complete
+---@return I18nStatusCompletionArg|nil arg
+local function completion_target(ctx)
   if not ctx or next(ctx) == nil then
-    return true
+    return true, nil
   end
-  local _, col, line = current_position(ctx or {})
-  if not line or col == nil then
-    return true
-  end
-  local before = line:sub(1, col)
-  local start = last_call_start(before)
-  if not start then
-    return false
-  end
-  local arg_segment = before:sub(start)
-  if arg_segment:find(",") then
-    return false
-  end
-  return true
+  local _, col, line = current_position(ctx)
+  local arg = translation_arg_at(line:sub(1, col))
+  return arg ~= nil, arg
 end
 
----@param ctx table
----@return table[]
+local MAX_COMPLETION_ITEMS = 100
+
+---@param ctx table|nil
+---@return table[] items
+---@return boolean truncated true when matching keys were left out by the item limit
+---@return boolean filtered true when keys were filtered by the typed text
 local function get_completion_items(ctx)
-  if not should_complete(ctx) then
-    return {}
+  local complete, arg = completion_target(ctx)
+  if not complete then
+    return {}, false, false
   end
 
   local bufnr = ctx and ctx.bufnr or vim.api.nvim_get_current_buf()
@@ -123,48 +160,40 @@ local function get_completion_items(ctx)
   local project = state.set_languages(cache.key, cache.languages)
   state.set_buf_project(bufnr, cache.key)
   local primary = (project and project.primary_lang) or cache.languages[1]
-  local items = {}
   local entries = cache.index[primary] or {}
-  local contextless = not ctx or next(ctx) == nil
-  local row, col, line = current_position(ctx or {})
-  local prefix = current_arg_prefix(line, col)
+  local prefix = arg and arg.prefix or ""
   local explicit_ns = false
   local ns = nil
   ---@type { namespace: string|nil }|nil
   local next_intl_translator = nil
 
-  if not contextless then
-    if prefix and prefix:find(":", 1, true) then
+  if arg then
+    local row, col = current_position(ctx)
+    local hint, reason = resources.namespace_hint(start_dir)
+    local fallback_ns = reason == "single" and hint or nil
+    local ctx_result = scan.translation_context_at(bufnr, row, {
+      fallback_namespace = fallback_ns,
+      col = col,
+      callee = "t",
+      member_call = arg.member_call,
+    })
+    if ctx_result.shadowed then
+      return {}, false, false
+    end
+    local policy = ctx_result.source_key_policy
+    if prefix:find(":", 1, true) then
       ns = prefix:match("^(.-):")
       explicit_ns = true
+    elseif
+      ctx_result.found_hook
+      and ctx_result.framework == "next_intl"
+      and (policy == "namespace_relative" or policy == "canonical")
+    then
+      next_intl_translator = { namespace = policy == "namespace_relative" and ctx_result.namespace or nil }
     else
-      local hint, reason = resources.namespace_hint(start_dir)
-      local fallback_ns = reason == "single" and hint or nil
-      local _, member_call = last_call_start(line:sub(1, col))
-      local ctx_result = scan.translation_context_at(bufnr, row, {
-        fallback_namespace = fallback_ns,
-        col = col,
-        callee = "t",
-        member_call = member_call,
-      })
-      if ctx_result.shadowed then
-        return {}
-      end
-      local policy = ctx_result.source_key_policy
-      if
-        ctx_result.found_hook
-        and ctx_result.framework == "next_intl"
-        and (policy == "namespace_relative" or policy == "canonical")
-      then
-        next_intl_translator = { namespace = policy == "namespace_relative" and ctx_result.namespace or nil }
-      else
-        ns = ctx_result.found_hook and ctx_result.namespace or fallback_ns
-      end
+      ns = ctx_result.found_hook and ctx_result.namespace or fallback_ns
     end
   end
-
-  local MAX_COMPLETION_ITEMS = 100
-  local item_count = 0
 
   local function build_documentation(key)
     local lines = {}
@@ -198,41 +227,45 @@ local function get_completion_items(ctx)
     return key
   end
 
+  -- Collect every key matching the typed text before applying the limit, so the kept items do
+  -- not depend on table iteration order.
+  local needle = prefix:lower()
+  local candidates = {}
   for key, entry in pairs(entries) do
     local insert_key = key ~= "__error__" and source_key_for(key) or nil
-    if insert_key then
-      local label = insert_key
-      local sort_text = is_missing_value(key, entry.value) and "0" .. key or "1" .. key
-      table.insert(items, {
-        label = label,
-        insertText = insert_key,
-        sortText = sort_text,
-        kind = vim.lsp.protocol.CompletionItemKind.Text,
-        documentation = build_documentation(key),
-        detail = "🌐 " .. key,
-        labelDetails = { description = "i18n" },
-      })
-
-      item_count = item_count + 1
-      if item_count >= MAX_COMPLETION_ITEMS then
-        break
-      end
+    if insert_key and insert_key:lower():find(needle, 1, true) then
+      candidates[#candidates + 1] = {
+        key = key,
+        insert_key = insert_key,
+        sort_text = (is_missing_value(key, entry.value) and "0" or "1") .. key,
+      }
     end
   end
-
-  table.sort(items, function(a, b)
-    return a.sortText < b.sortText
+  table.sort(candidates, function(a, b)
+    return a.sort_text < b.sort_text
   end)
 
-  return items
+  local items = {}
+  for index = 1, math.min(#candidates, MAX_COMPLETION_ITEMS) do
+    local candidate = candidates[index]
+    items[index] = {
+      label = candidate.insert_key,
+      insertText = candidate.insert_key,
+      sortText = candidate.sort_text,
+      kind = vim.lsp.protocol.CompletionItemKind.Text,
+      documentation = build_documentation(candidate.key),
+      detail = "🌐 " .. candidate.key,
+      labelDetails = { description = "i18n" },
+    }
+  end
+  return items, #candidates > MAX_COMPLETION_ITEMS, needle ~= ""
 end
 
 -- Backwards compatible: nvim-cmp style completion
 ---@param ctx table
 ---@param callback fun(items: table[])
 function M.complete(ctx, callback)
-  local items = get_completion_items(ctx)
-  callback(items)
+  callback((get_completion_items(ctx)))
 end
 
 -- BLINK.CMP SOURCE PROTOCOL IMPLEMENTATION
@@ -248,18 +281,19 @@ end
 ---@param ctx table
 ---@param callback fun(items: table[])
 function Source:complete(ctx, callback)
-  local items = get_completion_items(ctx)
-  callback(items)
+  callback((get_completion_items(ctx)))
 end
 
 ---@param ctx table
 ---@param callback fun(response: table|nil)
 function Source:get_completions(ctx, callback)
-  local items = get_completion_items(ctx)
+  local items, truncated, filtered = get_completion_items(ctx)
+  -- Typing more only narrows the matches, which a complete list already holds; deleting typed
+  -- text can match keys that the current filter left out.
   callback({
     items = items,
-    is_incomplete_forward = false,
-    is_incomplete_backward = false,
+    is_incomplete_forward = truncated,
+    is_incomplete_backward = truncated or filtered,
   })
 end
 
@@ -284,7 +318,7 @@ function Source:is_available(ctx)
     return false
   end
   local row, col, line = current_position(ctx or {})
-  return should_complete({ cursor = { row, col }, line = line })
+  return (completion_target({ cursor = { row, col }, line = line }))
 end
 
 ---@param _ctx table

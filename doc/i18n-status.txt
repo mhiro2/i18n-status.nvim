@@ -487,7 +487,11 @@ Completion is provided via blink.cmp source module:
 <
 
 Notes:
-  - Only completes the first argument of t("...") / something.t("...").
+  - Only completes inside the first string argument of t("...") /
+    something.t("..."); other calls such as get("..."), comments, and closed
+    arguments are ignored.
+  - Up to 100 candidates are listed, narrowed by the text typed inside the
+    string, so every key stays reachable in large projects.
   - Namespace is inferred from useTranslation/useTranslations/getTranslations scope.
   - next-intl candidates are relative to the bound namespace, including nested
     namespaces such as "Home.Form"; a root useTranslations() completes full
