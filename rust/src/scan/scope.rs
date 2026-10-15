@@ -668,19 +668,24 @@ fn translation_binding_name(hook: TranslationHook, awaited: bool, pattern: &Pat)
 
 fn hook_metadata(
     hook: TranslationHook,
-    has_namespace: bool,
-) -> (TranslationFramework, SourceKeyPolicy) {
-    match hook {
-        TranslationHook::UseTranslation => {
-            (TranslationFramework::I18next, SourceKeyPolicy::Canonical)
-        }
-        TranslationHook::UseTranslations | TranslationHook::GetTranslations if has_namespace => (
-            TranslationFramework::NextIntl,
-            SourceKeyPolicy::NamespaceRelative,
+    namespace_resolution: NamespaceResolution,
+) -> (TranslationFramework, Option<SourceKeyPolicy>) {
+    match (hook, namespace_resolution) {
+        (TranslationHook::UseTranslation, _) => (
+            TranslationFramework::I18next,
+            Some(SourceKeyPolicy::Canonical),
         ),
-        TranslationHook::UseTranslations | TranslationHook::GetTranslations => {
-            (TranslationFramework::NextIntl, SourceKeyPolicy::Canonical)
-        }
+        // next-intl source keys are message paths below the bound namespace. Without a namespace
+        // argument they start at the messages root; a dynamic namespace leaves the root unknown.
+        (_, NamespaceResolution::Static) => (
+            TranslationFramework::NextIntl,
+            Some(SourceKeyPolicy::NamespaceRelative),
+        ),
+        (_, NamespaceResolution::Absent) => (
+            TranslationFramework::NextIntl,
+            Some(SourceKeyPolicy::Canonical),
+        ),
+        (_, NamespaceResolution::Dynamic) => (TranslationFramework::NextIntl, None),
     }
 }
 
@@ -987,7 +992,7 @@ impl<'a> ScopeCollector<'a> {
             };
             let (namespace, namespace_resolution) =
                 resolve_namespace(pending.namespace_arg.as_deref(), &self.analysis);
-            let (framework, source_key_policy) = hook_metadata(hook, namespace.is_some());
+            let (framework, source_key_policy) = hook_metadata(hook, namespace_resolution);
             for index in pending.binding_indices {
                 let binding = &mut self.analysis.bindings[index];
                 if binding.name == translator_name {
@@ -995,7 +1000,7 @@ impl<'a> ScopeCollector<'a> {
                     binding.namespace.clone_from(&namespace);
                     binding.hook = Some(hook);
                     binding.framework = Some(framework);
-                    binding.source_key_policy = Some(source_key_policy);
+                    binding.source_key_policy = source_key_policy;
                     binding.namespace_resolution = Some(namespace_resolution);
                     binding.extract_safe =
                         !matches!(namespace_resolution, NamespaceResolution::Dynamic)

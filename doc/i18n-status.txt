@@ -44,6 +44,9 @@ Inline markers:
 
   [!] placeholder mismatch
        Placeholders differ between languages (e.g., "{count}" vs "{name}").
+       i18next {{name}} interpolation and ICU arguments are compared,
+       including arguments inside plural/select options; spacing in typed
+       arguments such as {count, number} does not matter.
 
 Priority: × > ! > ? > ≠ > =
 
@@ -128,6 +131,13 @@ Resource layouts:
     Actions like "Add missing" and "Extract" will write to the root file
     in this case.
 
+    Keys are identified as namespace:path, where the namespace is the
+    top-level message object (or namespace file). A nested
+    useTranslations("Home.Form") with t("title") and a root
+    useTranslations() with t("Home.Form.title") both resolve to
+    Home:Form.title. Calls through t.rich, t.markup, and t.raw are
+    recognized as references.
+
 Configuration options                                   *i18n-status-config*
 
 Full default settings:
@@ -186,7 +196,8 @@ inline.max_len (default: 80)
     Trim inline previews after this many visible characters.
 
 inline.visible_only (default: true)
-    Resolve/refresh only the currently visible lines when possible.
+    Resolve/refresh only the currently visible lines when possible. Scrolling
+    or resizing a window refreshes the lines that come into view.
 
 inline.status_only (default: false)
     Show marker icons without the previewed translation text.
@@ -275,6 +286,9 @@ The plugin creates the following user commands:
                       Supports command-line completion and warns when {lang}
                       is not part of the detected languages for the project.
 
+  The display language is per project: switching it re-renders every open
+  buffer of that project.
+
 Example keymaps:
 >
   vim.keymap.set("n", "<leader>in", "<Cmd>I18nLangNext<CR>",
@@ -315,6 +329,10 @@ Doctor checks:
 
 Note: :I18nDoctor scans project files and can be slow on large codebases.
 It runs only when you explicitly invoke it.
+Unsaved source is read from open buffers of the diagnosed project only: named
+normal or nofile buffers under the project root whose directory resolves to
+the same resource roots. Unnamed buffers, other special buffers, and buffers
+of other (including nested) projects are ignored.
 Starting another Doctor run cancels the pending or active run. Doctor work does
 not block interactive RPC, and each run has a 60-second overall deadline that
 includes resource discovery, indexing, buffer payload preparation, and project
@@ -432,8 +450,14 @@ values use cooked semantic text: indentation is cleaned while meaningful
 spaces next to element boundaries are preserved.
 
 Scoped next-intl translators require a statically resolved namespace. They
-keep canonical namespace:key identities in resources and generate
+keep canonical namespace:key identities in resources (a nested
+useTranslations("Home.Form") writes below Home.Form) and generate
 namespace-relative calls such as t("key") in source.
+
+Resource values render the original text literally. next-intl messages quote
+ICU syntax ({, }, <, >), so "Hello {name}" is stored as "Hello '{'name'}'",
+and the diff preview shows the stored value. i18next cannot escape "{{" or
+"$t(", so candidates containing them are skipped.
 
 If primary_lang is not one of the detected locales, Extract warns and uses
 the first detected locale so the original text is preserved.
@@ -465,6 +489,9 @@ Completion is provided via blink.cmp source module:
 Notes:
   - Only completes the first argument of t("...") / something.t("...").
   - Namespace is inferred from useTranslation/useTranslations/getTranslations scope.
+  - next-intl candidates are relative to the bound namespace, including nested
+    namespaces such as "Home.Form"; a root useTranslations() completes full
+    message paths.
 
 ==============================================================================
 7. Highlights                                               *i18n-status-highlights*
@@ -541,9 +568,11 @@ Rename safety:
   Source keys are rewritten according to the translator that owns each call.
   i18next references may move to another namespace with an explicit "ns:"
   prefix. next-intl translators bind their namespace in useTranslations or
-  getTranslations, so a next-intl reference can only be renamed within its
-  bound namespace; moving it to another namespace is refused before any file
-  or buffer changes. A reference whose translator is unknown keeps its
+  getTranslations, so a scoped next-intl reference can only be renamed below
+  its bound namespace (including nested namespaces such as "Home.Form");
+  moving it elsewhere is refused before any file or buffer changes. A root
+  translator (useTranslations()) spells the full message path, so its
+  references can move to any namespace. A reference whose translator is unknown keeps its
   spelling, and moving one without an "ns:" prefix to another namespace over
   next-intl messages is refused as ambiguous.
 

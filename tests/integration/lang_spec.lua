@@ -103,4 +103,37 @@ describe(":I18nLang", function()
       assert.same({ "ja" }, filtered)
     end)
   end)
+
+  it("re-renders other buffers of the project after a language switch", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+
+    helpers.with_cwd(root, function()
+      local other = setup_buffer(root)
+      vim.api.nvim_buf_set_name(other, root .. "/src/other.ts")
+      local buf = setup_buffer(root)
+      init.setup({
+        primary_lang = "ja",
+        resource_watch = { enabled = false },
+        inline = { visible_only = false },
+      })
+      core.refresh_now(other, init.get_config())
+      core.refresh_now(buf, init.get_config())
+
+      local ns = require("i18n-status.render").namespace()
+      local function inline(target)
+        local marks = vim.api.nvim_buf_get_extmarks(target, ns, 0, -1, { details = true })
+        return marks[1] and marks[1][4].virt_text[1][1] or ""
+      end
+      assert.is_truthy(inline(other):find("ログイン", 1, true))
+
+      vim.api.nvim_cmd({ cmd = "I18nLang", args = { "en" } }, {})
+
+      assert.is_truthy(inline(buf):find("Login", 1, true))
+      assert.is_true(vim.wait(2000, function()
+        return inline(other):find("Login", 1, true) ~= nil
+      end, 10))
+    end)
+  end)
 end)

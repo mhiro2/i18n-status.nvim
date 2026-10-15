@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use super::io::{file_mtime, read_json_file};
+use crate::scan::TranslationFramework;
 use crate::util::flatten_table;
 
 #[derive(Debug, Deserialize)]
@@ -30,7 +31,31 @@ pub struct ResourceItem {
     pub value: Option<String>,
     pub file: Option<String>,
     pub priority: u32,
+    /// Framework whose resource layout the value was read from; it decides the message syntax.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framework: Option<TranslationFramework>,
 }
+
+/// Where a resource file sits in a supported layout.
+#[derive(Debug, Clone, Copy)]
+struct ResourceSource {
+    /// Lower values win when several files define the same language and key.
+    priority: u32,
+    framework: TranslationFramework,
+}
+
+const I18NEXT_NAMESPACE_FILE: ResourceSource = ResourceSource {
+    priority: 30,
+    framework: TranslationFramework::I18next,
+};
+const NEXT_INTL_ROOT_FILE: ResourceSource = ResourceSource {
+    priority: 40,
+    framework: TranslationFramework::NextIntl,
+};
+const NEXT_INTL_NAMESPACE_FILE: ResourceSource = ResourceSource {
+    priority: 50,
+    framework: TranslationFramework::NextIntl,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexError {
@@ -100,27 +125,24 @@ fn insert_items(
     namespace: &str,
     flat: &std::collections::BTreeMap<String, String>,
     file_path: &str,
-    priority: u32,
+    source: ResourceSource,
 ) {
     let lang_map = index.entry(lang.to_string()).or_default();
     for (key, value) in flat {
         let canonical_key = format!("{}:{}", namespace, key);
-        let entry = lang_map.entry(canonical_key);
-        match entry {
+        let item = ResourceItem {
+            value: Some(value.clone()),
+            file: Some(file_path.to_string()),
+            priority: source.priority,
+            framework: Some(source.framework),
+        };
+        match lang_map.entry(canonical_key) {
             std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(ResourceItem {
-                    value: Some(value.clone()),
-                    file: Some(file_path.to_string()),
-                    priority,
-                });
+                e.insert(item);
             }
             std::collections::hash_map::Entry::Occupied(mut e) => {
-                if priority < e.get().priority {
-                    e.insert(ResourceItem {
-                        value: Some(value.clone()),
-                        file: Some(file_path.to_string()),
-                        priority,
-                    });
+                if source.priority < e.get().priority {
+                    e.insert(item);
                 }
             }
         }
@@ -179,7 +201,7 @@ fn process_i18next(
             match read_json_file(&file_path) {
                 Ok(value) => {
                     let flat = flatten_table(&value, "");
-                    insert_items(index, &lang, &ns, &flat, &file_str, 30);
+                    insert_items(index, &lang, &ns, &flat, &file_str, I18NEXT_NAMESPACE_FILE);
                 }
                 Err(e) => {
                     errors.push(IndexError {
@@ -248,7 +270,14 @@ fn process_next_intl(
                 match read_json_file(&file_path) {
                     Ok(value) => {
                         let flat = flatten_table(&value, "");
-                        insert_items(index, &lang, &ns, &flat, &file_str, 50);
+                        insert_items(
+                            index,
+                            &lang,
+                            &ns,
+                            &flat,
+                            &file_str,
+                            NEXT_INTL_NAMESPACE_FILE,
+                        );
                     }
                     Err(e) => {
                         errors.push(IndexError {
@@ -283,7 +312,7 @@ fn process_next_intl(
                     for (ns, ns_value) in &map {
                         namespaces.insert(ns.clone());
                         let flat = flatten_table(ns_value, "");
-                        insert_items(index, &lang, ns, &flat, &file_str, 40);
+                        insert_items(index, &lang, ns, &flat, &file_str, NEXT_INTL_ROOT_FILE);
                     }
                 }
                 Ok(_) => {
@@ -505,7 +534,14 @@ pub fn apply_changes(params: ApplyChangesParams, cache: &IndexCache) -> Result<V
                     .and_then(|n| n.to_str())
                     .unwrap_or("");
                 let flat = flatten_table(&new_value, "");
-                insert_items(&mut updated.index, lang, ns, &flat, path_str, 30);
+                insert_items(
+                    &mut updated.index,
+                    lang,
+                    ns,
+                    &flat,
+                    path_str,
+                    I18NEXT_NAMESPACE_FILE,
+                );
             }
             "next-intl" => {
                 if components.len() == 2 {
@@ -516,7 +552,14 @@ pub fn apply_changes(params: ApplyChangesParams, cache: &IndexCache) -> Result<V
                         .and_then(|n| n.to_str())
                         .unwrap_or("");
                     let flat = flatten_table(&new_value, "");
-                    insert_items(&mut updated.index, lang, ns, &flat, path_str, 50);
+                    insert_items(
+                        &mut updated.index,
+                        lang,
+                        ns,
+                        &flat,
+                        path_str,
+                        NEXT_INTL_NAMESPACE_FILE,
+                    );
                 } else if components.len() == 1 {
                     // {lang}.json root file
                     let lang = Path::new(components[0])
@@ -526,7 +569,14 @@ pub fn apply_changes(params: ApplyChangesParams, cache: &IndexCache) -> Result<V
                     if let Value::Object(map) = &new_value {
                         for (ns, ns_value) in map {
                             let flat = flatten_table(ns_value, "");
-                            insert_items(&mut updated.index, lang, ns, &flat, path_str, 40);
+                            insert_items(
+                                &mut updated.index,
+                                lang,
+                                ns,
+                                &flat,
+                                path_str,
+                                NEXT_INTL_ROOT_FILE,
+                            );
                         }
                     }
                 } else {

@@ -17,6 +17,7 @@ local EXTRACT_REVIEW_TRACK_NS = vim.api.nvim_create_namespace("i18n-status-extra
 ---@field end_lnum integer
 ---@field end_col integer
 ---@field text string
+---@field message string Resource value that renders `text` literally in the candidate's framework
 ---@field source_text string
 ---@field kind 'jsx_text'|'jsx_literal'
 ---@field replacement_context 'jsx_child'|'jsx_expression'

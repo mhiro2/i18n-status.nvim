@@ -599,6 +599,88 @@ describe("extract review integration", function()
     end)
   end)
 
+  it("writes nested next-intl namespaces under their top-level message object", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/messages/ja.json", '{"Home":{"Form":{}}}')
+    helpers.write_file(root .. "/messages/en.json", '{"Home":{"Form":{}}}')
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf({
+        'const t = useTranslations("Home.Form")',
+        "export function Page() {",
+        "  return <p>Hello world</p>",
+        "}",
+      }, "typescriptreact", root .. "/src/page.tsx")
+
+      local ctx = extract.run(buf, config_mod.setup({ primary_lang = "ja" }), {})
+      assert.is_not_nil(ctx)
+      assert.are.equal("Home:Form.hello-world", ctx.candidates[1].proposed_key)
+
+      vim.api.nvim_set_current_win(ctx.list_win)
+      vim.api.nvim_feedkeys("a", "x", false)
+      vim.api.nvim_feedkeys("\r", "x", false)
+
+      local applied = vim.wait(1000, function()
+        return vim.api.nvim_buf_get_lines(buf, 2, 3, false)[1]:find('{t("hello-world")}', 1, true) ~= nil
+      end, 10)
+      assert.is_true(applied)
+
+      local ja_data = vim.json.decode(helpers.read_file(root .. "/messages/ja.json"))
+      assert.are.equal("Hello world", ja_data.Home.Form["hello-world"])
+      assert.is_nil(ja_data["Home.Form"])
+    end)
+  end)
+
+  it("stores literal braces in extracted next-intl text as escaped ICU", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/messages/ja.json", "{}")
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf({
+        'const t = useTranslations("Home")',
+        "export function Page() {",
+        '  return <p>{"Hello {name}"}</p>',
+        "}",
+      }, "typescriptreact", root .. "/src/page.tsx")
+
+      local ctx = extract.run(buf, config_mod.setup({ primary_lang = "ja" }), {})
+      assert.is_not_nil(ctx)
+      assert.are.equal("Hello {name}", ctx.candidates[1].text)
+      assert.are.equal("Hello '{'name'}'", ctx.candidates[1].message)
+
+      vim.api.nvim_set_current_win(ctx.list_win)
+      vim.api.nvim_feedkeys("a", "x", false)
+      vim.api.nvim_feedkeys("\r", "x", false)
+
+      local applied = vim.wait(1000, function()
+        return vim.api.nvim_buf_get_lines(buf, 2, 3, false)[1]:find('{t("hello-name")}', 1, true) ~= nil
+      end, 10)
+      assert.is_true(applied)
+
+      local ja_data = vim.json.decode(helpers.read_file(root .. "/messages/ja.json"))
+      assert.are.equal("Hello '{'name'}'", ja_data.Home["hello-name"])
+    end)
+  end)
+
+  it("skips i18next text that would be read as interpolation", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", "{}")
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf({
+        'const { t } = useTranslation("common")',
+        "export function Page() {",
+        '  return <div><p>{"Hello {{name}}"}</p><p>Plain text</p></div>',
+        "}",
+      }, "typescriptreact", root .. "/src/page.tsx")
+
+      local ctx = extract.run(buf, config_mod.setup({ primary_lang = "ja" }), {})
+      assert.is_not_nil(ctx)
+      assert.are.equal(1, #ctx.candidates)
+      assert.are.equal("Plain text", ctx.candidates[1].text)
+    end)
+  end)
+
   it("uses relative source keys with awaited next-intl namespace resources", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/messages/ja/Home.json", "{}")

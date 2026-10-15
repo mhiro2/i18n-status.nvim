@@ -77,7 +77,11 @@ local function refresh_candidate_status(candidate, catalog, fallback_existing_ke
     return candidate.proposed_key
   end
 
-  local normalized, err = M.normalize_key_input(candidate.proposed_key, candidate.namespace)
+  local input = candidate.proposed_key
+  if type(input) == "string" then
+    input = extract_candidate.qualify_key(candidate, vim.trim(input))
+  end
+  local normalized, err = M.normalize_key_input(input, candidate.namespace)
   if not normalized then
     candidate.status = "invalid_key"
     candidate.error = err
@@ -532,7 +536,7 @@ local function apply_candidate(ctx, candidate, deps)
   if candidate.mode == "new" then
     local translations = {}
     for _, lang in ipairs(candidate.languages) do
-      translations[lang] = lang == candidate.primary_lang and candidate.text or ""
+      translations[lang] = lang == candidate.primary_lang and candidate.message or ""
     end
     local resource_changes, _, _, prepare_err =
       key_write.prepare_translations(namespace, key_path, translations, ctx.start_dir, candidate.languages, {
@@ -606,7 +610,8 @@ local function apply_candidate(ctx, candidate, deps)
       catalog.index[language] = catalog.index[language] or {}
       catalog.index[language][candidate.proposed_key] = {
         priority = 0,
-        value = language == candidate.primary_lang and candidate.text or "",
+        framework = candidate.framework,
+        value = language == candidate.primary_lang and candidate.message or "",
       }
     end
   end

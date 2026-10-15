@@ -5,7 +5,7 @@ use swc_ecma_visit::{Visit, VisitWith};
 use super::const_eval::eval_string_exprs;
 use super::parser::span_to_byte_range;
 use super::scope::{ScopeAnalysis, SymbolBinding};
-use super::{Range, ScanItem};
+use super::{NamespaceResolution, Range, ScanItem, TranslationFramework};
 
 pub(super) fn extract_calls(
     module: &Module,
@@ -43,32 +43,47 @@ impl Visit for CallVisitor<'_> {
 
 impl<'a> CallVisitor<'a> {
     fn check_call(&mut self, call: &CallExpr) {
-        let (func_name, is_member_t) = match &call.callee {
-            Callee::Expr(expr) => match expr.as_ref() {
-                Expr::Ident(ident) => (ident.sym.to_string(), false),
-                Expr::Member(member) => {
-                    if let MemberProp::Ident(prop) = &member.prop {
-                        if prop.sym.as_ref() == "t" {
-                            ("t".to_string(), true)
-                        } else {
-                            return;
-                        }
-                    } else {
-                        return;
-                    }
+        let Callee::Expr(callee) = &call.callee else {
+            return;
+        };
+        let call_pos = call.span.lo.0;
+        let binding = match callee.as_ref() {
+            Expr::Ident(ident) => {
+                let func_name = ident.sym.as_ref();
+                if self.scopes.is_hook_call(func_name, call_pos)
+                    || !self.is_translation_call(func_name, call_pos)
+                {
+                    return;
                 }
-                _ => return,
-            },
+                self.scopes
+                    .resolve(func_name, call_pos)
+                    .filter(|binding| binding.is_callable_translator_at(call_pos))
+            }
+            Expr::Member(member) => {
+                let MemberProp::Ident(prop) = &member.prop else {
+                    return;
+                };
+                match (member.obj.as_ref(), prop.sym.as_ref()) {
+                    // next-intl translators also format messages through `t.rich`, `t.markup`, and `t.raw`.
+                    (Expr::Ident(receiver), "rich" | "markup" | "raw") => {
+                        let Some(binding) = self
+                            .scopes
+                            .resolve(receiver.sym.as_ref(), call_pos)
+                            .filter(|binding| {
+                                binding.is_callable_translator_at(call_pos)
+                                    && binding.framework == Some(TranslationFramework::NextIntl)
+                            })
+                        else {
+                            return;
+                        };
+                        Some(binding)
+                    }
+                    (_, "t") => None,
+                    _ => return,
+                }
+            }
             _ => return,
         };
-
-        let call_pos = call.span.lo.0;
-        if !is_member_t && self.scopes.is_hook_call(&func_name, call_pos) {
-            return;
-        }
-        if !is_member_t && !self.is_translation_call(&func_name, call) {
-            return;
-        }
 
         let Some(first_arg) = call.args.first() else {
             return;
@@ -86,10 +101,6 @@ impl<'a> CallVisitor<'a> {
             return;
         }
 
-        let binding = (!is_member_t)
-            .then(|| self.scopes.resolve(&func_name, call_pos))
-            .flatten()
-            .filter(|binding| binding.is_callable_translator_at(call_pos));
         let refactorable = is_direct_literal(&first_arg.expr);
         for value in values {
             let (key, namespace, fallback) = self.resolve_namespace(&value, binding);
@@ -105,12 +116,12 @@ impl<'a> CallVisitor<'a> {
                 refactorable,
                 framework: binding.and_then(|binding| binding.framework),
                 source_key_policy: binding.and_then(|binding| binding.source_key_policy),
+                translator_namespace: binding.and_then(|binding| binding.namespace.clone()),
             });
         }
     }
 
-    fn is_translation_call(&self, func_name: &str, call: &CallExpr) -> bool {
-        let call_pos = call.span.lo.0;
+    fn is_translation_call(&self, func_name: &str, call_pos: u32) -> bool {
         if let Some(binding) = self.scopes.resolve(func_name, call_pos) {
             return binding.is_callable_translator_at(call_pos);
         }
@@ -122,6 +133,10 @@ impl<'a> CallVisitor<'a> {
         value: &str,
         binding: Option<&SymbolBinding>,
     ) -> (String, String, bool) {
+        if let Some(resolved) = binding.and_then(|binding| next_intl_key(value, binding)) {
+            return resolved;
+        }
+
         if let Some(colon_pos) = value.find(':') {
             let namespace = &value[..colon_pos];
             return (value.to_string(), namespace.to_string(), false);
@@ -134,6 +149,33 @@ impl<'a> CallVisitor<'a> {
         let namespace = self.fallback_namespace.to_string();
         (format!("{}:{}", namespace, value), namespace, true)
     }
+}
+
+/// Canonical `namespace:path` of a next-intl reference.
+///
+/// next-intl joins the bound namespace and the source key into one dot-separated message path,
+/// so nested namespaces (`useTranslations("Home.Form")`) and root translators
+/// (`useTranslations()` with `t("Home.title")`) both resolve to the top-level message object as
+/// the namespace. `:` has no meaning in next-intl keys. Translators with a dynamic namespace, or
+/// paths without a namespace segment, fall back to the generic resolution.
+fn next_intl_key(value: &str, binding: &SymbolBinding) -> Option<(String, String, bool)> {
+    if binding.framework != Some(TranslationFramework::NextIntl) {
+        return None;
+    }
+    let path = match (binding.namespace_resolution?, binding.namespace.as_deref()) {
+        (NamespaceResolution::Static, Some(namespace)) => format!("{namespace}.{value}"),
+        (NamespaceResolution::Absent, _) => value.to_string(),
+        _ => return None,
+    };
+    let (namespace, key_path) = path.split_once('.')?;
+    if namespace.is_empty() || key_path.is_empty() {
+        return None;
+    }
+    Some((
+        format!("{namespace}:{key_path}"),
+        namespace.to_string(),
+        false,
+    ))
 }
 
 fn is_direct_literal(expr: &Expr) -> bool {
@@ -263,6 +305,122 @@ function Page() {
         ));
         assert!(items[2].framework.is_none());
         assert!(items[2].source_key_policy.is_none());
+    }
+
+    #[test]
+    fn next_intl_nested_namespace_resolves_to_top_level_namespace() {
+        let items = extract_items(
+            r#"
+function Page() {
+  const t = useTranslations("Home.Form");
+  return t("fields.title");
+}
+"#,
+            "translation",
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].key, "Home:Form.fields.title");
+        assert_eq!(items[0].namespace, "Home");
+        assert_eq!(items[0].raw, "fields.title");
+        assert_eq!(items[0].translator_namespace.as_deref(), Some("Home.Form"));
+        assert!(!items[0].fallback);
+    }
+
+    #[test]
+    fn next_intl_root_translator_reads_namespace_from_the_key_path() {
+        let items = extract_items(
+            r#"
+async function Page() {
+  const t = await getTranslations();
+  return [t("Home.title"), t("Home.Form.submit")];
+}
+"#,
+            "translation",
+        );
+
+        let keys: Vec<_> = items.iter().map(|item| item.key.as_str()).collect();
+        assert_eq!(keys, ["Home:title", "Home:Form.submit"]);
+        assert!(items.iter().all(|item| item.namespace == "Home"));
+        assert!(items.iter().all(|item| !item.fallback));
+        assert!(items.iter().all(|item| item.translator_namespace.is_none()));
+        assert!(matches!(
+            items[0].source_key_policy,
+            Some(SourceKeyPolicy::Canonical)
+        ));
+    }
+
+    #[test]
+    fn next_intl_keys_do_not_treat_colon_as_namespace_separator() {
+        let items = extract_items(
+            r#"
+function Page() {
+  const t = useTranslations("Home");
+  return t("time:label");
+}
+"#,
+            "translation",
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].key, "Home:time:label");
+        assert_eq!(items[0].namespace, "Home");
+    }
+
+    #[test]
+    fn next_intl_dynamic_namespace_falls_back_without_a_source_key_policy() {
+        let items = extract_items(
+            r#"
+function Page({ ns }) {
+  const t = useTranslations(ns);
+  return t("Form.title");
+}
+"#,
+            "translation",
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].key, "translation:Form.title");
+        assert!(items[0].fallback);
+        assert!(items[0].source_key_policy.is_none());
+    }
+
+    #[test]
+    fn extracts_next_intl_translator_methods() {
+        let items = extract_items(
+            r#"
+function Page() {
+  const t = useTranslations("Home");
+  return [t.rich("title", {}), t.markup("body", {}), t.raw("data"), t.has("flag")];
+}
+"#,
+            "translation",
+        );
+
+        let keys: Vec<_> = items.iter().map(|item| item.key.as_str()).collect();
+        assert_eq!(keys, ["Home:title", "Home:body", "Home:data"]);
+        assert!(items.iter().all(|item| item.refactorable));
+        assert!(
+            items
+                .iter()
+                .all(|item| matches!(item.framework, Some(TranslationFramework::NextIntl)))
+        );
+    }
+
+    #[test]
+    fn translator_methods_require_a_next_intl_binding() {
+        let items = extract_items(
+            r#"
+function Page() {
+  const { t } = useTranslation("common");
+  const rich = { rich: (key) => key };
+  return [t.rich("title"), rich.rich("body"), other.raw("data")];
+}
+"#,
+            "translation",
+        );
+
+        assert!(items.is_empty(), "unexpected items: {items:?}");
     }
 
     #[test]

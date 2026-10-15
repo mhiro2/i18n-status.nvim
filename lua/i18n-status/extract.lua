@@ -3,6 +3,8 @@ local M = {}
 
 local extract_review = require("i18n-status.extract_review")
 local hardcoded = require("i18n-status.hardcoded")
+local message_escape = require("i18n-status.message_escape")
+local next_intl_key = require("i18n-status.next_intl_key")
 local project_identity = require("i18n-status.project_identity")
 local resource_catalog = require("i18n-status.resource_catalog")
 local resources = require("i18n-status.resources")
@@ -71,6 +73,7 @@ end
 ---@param catalogs table<string, I18nStatusFrameworkCatalog>
 ---@return I18nStatusExtractCandidate[]
 ---@return integer rejected_count
+---@return integer unrepresentable_count Candidates whose text the framework cannot store literally
 local function build_candidates(bufnr, items, fallback_ns, extract_cfg, catalogs)
   local ordered = vim.deepcopy(items)
   table.sort(ordered, function(a, b)
@@ -84,6 +87,7 @@ local function build_candidates(bufnr, items, fallback_ns, extract_cfg, catalogs
   local generated_keys = {}
   local candidates = {}
   local rejected_count = 0
+  local unrepresentable_count = 0
 
   for idx, item in ipairs(ordered) do
     local context = scan.translation_context_at(bufnr, item.lnum, {
@@ -117,6 +121,8 @@ local function build_candidates(bufnr, items, fallback_ns, extract_cfg, catalogs
       or #catalog.languages == 0
     then
       rejected_count = rejected_count + 1
+    elseif not message_escape.literal_message(context.framework, item.text) then
+      unrepresentable_count = unrepresentable_count + 1
     else
       local namespace = context.namespace or catalog.fallback_namespace or fallback_ns or "common"
       if context.namespace_resolution == "absent" then
@@ -126,7 +132,8 @@ local function build_candidates(bufnr, items, fallback_ns, extract_cfg, catalogs
       generated_keys[context.framework] = generated_keys[context.framework] or {}
       local framework_generated_keys = generated_keys[context.framework]
       local segment = ascii_slug(item.text, separator) or "key"
-      local base_key = string.format("%s:%s", namespace, segment)
+      local base_key = context.framework == "next_intl" and next_intl_key.canonical_key(namespace, segment)
+        or string.format("%s:%s", namespace, segment)
 
       local proposed_key = base_key
       local status = "ready"
@@ -144,6 +151,7 @@ local function build_candidates(bufnr, items, fallback_ns, extract_cfg, catalogs
         end_lnum = item.end_lnum,
         end_col = item.end_col,
         text = item.text,
+        message = (message_escape.literal_message(context.framework, item.text)),
         source_text = item.source_text,
         kind = item.kind,
         replacement_context = item.replacement_context,
@@ -166,7 +174,7 @@ local function build_candidates(bufnr, items, fallback_ns, extract_cfg, catalogs
     end
   end
 
-  return candidates, rejected_count
+  return candidates, rejected_count, unrepresentable_count
 end
 
 ---@param languages string[]
@@ -252,7 +260,17 @@ function M.run(bufnr, cfg, opts)
     return nil
   end
 
-  local candidates, rejected_count = build_candidates(bufnr, items, fallback_ns, extract_cfg, catalogs)
+  local candidates, rejected_count, unrepresentable_count =
+    build_candidates(bufnr, items, fallback_ns, extract_cfg, catalogs)
+  if unrepresentable_count > 0 then
+    vim.notify(
+      string.format(
+        "i18n-status extract: skipped %d candidate(s) whose text would be read as interpolation syntax",
+        unrepresentable_count
+      ),
+      vim.log.levels.WARN
+    )
+  end
   if #candidates == 0 then
     vim.notify(
       "i18n-status extract: no candidates have a supported, unambiguous translation function in scope",

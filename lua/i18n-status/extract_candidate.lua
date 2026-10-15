@@ -1,6 +1,8 @@
 ---@class I18nStatusExtractCandidateHelpers
 local M = {}
 
+local next_intl_key = require("i18n-status.next_intl_key")
+
 ---@param candidate I18nStatusExtractCandidate
 ---@return string|nil
 ---@return string|nil
@@ -15,14 +17,25 @@ function M.source_key(candidate)
     return nil, "source key policy is unavailable"
   end
 
-  local namespace, key_path = candidate.proposed_key:match("^([^:]+):(.+)$")
-  if not namespace or not key_path then
-    return nil, "canonical translation key is unavailable"
+  if candidate.framework ~= "next_intl" then
+    return nil, "namespace-relative source keys are only supported for next-intl"
   end
-  if namespace ~= candidate.namespace then
-    return nil, "translation namespace does not match the scoped translator"
+  return next_intl_key.source_key(candidate.namespace, candidate.proposed_key)
+end
+
+---Qualify a key typed without a namespace with the candidate's translator namespace.
+---@param candidate I18nStatusExtractCandidate
+---@param key string
+---@return string
+function M.qualify_key(candidate, key)
+  local namespace = candidate.namespace
+  if key == "" or key:find(":", 1, true) or type(namespace) ~= "string" or namespace == "" then
+    return key
   end
-  return key_path, nil
+  if candidate.framework == "next_intl" then
+    return next_intl_key.canonical_key(namespace, key) or key
+  end
+  return namespace .. ":" .. key
 end
 
 ---@param candidate I18nStatusExtractCandidate

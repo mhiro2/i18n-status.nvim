@@ -48,6 +48,7 @@ describe("doctor", function()
     helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"},"unused":"x"}')
     helpers.with_cwd(root, function()
       local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_name(buf, root .. "/src/app.ts")
       vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("login.title")', 't("missing.key")' })
       vim.bo[buf].filetype = "typescript"
       local config = config_mod.setup({
@@ -65,6 +66,44 @@ describe("doctor", function()
       end
       assert.is_true(counts.missing >= 1)
       assert.is_true(counts.unused >= 1)
+    end)
+  end)
+
+  it("analyzes only open buffers of the diagnosed project", function()
+    local root = helpers.tmpdir()
+    local nested = root .. "/packages/other"
+    local outside = helpers.tmpdir()
+    for _, project in ipairs({ root, nested, outside }) do
+      helpers.write_file(project .. "/locales/ja/common.json", '{"used":"使用","unused":"未使用"}')
+    end
+    helpers.with_cwd(root, function()
+      local function source_buf(path, lines)
+        local buf = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_buf_set_name(buf, path)
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+        vim.bo[buf].filetype = "typescript"
+        return buf
+      end
+      local own = source_buf(root .. "/src/app.ts", { 't("used")' })
+      local reference = { 't("unused")', 't("other.missing")' }
+      source_buf(nested .. "/src/app.ts", reference)
+      source_buf(outside .. "/src/app.ts", reference)
+      local unnamed = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(unnamed, 0, -1, false, reference)
+      vim.bo[unnamed].filetype = "typescript"
+
+      local issues, ctx = diagnose(own, config_mod.setup({ primary_lang = "ja" }))
+      assert.are.same({ own }, ctx.buffers)
+      local unused, missing = {}, {}
+      for _, issue in ipairs(issues) do
+        if issue.kind == "unused" then
+          unused[issue.key] = true
+        elseif issue.kind == "missing" then
+          missing[issue.key] = true
+        end
+      end
+      assert.is_true(unused["common:unused"])
+      assert.is_nil(missing["common:other.missing"])
     end)
   end)
 

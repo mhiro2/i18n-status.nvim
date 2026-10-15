@@ -123,6 +123,25 @@ local function configure_auto_hover()
   end
 end
 
+---Window IDs reported by WinScrolled (keyed by window ID) or WinResized (`windows` list), plus
+---the window that <amatch> names.
+---@param event table
+---@param match string
+---@return integer[]
+local function changed_windows(event, match)
+  local wins = { tonumber(match) }
+  for _, win in ipairs(event.windows or {}) do
+    wins[#wins + 1] = win
+  end
+  for key in pairs(event) do
+    local win = tonumber(key)
+    if win then
+      wins[#wins + 1] = win
+    end
+  end
+  return wins
+end
+
 ---@return boolean true if Doctor is open (caller should return early)
 local function guard_doctor_open()
   local review = require("i18n-status.review")
@@ -140,6 +159,14 @@ local function project_for_buf(bufnr)
   local start_dir = resources.start_dir(bufnr)
   local cache = resources.ensure_index(start_dir)
   return state.project_for_buf(bufnr, cache)
+end
+
+---The display language is shared by every buffer of a project.
+---@param bufnr integer
+---@param project_key string|nil
+local function refresh_language_change(bufnr, project_key)
+  core.refresh(bufnr, config, 0, { force = true })
+  core.refresh_project(project_key, config, { except = bufnr })
 end
 
 ---@param bufnr integer
@@ -221,6 +248,27 @@ function M.setup(opts)
         end
       end,
     })
+    -- With visible_only, scrolling or resizing a window exposes lines that have not been rendered.
+    vim.api.nvim_create_autocmd({ "WinScrolled", "WinResized" }, {
+      group = group,
+      callback = function(args)
+        if not config.inline.visible_only then
+          return
+        end
+        local seen = {}
+        for _, win in ipairs(changed_windows(vim.v.event, args.match)) do
+          if vim.api.nvim_win_is_valid(win) then
+            local buf = vim.api.nvim_win_get_buf(win)
+            if not seen[buf] then
+              seen[buf] = true
+              if core.should_refresh(buf) then
+                core.refresh(buf, config)
+              end
+            end
+          end
+        end
+      end,
+    })
     vim.api.nvim_create_autocmd("BufWipeout", {
       group = group,
       callback = function(args)
@@ -281,7 +329,7 @@ function M.lang_next()
   local bufnr = vim.api.nvim_get_current_buf()
   local _, key = project_for_buf(bufnr)
   state.cycle_next(key)
-  core.refresh(bufnr, config, 0, { force = true })
+  refresh_language_change(bufnr, key)
 end
 
 function M.lang_prev()
@@ -293,7 +341,7 @@ function M.lang_prev()
   local bufnr = vim.api.nvim_get_current_buf()
   local _, key = project_for_buf(bufnr)
   state.cycle_prev(key)
-  core.refresh(bufnr, config, 0, { force = true })
+  refresh_language_change(bufnr, key)
 end
 
 ---@param lang string
@@ -318,7 +366,7 @@ function M.lang_set(lang)
     return
   end
   state.set_current(key, lang)
-  core.refresh(bufnr, config, 0, { force = true })
+  refresh_language_change(bufnr, key)
 end
 
 ---@param arg_lead string

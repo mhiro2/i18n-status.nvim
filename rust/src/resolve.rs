@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::scan::TranslationFramework;
 use crate::util::extract_placeholders;
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +34,8 @@ pub struct ResourceItemInput {
     #[allow(dead_code)]
     #[serde(default)]
     pub priority: u32,
+    #[serde(default)]
+    pub framework: Option<TranslationFramework>,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,7 +156,7 @@ pub fn compute(params: ComputeParams) -> Result<Value> {
         let mut mismatch_langs = Vec::new();
 
         // Collect compare items for placeholder check
-        let mut compare_values: Vec<(&str, &str)> = Vec::new(); // (lang, value)
+        let mut compare_values: Vec<(&str, &str, Option<TranslationFramework>)> = Vec::new();
 
         for lang in &compare_langs {
             let entry = params
@@ -182,7 +185,7 @@ pub fn compute(params: ComputeParams) -> Result<Value> {
                     any_localized = true;
                     localized_langs.push(lang.to_string());
                 }
-                compare_values.push((lang, v));
+                compare_values.push((lang, v, entry.and_then(|e| e.framework)));
             }
         }
 
@@ -195,10 +198,13 @@ pub fn compute(params: ComputeParams) -> Result<Value> {
             reason = Some("missing_primary");
         } else {
             // Check placeholder mismatches
-            let base_placeholders = extract_placeholders(primary_value.unwrap_or(""));
+            let base_placeholders = extract_placeholders(
+                primary_value.unwrap_or(""),
+                primary_entry.and_then(|e| e.framework),
+            );
             let mut has_mismatch = false;
-            for (lang, value) in &compare_values {
-                let current_placeholders = extract_placeholders(value);
+            for (lang, value, framework) in &compare_values {
+                let current_placeholders = extract_placeholders(value, *framework);
                 if !placeholder_equal_vecs(&base_placeholders, &current_placeholders) {
                     has_mismatch = true;
                     mismatch_langs.push(lang.to_string());

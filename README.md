@@ -27,7 +27,7 @@ t("signup.title"):                   [×]
 | `[≠]`  | Localized | All languages exist but values differ |
 | `[?]`  | Fallback is used | Missing in some languages (but primary exists) |
 | `[×]`  | Missing in primary | Primary language value is missing |
-| `[!]`  | Placeholder mismatch | Placeholders differ between languages |
+| `[!]`  | Placeholder mismatch | Placeholders differ between languages (i18next `{{name}}` and ICU arguments, including `plural`/`select` options) |
 
 **Priority**: `×` > `!` > `?` > `≠` > `=`
 
@@ -173,7 +173,7 @@ For full option and command details, see `:help i18n-status`.
   inline = {
     position = "eol", -- "eol" | "after_key"
     max_len = 80,
-    visible_only = true,
+    visible_only = true, -- render visible lines only; scrolling and resizing refresh newly shown lines
     status_only = false,
     debounce_ms = 80,
     hl = {
@@ -231,12 +231,16 @@ If none is found, a best-effort fallback is used and `:checkhealth` will warn.
 - **`:I18nExtract`**: Detect hardcoded JSX text and open the Extract Review UI (supports `:'<,'>I18nExtract` for range extraction)
 - **`:I18nRefresh`**: Force refresh current buffer
 
+Doctor reads unsaved source from open buffers of the diagnosed project only: named normal or `nofile` buffers under the project root whose directory resolves to the same resource roots. Unnamed buffers, other special buffers, and buffers of other (including nested) projects are ignored.
+
 Doctor runs are latest-wins: starting another scan cancels any pending or active scan without blocking interactive RPC. Each scan also has a 60-second overall deadline covering resource discovery, indexing, buffer payload preparation, and the project scan; a timed-out scan is cancelled and does not open an empty Review UI. If non-cooperative timed-out workers temporarily exhaust the bounded Doctor capacity, Doctor reports a busy error; retry after the earlier work finishes.
 
 ### Language
 
 - **`:I18nLang [lang]`**: With no argument, same as `:I18nLangNext`. With argument, set language explicitly (warns if unknown). Supports command-line completion.
 - **`:I18nLangNext`** / **`:I18nLangPrev`**: Cycle languages
+
+The display language is per project: switching it re-renders every open buffer of that project.
 
 ## ✅ Health check
 
@@ -278,7 +282,7 @@ Locale edits (`e`/`E`) read the target file when the prompt opens and commit aga
 
 Rename rewrites only direct string or no-substitution template literal arguments in loaded, named, normal source buffers that belong to the same canonical project as the initiating buffer. References resolved from consts, concatenation, interpolation, or conditional branches are reported by Doctor/inline status but are rejected by Rename because rewriting the enclosing expression could change unrelated runtime behavior. Direct literals whose source spelling does not exactly match the scanner's semantic value, including escaped key spellings, are also rejected so a stale span cannot rewrite unrelated source. Source and locale changes are committed as one transaction; conflicts abort the rename, and any rollback conflict is reported without overwriting concurrent edits.
 
-Source keys are rewritten according to the translator that owns each call. i18next references may move to another namespace with an explicit `ns:` prefix. next-intl translators bind their namespace in `useTranslations`/`getTranslations`, so a next-intl reference can only be renamed within its bound namespace; moving it to another namespace is refused before any file or buffer changes. A reference whose translator is unknown keeps its spelling, and moving one without an `ns:` prefix to another namespace over next-intl messages is refused as ambiguous.
+Source keys are rewritten according to the translator that owns each call. i18next references may move to another namespace with an explicit `ns:` prefix. next-intl translators bind their namespace in `useTranslations`/`getTranslations`, so a scoped next-intl reference can only be renamed below its bound namespace (for example `t("title")` under `useTranslations("Home.Form")` can move within `Home:Form.*`); moving it elsewhere is refused before any file or buffer changes. A root translator (`useTranslations()`) spells the full message path, so its references can move to any namespace. A reference whose translator is unknown keeps its spelling, and moving one without an `ns:` prefix to another namespace over next-intl messages is refused as ambiguous.
 
 > [!TIP]
 > The list pane statusline mirrors the most common shortcuts so you can glance without opening the help overlay.
@@ -327,7 +331,7 @@ The diff preview shows both the source replacement and the resource file changes
 
 Extraction is offered only when an unambiguous translation function obtained from `useTranslation`, `useTranslations`, or an awaited `getTranslations` is available in the candidate's lexical scope; the command does not invent a global `t` or insert imports/hooks. Dynamic namespace expressions and `useTranslation` options that can change key semantics, including `keyPrefix`, are refused.
 
-Each framework uses only its own resource root and locale set, so i18next and next-intl candidates remain isolated in mixed projects. Multiple roots for the same framework are ambiguous and cause that framework's candidates to be refused. Scoped next-intl translators require a statically resolved namespace, keep canonical `namespace:key` identities in resources, and generate namespace-relative calls such as `t("key")` in source. If `primary_lang` is not among that framework's detected locales, Extract warns and uses the first detected locale so the source text is never discarded.
+Each framework uses only its own resource root and locale set, so i18next and next-intl candidates remain isolated in mixed projects. Multiple roots for the same framework are ambiguous and cause that framework's candidates to be refused. Scoped next-intl translators require a statically resolved namespace, keep canonical `namespace:key` identities in resources (a nested `useTranslations("Home.Form")` writes below `Home.Form`), and generate namespace-relative calls such as `t("key")` in source. Resource values render the original text literally: next-intl messages quote ICU syntax such as `{`, `}`, `<`, and `>` (`Hello {name}` is stored as `Hello '{'name'}'`), and the diff preview shows the stored value. i18next has no escape for `{{` or `$t(`, so such candidates are skipped. If `primary_lang` is not among that framework's detected locales, Extract warns and uses the first detected locale so the source text is never discarded.
 
 JSX text and string/template literal expressions are replaced according to their syntax context. Resource files receive cooked semantic text: JSX indentation is cleaned while meaningful spaces next to element boundaries are preserved. Apply revalidates the buffer name, filetype, canonical project, tracked source range, syntax, and translator binding after the Review opens. New keys are create-only and are rejected if an exact key or any scalar/branch shape conflict appeared concurrently. Resource files are committed first and revalidated immediately before the source edit; a resource failure leaves the source untouched, while a later source conflict rolls the resource changes back without overwriting concurrent edits.
 
@@ -348,7 +352,7 @@ require("blink.cmp").setup({
 
 > [!NOTE]
 >  - Only completes the **first argument** of `t("...")` / `something.t("...")`.
-> - Namespace is inferred from `useTranslation("ns")` / `useTranslations("ns")` / `getTranslations("ns")` scopes.
+> - Namespace is inferred from `useTranslation("ns")` / `useTranslations("ns")` / `getTranslations("ns")` scopes. next-intl candidates are relative to the bound namespace (including nested ones such as `"Home.Form"`), and a root `useTranslations()` completes full message paths.
 
 ## 🎨 Highlights
 
@@ -388,6 +392,8 @@ require("i18n-status").setup({
 
 - `messages/{lang}.json` (root file)
 - `messages/{lang}/{namespace}.json` (namespace file)
+
+Keys are identified as `namespace:path`, where the namespace is the top-level message object (or namespace file). A nested `useTranslations("Home.Form")` with `t("title")` and a root `useTranslations()` with `t("Home.Form.title")` both resolve to `Home:Form.title`. Calls through `t.rich`, `t.markup`, and `t.raw` are recognized as references.
 
 > [!NOTE]
 > Conflict precedence rules:

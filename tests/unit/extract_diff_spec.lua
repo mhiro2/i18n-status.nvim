@@ -59,6 +59,7 @@ describe("extract diff", function()
       text = " Hello ",
       source_text = " Hello ",
       namespace = "Home",
+      framework = "next_intl",
       t_func = "t",
       proposed_key = "Home:greeting",
       source_key_policy = "namespace_relative",
@@ -75,6 +76,7 @@ describe("extract diff", function()
   it("builds resource diff lines for new key", function()
     local lines = extract_diff.resource_diff_lines({
       text = "Hello",
+      message = "Hello",
       proposed_key = "common:hello",
       mode = "new",
     }, { "ja", "en" }, "ja")
@@ -86,9 +88,24 @@ describe("extract diff", function()
     }, lines)
   end)
 
+  it("previews the escaped resource message instead of the source text", function()
+    local lines = extract_diff.resource_diff_lines({
+      text = "Hello {name}",
+      message = "Hello '{'name'}'",
+      proposed_key = "Home:hello-name",
+      mode = "new",
+    }, { "ja" }, "ja")
+
+    assert.are.same({
+      "Resource diff:",
+      [[ja/Home.json: + "hello-name": "Hello '{'name'}'"]],
+    }, lines)
+  end)
+
   it("builds reuse-only resource diff", function()
     local lines = extract_diff.resource_diff_lines({
       text = "Hello",
+      message = "Hello",
       proposed_key = "common:hello",
       mode = "reuse",
     }, { "ja", "en" }, "ja")
@@ -102,6 +119,7 @@ describe("extract diff", function()
   it("preserves multibyte text in source and resource previews", function()
     local lines = extract_diff.build_preview_lines({
       text = "日本語テキスト",
+      message = "日本語テキスト",
       source_text = "日本語テキスト",
       t_func = "tr",
       proposed_key = "common:key",
@@ -129,6 +147,7 @@ describe("extract diff", function()
 
     local lines = extract_diff.resource_diff_lines({
       text = "Hello",
+      message = "Hello",
       proposed_key = "common:hello",
       mode = "new",
     }, { "ja", "en" }, "ja", "/tmp/project/src")
