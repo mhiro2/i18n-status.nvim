@@ -49,6 +49,24 @@ where
     }
 }
 
+/// Whether `expr` only uses the forms `eval_string_expr` can evaluate. Other expressions are
+/// dynamic regardless of the identifiers they reference.
+pub(super) fn is_string_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Lit(Lit::Str(_)) | Expr::Ident(_) => true,
+        Expr::Tpl(tpl) => tpl.exprs.iter().all(|expr| is_string_expr(expr)),
+        Expr::Bin(bin) if bin.op == BinaryOp::Add => {
+            is_string_expr(&bin.left) && is_string_expr(&bin.right)
+        }
+        Expr::Paren(paren) => is_string_expr(&paren.expr),
+        Expr::TsAs(ts_as) => is_string_expr(&ts_as.expr),
+        Expr::TsSatisfies(ts_sat) => is_string_expr(&ts_sat.expr),
+        Expr::TsNonNull(ts_nn) => is_string_expr(&ts_nn.expr),
+        Expr::TsConstAssertion(ts_const) => is_string_expr(&ts_const.expr),
+        _ => false,
+    }
+}
+
 /// Collect the identifiers that `eval_string_expr` would resolve while evaluating `expr`.
 pub(super) fn string_operand_idents<'a>(expr: &'a Expr, idents: &mut Vec<&'a Ident>) {
     match expr {
