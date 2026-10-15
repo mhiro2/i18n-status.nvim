@@ -201,4 +201,113 @@ describe("blink", function()
       end
     end)
   end)
+
+  it("completes only inside the first string argument of a translation call", function()
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].filetype = "typescript"
+    local source = blink.new()
+    ---@param line string
+    ---@return boolean
+    local function available(line)
+      return source:is_available({ bufnr = buf, line = line, cursor = { 1, #line } })
+    end
+
+    for _, line in ipairs({
+      't("',
+      "i18n.t('login.",
+      't( "home',
+      "t(`home",
+      '{t("a")} <Foo label={t("',
+      [[t("it\"s]],
+      '`Hello ${t("home.',
+      "<p>Don't {t(\"home.",
+      '<p>See http://example.com {t("',
+      't(/* key */ "home',
+    }) do
+      assert.is_true(available(line), line)
+    end
+    for _, line in ipairs({
+      "t(",
+      'alert("',
+      'axios.get("',
+      'map.set("',
+      '"x".split("',
+      'parseInt("',
+      '// t("',
+      '/* t(" */ foo("',
+      't("done"); console.log("',
+      't("foo") + "',
+      't("login.title", { count: "',
+      "const s = \"t('",
+      "t(`${prefix}.",
+      '`${t("a")} ${label("',
+      'case "x":// t("',
+    }) do
+      assert.is_false(available(line), line)
+    end
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("completes keys beyond the item limit from the typed text", function()
+    local root = helpers.tmpdir()
+    local keys = {}
+    for i = 1, 120 do
+      keys[string.format("k%03d", i)] = string.format("v%03d", i)
+    end
+    helpers.write_file(root .. "/locales/ja/common.json", vim.json.encode(keys))
+    with_cwd(root, function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[buf].filetype = "typescript"
+      vim.api.nvim_set_current_buf(buf)
+      local source = blink.new()
+      ---@param line string
+      ---@return table
+      local function request(line)
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, { line })
+        local response = nil
+        source:get_completions({ bufnr = buf, line = line, cursor = { 1, #line } }, function(result)
+          response = result
+        end)
+        return response
+      end
+
+      local all = request('t("')
+      assert.are.equal(100, #all.items)
+      assert.is_true(all.is_incomplete_forward)
+
+      local narrowed = request('t("k12')
+      local labels = {}
+      for _, item in ipairs(narrowed.items) do
+        labels[#labels + 1] = item.label
+      end
+      assert.are.same({ "k120" }, labels)
+      assert.is_false(narrowed.is_incomplete_forward)
+      -- Deleting typed text can match keys the filter left out.
+      assert.is_true(narrowed.is_incomplete_backward)
+    end)
+  end)
+
+  it("does not complete explicit namespaces through a shadowed translation symbol", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"title":"タイトル"}')
+    with_cwd(root, function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+        'const { t } = useTranslation("common")',
+        "function f(t) {",
+        '  t("common:',
+        "}",
+      })
+      vim.bo[buf].filetype = "typescript"
+      vim.api.nvim_set_current_buf(buf)
+      vim.api.nvim_win_set_cursor(0, { 3, 12 })
+
+      local result = nil
+      blink.complete({ bufnr = buf, line = '  t("common:', cursor = { 3, 12 } }, function(items)
+        result = items
+      end)
+
+      assert.are.same({}, result)
+    end)
+  end)
 end)
