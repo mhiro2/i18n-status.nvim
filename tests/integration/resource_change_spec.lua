@@ -325,4 +325,30 @@ describe("resource change handling", function()
       assert.is_true(ok, "Inline display was not updated")
     end)
   end)
+
+  it("applies a resource change when another refresh arrives before it finishes", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+    helpers.with_cwd(root, function()
+      local buf = make_buf({ 't("login.title")' })
+      local config = config_mod.setup({
+        primary_lang = "ja",
+        inline = { visible_only = false },
+      })
+
+      core.refresh_now(buf, config)
+      assert.is_true(inline_text(buf):find("ログイン", 1, true) ~= nil)
+
+      helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"サインイン"}}')
+      resources.mark_dirty()
+      core.refresh_all(config)
+      -- BufEnter, hover, or scrolling refresh the same buffer before the asynchronous result lands.
+      core.refresh(buf, config)
+
+      local updated = vim.wait(2000, function()
+        return inline_text(buf):find("サインイン", 1, true) ~= nil
+      end, 10)
+      assert.is_true(updated, "Inline display was not updated")
+    end)
+  end)
 end)

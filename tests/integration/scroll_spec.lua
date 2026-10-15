@@ -106,4 +106,107 @@ describe("visible-only inline refresh", function()
       assert(ok, err)
     end)
   end)
+
+  it("renders the scrolled range when scrolling during the first refresh", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"k":"値"}')
+
+    helpers.with_cwd(root, function()
+      local lines = {}
+      for index = 1, 40 do
+        lines[index] = 't("k")'
+      end
+      local buf = vim.api.nvim_create_buf(true, false)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+      vim.bo[buf].filetype = "typescript"
+      vim.api.nvim_buf_set_name(buf, root .. "/src/first.ts")
+      vim.api.nvim_set_current_buf(buf)
+      vim.api.nvim_win_set_height(0, 5)
+
+      local scan = require("i18n-status.scan")
+      local original_extract_async = scan.extract_async
+      local delayed = {}
+      scan.extract_async = function(bufnr, opts, cb)
+        if bufnr ~= buf then
+          return original_extract_async(bufnr, opts, cb)
+        end
+        original_extract_async(bufnr, opts, function(items)
+          delayed[#delayed + 1] = function()
+            cb(items)
+          end
+        end)
+      end
+      local win = vim.api.nvim_get_current_win()
+
+      local ok, err = pcall(function()
+        -- Setup starts the first refresh of the buffer; hold its scan result.
+        init.setup({
+          primary_lang = "ja",
+          resource_watch = { enabled = false },
+          inline = { visible_only = true, debounce_ms = 1 },
+        })
+        assert.is_true(vim.wait(2000, function()
+          return #delayed > 0
+        end, 10))
+        local initial = #delayed
+        vim.api.nvim_win_set_cursor(win, { 30, 0 })
+        vim.cmd("normal! zt")
+        vim.api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(win) })
+        assert.is_true(vim.wait(2000, function()
+          return #delayed > initial
+        end, 10))
+        -- Release held results in order, including any requested meanwhile.
+        local delivered = 0
+        assert.is_true(vim.wait(2000, function()
+          while delivered < #delayed do
+            delivered = delivered + 1
+            delayed[delivered]()
+          end
+          return vim.tbl_contains(marked_rows(buf), 29)
+        end, 10))
+      end)
+      scan.extract_async = original_extract_async
+      assert(ok, err)
+    end)
+  end)
+
+  it("does not look up resources when scrolling buffers without inline display", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"k":"値"}')
+
+    helpers.with_cwd(root, function()
+      local lines = {}
+      for index = 1, 40 do
+        lines[index] = string.format('"key%d": "value"', index)
+      end
+      local buf = vim.api.nvim_create_buf(true, false)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+      vim.api.nvim_buf_set_name(buf, root .. "/package.json")
+      vim.bo[buf].filetype = "json"
+      vim.api.nvim_set_current_buf(buf)
+      vim.api.nvim_win_set_height(0, 5)
+
+      init.setup({
+        primary_lang = "ja",
+        resource_watch = { enabled = false },
+        inline = { visible_only = true, debounce_ms = 1 },
+      })
+
+      local resources = require("i18n-status.resources")
+      local original = resources.resource_info_for_buf
+      local lookups = 0
+      resources.resource_info_for_buf = function(...)
+        lookups = lookups + 1
+        return original(...)
+      end
+      local ok, err = pcall(function()
+        vim.api.nvim_win_set_cursor(0, { 30, 0 })
+        vim.cmd("normal! zt")
+        vim.api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(vim.api.nvim_get_current_win()) })
+        assert.are.equal(0, lookups)
+      end)
+      resources.resource_info_for_buf = original
+      assert(ok, err)
+    end)
+  end)
 end)
