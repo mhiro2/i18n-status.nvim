@@ -10,6 +10,9 @@ local state = require("i18n-status.state")
 local window = require("i18n-status.window")
 local uv = vim.uv
 local refresh_seq_by_buf = {}
+-- Bumped whenever translation resources may have changed, so rendered results computed from an
+-- older index are no longer considered current.
+local resource_generation = 0
 
 ---@param bufnr integer
 ---@return boolean
@@ -82,13 +85,14 @@ end
 ---Start a refresh request: newer requests and buffer edits make older results stale.
 ---@param bufnr integer
 ---@param config I18nStatusConfig
----@return { seq: integer, tick: integer, view: I18nStatusRefreshView }
+---@return { seq: integer, tick: integer, resources: integer, view: I18nStatusRefreshView }
 local function begin_request(bufnr, config)
   local seq = (refresh_seq_by_buf[bufnr] or 0) + 1
   refresh_seq_by_buf[bufnr] = seq
   return {
     seq = seq,
     tick = vim.api.nvim_buf_get_changedtick(bufnr),
+    resources = resource_generation,
     view = current_view(bufnr, config),
   }
 end
@@ -104,7 +108,7 @@ end
 
 ---Render a result and record the buffer state it reflects.
 ---@param bufnr integer
----@param request { tick: integer, view: I18nStatusRefreshView }
+---@param request { tick: integer, resources: integer, view: I18nStatusRefreshView }
 ---@param project I18nStatusProjectState
 ---@param items table[]
 ---@param resolved table[]
@@ -113,6 +117,7 @@ local function apply_result(bufnr, request, project, items, resolved, config)
   render.apply(bufnr, items, resolved, config)
   state.rendered_by_buf[bufnr] = {
     tick = request.tick,
+    resources = request.resources,
     language = language_generation(project),
     top = request.view.top,
     bottom = request.view.bottom,
@@ -127,7 +132,7 @@ local function rendered_is_current(bufnr, config)
   if not rendered or not state.inline_by_buf[bufnr] then
     return false
   end
-  if rendered.tick ~= vim.api.nvim_buf_get_changedtick(bufnr) then
+  if rendered.tick ~= vim.api.nvim_buf_get_changedtick(bufnr) or rendered.resources ~= resource_generation then
     return false
   end
   local project = state.project_for_key(state.buf_project[bufnr])
@@ -225,8 +230,10 @@ function M.refresh_now(bufnr, config)
   apply_result(bufnr, request, project, items, resolved, config)
 end
 
+---Re-render every refreshable buffer after translation resources changed.
 ---@param config I18nStatusConfig
 function M.refresh_all(config)
+  resource_generation = resource_generation + 1
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if M.should_refresh(buf) then
       refresh_now_async(buf, config)

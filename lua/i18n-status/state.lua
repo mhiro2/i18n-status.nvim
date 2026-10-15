@@ -7,6 +7,7 @@
 
 ---@class I18nStatusRenderedState
 ---@field tick integer Buffer changedtick the rendered result was computed from
+---@field resources integer Resource generation the rendered result was computed from
 ---@field language string Display language generation of the project
 ---@field top integer|nil First rendered line when only visible lines render
 ---@field bottom integer|nil Last rendered line when only visible lines render
