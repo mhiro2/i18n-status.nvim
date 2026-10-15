@@ -399,23 +399,21 @@ fn remove_entries_by_file(
     index.retain(|_, lang_map| !lang_map.is_empty());
 }
 
-fn refresh_languages_and_namespaces(result: &mut IndexResult) {
-    let mut languages = BTreeSet::new();
-    let mut namespaces = BTreeSet::new();
-
-    result.index.retain(|_, lang_map| !lang_map.is_empty());
-
-    for (lang, lang_map) in &result.index {
-        if !lang_map.is_empty() {
-            languages.insert(lang.clone());
-        }
-        for key in lang_map.keys() {
-            if let Some((ns, _)) = key.split_once(':') {
-                namespaces.insert(ns.to_string());
-            }
-        }
+/// Add the languages and namespaces of changed files, as a full build lists them from files rather
+/// than from entries, so empty files keep their language and namespace. Deleted files trigger a
+/// full rebuild, so incremental updates never need to remove one.
+fn extend_languages_and_namespaces(
+    result: &mut IndexResult,
+    changed: impl IntoIterator<Item = (String, String)>,
+) {
+    let mut languages: BTreeSet<String> =
+        std::mem::take(&mut result.languages).into_iter().collect();
+    let mut namespaces: BTreeSet<String> =
+        std::mem::take(&mut result.namespaces).into_iter().collect();
+    for (lang, ns) in changed {
+        languages.insert(lang);
+        namespaces.insert(ns);
     }
-
     result.languages = languages.into_iter().collect();
     result.namespaces = namespaces.into_iter().collect();
 }
@@ -442,6 +440,7 @@ pub fn apply_changes(params: ApplyChangesParams, cache: &IndexCache) -> Result<V
         }
     };
 
+    let mut changed = Vec::new();
     for path_str in &params.paths {
         let path = PathBuf::from(path_str);
 
@@ -518,84 +517,34 @@ pub fn apply_changes(params: ApplyChangesParams, cache: &IndexCache) -> Result<V
             updated.files.insert(path_str.clone(), mtime);
         }
 
-        let components: Vec<&str> = matched_components.iter().map(|s| s.as_str()).collect();
-        match root_kind.as_str() {
-            "i18next" => {
-                // Expected: {lang}/{ns}.json
-                if components.len() != 2 {
-                    return Ok(serde_json::json!({
-                        "success": false,
-                        "needs_rebuild": true
-                    }));
-                }
-                let lang = components[0];
-                let ns = Path::new(components[1])
-                    .file_stem()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
-                let flat = flatten_table(&new_value, "");
-                insert_items(
-                    &mut updated.index,
-                    lang,
-                    ns,
-                    &flat,
-                    path_str,
-                    I18NEXT_NAMESPACE_FILE,
-                );
-            }
-            "next-intl" => {
-                if components.len() == 2 {
-                    // {lang}/{ns}.json
-                    let lang = components[0];
-                    let ns = Path::new(components[1])
-                        .file_stem()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
-                    let flat = flatten_table(&new_value, "");
-                    insert_items(
-                        &mut updated.index,
-                        lang,
-                        ns,
-                        &flat,
-                        path_str,
-                        NEXT_INTL_NAMESPACE_FILE,
-                    );
-                } else if components.len() == 1 {
-                    // {lang}.json root file
-                    let lang = Path::new(components[0])
-                        .file_stem()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
-                    if let Value::Object(map) = &new_value {
-                        for (ns, ns_value) in map {
-                            let flat = flatten_table(ns_value, "");
-                            insert_items(
-                                &mut updated.index,
-                                lang,
-                                ns,
-                                &flat,
-                                path_str,
-                                NEXT_INTL_ROOT_FILE,
-                            );
-                        }
-                    }
-                } else {
-                    return Ok(serde_json::json!({
-                        "success": false,
-                        "needs_rebuild": true
-                    }));
-                }
-            }
+        // Only {lang}/{ns}.json files update incrementally; next-intl root files rebuild above.
+        let source = match root_kind.as_str() {
+            "i18next" => I18NEXT_NAMESPACE_FILE,
+            "next-intl" => NEXT_INTL_NAMESPACE_FILE,
             _ => {
                 return Ok(serde_json::json!({
                     "success": false,
                     "needs_rebuild": true
                 }));
             }
-        }
+        };
+        let [lang, file_name] = matched_components.as_slice() else {
+            return Ok(serde_json::json!({
+                "success": false,
+                "needs_rebuild": true
+            }));
+        };
+        let ns = Path::new(file_name)
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let flat = flatten_table(&new_value, "");
+        insert_items(&mut updated.index, lang, ns, &flat, path_str, source);
+        changed.push((lang.clone(), ns.to_string()));
     }
 
-    refresh_languages_and_namespaces(&mut updated);
+    updated.index.retain(|_, lang_map| !lang_map.is_empty());
+    extend_languages_and_namespaces(&mut updated, changed);
 
     // Update cache
     cache.set(params.cache_key, updated.clone());
@@ -634,5 +583,58 @@ mod tests {
         assert!(cache.get("k").is_none());
         cache.set("k2".to_string(), sample);
         assert!(cache.get("k2").is_some());
+    }
+
+    #[test]
+    fn apply_changes_keeps_languages_and_namespaces_of_empty_files() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should follow the Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "i18n-status-index-empty-{}-{unique}",
+            std::process::id()
+        ));
+        let write = |relative: &str, contents: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().expect("file should have a parent"))
+                .expect("directory should be created");
+            std::fs::write(&path, contents).expect("file should be written");
+            path.to_string_lossy().to_string()
+        };
+        let en_common = write("en/common.json", r#"{"hello":"Hello"}"#);
+        write("en/admin.json", "{}");
+        write("ja/common.json", "{}");
+
+        let cache = IndexCache::new();
+        let roots = vec![RootConfig {
+            kind: "i18next".to_string(),
+            path: root.to_string_lossy().to_string(),
+        }];
+        let built = build_index(BuildIndexParams { roots }, &cache).expect("index should build");
+        let cache_key = built["cache_key"]
+            .as_str()
+            .expect("build should report its cache key")
+            .to_string();
+        assert_eq!(built["languages"], serde_json::json!(["en", "ja"]));
+        assert_eq!(built["namespaces"], serde_json::json!(["admin", "common"]));
+
+        write("en/common.json", r#"{"hello":"Hi"}"#);
+        let ko_common = write("ko/common.json", "{}");
+        let applied = apply_changes(
+            ApplyChangesParams {
+                cache_key,
+                paths: vec![en_common, ko_common],
+            },
+            &cache,
+        )
+        .expect("changes should apply");
+        std::fs::remove_dir_all(&root).expect("temporary root should be removed");
+
+        assert_eq!(applied["success"], serde_json::json!(true));
+        let result = &applied["result"];
+        assert_eq!(result["languages"], serde_json::json!(["en", "ja", "ko"]));
+        assert_eq!(result["namespaces"], serde_json::json!(["admin", "common"]));
+        assert_eq!(result["index"]["en"]["common:hello"]["value"], "Hi");
     }
 }
