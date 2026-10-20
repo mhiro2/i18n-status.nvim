@@ -5,7 +5,9 @@ use swc_common::{SourceMap, Span, Spanned};
 use swc_ecma_ast::*;
 use swc_ecma_visit::{Visit, VisitWith};
 
-use super::const_eval::{MAX_CONST_SUBSTITUTION_BYTES, eval_string_expr, string_operand_idents};
+use super::const_eval::{
+    MAX_CONST_SUBSTITUTION_BYTES, eval_string_expr, is_string_expr, string_operand_idents,
+};
 use super::parser::span_to_lines;
 use super::{NamespaceResolution, SourceKeyPolicy, TranslationFramework, TranslationHook};
 
@@ -1060,9 +1062,12 @@ impl<'a> ScopeCollector<'a> {
             let binding_indices =
                 self.add_pattern_bindings(&declarator.name, binding_scope, declarator.span.hi.0);
             if let Some(init) = &declarator.init {
+                // Only initializers that can evaluate to a string are kept for evaluation; cloning
+                // others (e.g. component bodies) would copy nested sources once per enclosing const.
                 if var.kind == VarDeclKind::Const
                     && let Pat::Ident(_) = &declarator.name
                     && let [binding_index] = binding_indices[..]
+                    && is_string_expr(init)
                 {
                     self.pending_consts.push(PendingConst {
                         binding_index,

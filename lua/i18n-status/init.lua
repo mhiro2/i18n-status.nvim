@@ -261,9 +261,7 @@ function M.setup(opts)
             local buf = vim.api.nvim_win_get_buf(win)
             if not seen[buf] then
               seen[buf] = true
-              if core.should_refresh(buf) then
-                core.refresh(buf, config)
-              end
+              core.refresh_view(buf, config)
             end
           end
         end
