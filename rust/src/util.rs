@@ -354,8 +354,18 @@ mod tests {
 
     #[test]
     fn test_extract_placeholders_deep_nesting_is_bounded() {
-        let text = "{a, select, x {".repeat(MAX_RECURSION_DEPTH * 4);
-        let _ = extract_placeholders(&text, None);
+        let levels = MAX_RECURSION_DEPTH * 4;
+        let mut text: String = (0..levels)
+            .map(|level| format!("{{a{level}, select, x {{"))
+            .collect();
+        text.push_str(&"}}".repeat(levels));
+
+        // Arguments up to the depth limit are collected; deeper option bodies are skipped.
+        let mut expected: Vec<String> = (0..=MAX_RECURSION_DEPTH)
+            .map(|level| format!("a{level}"))
+            .collect();
+        expected.sort();
+        assert_eq!(extract_placeholders(&text, None), expected);
     }
 
     #[test]
