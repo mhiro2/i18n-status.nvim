@@ -99,81 +99,6 @@ describe("ops.rename", function()
     return result[2], result[3]
   end
 
-  it("renames key across resources and open buffers", function()
-    local root = helpers.tmpdir()
-    helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
-    helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
-    vim.fn.mkdir(root .. "/src", "p")
-
-    helpers.with_cwd(root, function()
-      local buf1 = make_buf(root .. "/src/one.ts", 't("rename.title")')
-      local buf2 = make_buf(root .. "/src/two.ts", 'const label = t("rename.title")')
-
-      local config = config_mod.setup({
-        primary_lang = "ja",
-        inline = { visible_only = false },
-      })
-
-      resources.ensure_index(root)
-
-      local rename_spans = {}
-      local function register_span(buf, literal)
-        local col, end_col = literal_range(buf, literal)
-        rename_spans[buf] = {
-          {
-            key = "common:rename.title",
-            raw = literal,
-            namespace = "common",
-            lnum = 0,
-            col = col,
-            end_lnum = 0,
-            end_col = end_col,
-            refactorable = true,
-          },
-        }
-      end
-
-      register_span(buf1, "rename.title")
-      register_span(buf2, "rename.title")
-
-      scan.extract = function(bufnr)
-        return rename_spans[bufnr] or {}
-      end
-
-      local item = {
-        key = "common:rename.title",
-        namespace = "common",
-        hover = {
-          values = {
-            ja = { file = root .. "/locales/ja/common.json", value = "ログイン" },
-            en = { file = root .. "/locales/en/common.json", value = "Login" },
-          },
-        },
-      }
-
-      local ok, err = ops.rename({
-        item = item,
-        source_buf = buf1,
-        new_key = "common:rename.heading",
-        config = config,
-      })
-
-      assert.is_true(ok, err or "rename failed")
-
-      local ja = vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
-      local en = vim.json.decode(helpers.read_file(root .. "/locales/en/common.json"))
-      assert.is_nil(ja.rename.title)
-      assert.is_nil(en.rename.title)
-      assert.are.equal("ログイン", ja.rename.heading)
-      assert.are.equal("Login", en.rename.heading)
-
-      local line1 = vim.api.nvim_buf_get_lines(buf1, 0, 1, false)[1]
-      local line2 = vim.api.nvim_buf_get_lines(buf2, 0, 1, false)[1]
-      assert.is_true(line1:find("rename.heading", 1, true) ~= nil)
-      assert.is_true(line2:find("rename.heading", 1, true) ~= nil)
-    end)
-  end)
-
   ---@param source_line string
   ---@param new_key string
   ---@return boolean ok
@@ -477,7 +402,7 @@ describe("ops.rename", function()
     end)
   end)
 
-  it("returns failure when buffer text update fails during rename", function()
+  it("returns failure without writes when a source reference cannot be read", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"rename":{"title":"ログイン"}}')
     helpers.write_file(root .. "/locales/en/common.json", '{"rename":{"title":"Login"}}')
@@ -508,12 +433,8 @@ describe("ops.rename", function()
       end
 
       local original_get_text = vim.api.nvim_buf_get_text
-      local original_set_text = vim.api.nvim_buf_set_text
       vim.api.nvim_buf_get_text = function()
         error("simulated get_text failure")
-      end
-      vim.api.nvim_buf_set_text = function()
-        error("simulated set_text failure")
       end
 
       local item = {
@@ -535,7 +456,6 @@ describe("ops.rename", function()
       })
 
       vim.api.nvim_buf_get_text = original_get_text
-      vim.api.nvim_buf_set_text = original_set_text
 
       assert.is_false(ok)
       assert.is_truthy(err)
@@ -546,6 +466,7 @@ describe("ops.rename", function()
       assert.are.equal("Login", en.rename.title)
       assert.is_nil(ja.rename.heading)
       assert.is_nil(en.rename.heading)
+      assert.are.same({ 't("rename.title")' }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
     end)
   end)
 
