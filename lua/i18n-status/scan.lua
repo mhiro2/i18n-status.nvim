@@ -58,45 +58,6 @@ local function lang_for_buf(bufnr)
   return filetypes.lang_for_filetype(vim.bo[bufnr].filetype)
 end
 
----@param value string
----@param fallback_ns string
----@return table[]
-local function regex_extract(value, fallback_ns)
-  local items = {}
-  local line_num = 0
-  for line in (value .. "\n"):gmatch("([^\n]*)\n") do
-    local col = 1
-    while true do
-      local s, e, key = line:find("t%s*%(%s*[\"']([^\"']+)[\"']", col)
-      if not s then
-        break
-      end
-      local ns = key:match("^(.-):")
-      local canonical = key
-      local fallback = false
-      if not ns then
-        ns = fallback_ns
-        canonical = ns .. ":" .. key
-        fallback = true
-      end
-      table.insert(items, {
-        key = canonical,
-        raw = key,
-        namespace = ns,
-        lnum = line_num,
-        col = s - 1,
-        end_lnum = line_num,
-        end_col = e,
-        fallback = fallback,
-        refactorable = false,
-      })
-      col = e + 1
-    end
-    line_num = line_num + 1
-  end
-  return items
-end
-
 ---@param source string
 ---@param lang string
 ---@param opts { fallback_namespace?: string, range?: { start_line: integer, end_line: integer } }
@@ -315,23 +276,6 @@ function M.extract_for_refactor(bufnr, opts)
     return nil, "source buffer changed while scanning"
   end
   return items, snapshot
-end
-
----@param source string
----@param lang string|nil
----@param opts? { fallback_namespace?: string, range?: { start_line: integer, end_line: integer } }
----@return table[]
-function M.extract_text(source, lang, opts)
-  opts = opts or {}
-  local fallback_ns = opts.fallback_namespace or ""
-  if not lang or lang == "" then
-    return regex_extract(source, fallback_ns)
-  end
-  local result, err = rpc.request_sync("scan/extract", extract_params(source, lang, opts))
-  if err or not result then
-    return {}
-  end
-  return result.items or {}
 end
 
 ---@param bufnr integer

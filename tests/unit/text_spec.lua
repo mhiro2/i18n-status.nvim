@@ -1,15 +1,6 @@
 local text = require("i18n-status.text")
 
 describe("text", function()
-  describe("trim", function()
-    it("trims leading and trailing whitespace", function()
-      assert.equals("hello", text.trim("  hello  "))
-      assert.equals("hello", text.trim("hello  "))
-      assert.equals("hello", text.trim("  hello"))
-      assert.equals("hello", text.trim("hello"))
-    end)
-  end)
-
   describe("extract_placeholders", function()
     it("extracts brace placeholders", function()
       local placeholders = text.extract_placeholders("Hello {{name}}, your balance is {balance}")

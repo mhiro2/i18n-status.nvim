@@ -2,12 +2,6 @@
 local M = {}
 
 ---@param text string
----@return string
-function M.trim(text)
-  return vim.trim(text)
-end
-
----@param text string
 ---@return table<string, boolean>
 function M.extract_placeholders(text)
   local placeholders = {}
