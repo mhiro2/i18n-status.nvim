@@ -106,39 +106,22 @@ function M.new(resources, roots)
 
   ---@param cache I18nStatusCache
   local function rebuild_aux_indexes(cache)
-    cache.entries_by_key = {}
-    cache.file_entries = {}
     cache.file_meta = {}
     cache.file_errors = cache.file_errors or {}
 
-    for lang, entries in pairs(cache.index or {}) do
-      cache.entries_by_key[lang] = cache.entries_by_key[lang] or {}
-      for key, entry in pairs(entries or {}) do
+    for _, entries in pairs(cache.index or {}) do
+      for _, entry in pairs(entries or {}) do
         local file = fs.normalize_path(entry and entry.file)
-        if file then
-          cache.entries_by_key[lang][key] = cache.entries_by_key[lang][key] or {}
-          table.insert(cache.entries_by_key[lang][key], {
-            value = entry.value,
-            file = file,
-            priority = entry.priority or 0,
-          })
-          cache.file_entries[file] = cache.file_entries[file] or {}
-          table.insert(cache.file_entries[file], {
-            lang = lang,
-            key = key,
-            priority = entry.priority or 0,
-          })
-          if not cache.file_meta[file] then
-            local info = roots.resource_info_from_roots(cache.roots or {}, file)
-            if info then
-              cache.file_meta[file] = {
-                kind = info.kind,
-                root = info.root,
-                lang = info.lang,
-                namespace = info.namespace,
-                is_root = info.is_root,
-              }
-            end
+        if file and not cache.file_meta[file] then
+          local info = roots.resource_info_from_roots(cache.roots or {}, file)
+          if info then
+            cache.file_meta[file] = {
+              kind = info.kind,
+              root = info.root,
+              lang = info.lang,
+              namespace = info.namespace,
+              is_root = info.is_root,
+            }
           end
         end
       end
@@ -300,7 +283,7 @@ function M.new(resources, roots)
   end
 
   ---@param start_dir string
-  ---@param opts? { cooperative?: boolean, exact?: boolean, timeout_ms?: integer }
+  ---@param opts? { exact?: boolean, timeout_ms?: integer }
   ---@return I18nStatusCache
   ---@return string|nil
   function service.ensure_index(start_dir, opts)
@@ -355,11 +338,6 @@ function M.new(resources, roots)
       return reused
     end
 
-    local co = coroutine.running()
-    if opts.cooperative and co then
-      pcall(coroutine.yield)
-    end
-
     local build_timeout_ms = remaining_timeout_ms()
     if build_timeout_ms == 0 then
       return cache or empty_index_result(), "resource/buildIndex exceeded its deadline"
@@ -379,10 +357,8 @@ function M.new(resources, roots)
   ---Asynchronous counterpart of ensure_index. On failure the callback receives the last good
   ---cache (still dirty, so the next call retries) or an empty result, together with the error.
   ---@param start_dir string
-  ---@param opts? { cooperative?: boolean }
   ---@param cb fun(cache: I18nStatusCache, err: string|nil)
-  function service.ensure_index_async(start_dir, opts, cb)
-    opts = opts or {}
+  function service.ensure_index_async(start_dir, cb)
     start_dir = start_dir or vim.fn.getcwd()
     start_dir = fs.normalize_path(start_dir) or start_dir
 

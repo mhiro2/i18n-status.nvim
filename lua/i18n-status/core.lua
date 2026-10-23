@@ -154,7 +154,7 @@ local function refresh_now_async(bufnr, config)
   local start_dir = resources.start_dir(bufnr)
   local fallback_ns = resources.fallback_namespace(start_dir)
 
-  resources.ensure_index_async(start_dir, nil, function(cache, index_err)
+  resources.ensure_index_async(start_dir, function(cache, index_err)
     -- Keep the last rendered state when indexing fails; a later refresh retries.
     if index_err or request_stale(bufnr, request) then
       return
