@@ -173,35 +173,138 @@ describe("extract orchestrator", function()
     assert.is_false(open_opts.candidates[2].selected)
   end)
 
-  it("passes byte position and blocks ambiguous translation contexts", function()
-    local received_opts = nil
-    add_stub(scan, "translation_context_at", function(_bufnr, _row, opts)
-      received_opts = opts
+  describe("translation context guards", function()
+    local function accepted_context(framework)
+      if framework == "next_intl" then
+        return {
+          namespace = "Home",
+          t_func = "t",
+          binding_id = "t@42",
+          hook = "useTranslations",
+          framework = "next_intl",
+          source_key_policy = "namespace_relative",
+          namespace_resolution = "static",
+          found_hook = true,
+          has_any_hook = true,
+          ambiguous = false,
+          shadowed = false,
+          extract_safe = true,
+        }
+      end
       return {
         namespace = "common",
         t_func = "t",
-        found_hook = false,
+        binding_id = "t@42",
+        hook = "useTranslation",
+        framework = "i18next",
+        source_key_policy = "canonical",
+        namespace_resolution = "static",
+        found_hook = true,
         has_any_hook = true,
-        ambiguous = true,
+        ambiguous = false,
         shadowed = false,
+        extract_safe = true,
       }
-    end)
+    end
 
-    local candidates, rejected = extract._test.build_candidates(1, {
-      {
-        lnum = 2,
-        col = 17,
-        end_lnum = 2,
-        end_col = 22,
-        text = "Hello",
+    local catalogs = {
+      i18next = {
+        existing_keys = {},
+        framework = "i18next",
+        index = { en = {}, ja = {} },
+        languages = { "en", "ja" },
+        namespaces = { "common" },
       },
-    }, "common", { key_separator = "-" }, {})
+      next_intl = {
+        existing_keys = {},
+        framework = "next_intl",
+        index = { en = {}, ja = {} },
+        languages = { "en", "ja" },
+        namespaces = { "Home" },
+      },
+    }
 
-    assert.are.equal(17, received_opts.col)
-    assert.are.equal(0, #candidates)
-    assert.are.equal(1, rejected)
+    ---@param context table
+    ---@param available_catalogs? table
+    ---@return I18nStatusExtractCandidate[] candidates
+    ---@return integer rejected
+    ---@return integer queried_col
+    local function build(context, available_catalogs)
+      local buf = make_buf({ "const label = <p>Hello</p>" }, "typescriptreact")
+      local queried_col
+      add_stub(scan, "translation_context_at", function(_bufnr, _row, opts)
+        queried_col = opts.col
+        return context
+      end)
+      local candidates, rejected = extract._test.build_candidates(buf, {
+        {
+          lnum = 0,
+          col = 17,
+          end_lnum = 0,
+          end_col = 22,
+          text = "Hello",
+          source_text = "Hello",
+          kind = "jsx_text",
+          replacement_context = "jsx_child",
+        },
+      }, "common", { key_separator = "-" }, available_catalogs or catalogs)
+      return candidates, rejected, queried_col
+    end
+
+    for _, framework in ipairs({ "i18next", "next_intl" }) do
+      it("accepts a complete " .. framework .. " context at the candidate byte column", function()
+        local candidates, rejected, queried_col = build(accepted_context(framework))
+
+        assert.are.equal(17, queried_col)
+        assert.are.equal(0, rejected)
+        assert.are.equal(1, #candidates)
+        assert.are.equal(framework, candidates[1].framework)
+      end)
+    end
+
+    for _, case in ipairs({
+      { name = "an ambiguous translation function", change = { ambiguous = true } },
+      { name = "a shadowed translation function", change = { shadowed = true } },
+      { name = "no translation function in scope", change = { t_func = vim.NIL } },
+      { name = "a translator without a binding", change = { binding_id = vim.NIL } },
+      { name = "a translation call without its hook", change = { found_hook = false } },
+      { name = "an extraction-unsafe context", change = { extract_safe = false } },
+      { name = "a dynamically resolved namespace", change = { namespace_resolution = "dynamic" } },
+      { name = "an i18next hook with namespace-relative keys", change = { source_key_policy = "namespace_relative" } },
+      {
+        name = "a next-intl translator without a static namespace",
+        framework = "next_intl",
+        change = { namespace_resolution = "absent" },
+      },
+      {
+        name = "a next-intl hook with canonical keys",
+        framework = "next_intl",
+        change = { source_key_policy = "canonical" },
+      },
+      {
+        name = "a framework without a resource catalog",
+        framework = "next_intl",
+        change = {},
+        catalogs = { i18next = catalogs.i18next },
+      },
+    }) do
+      it("rejects " .. case.name, function()
+        local context = accepted_context(case.framework or "i18next")
+        for key, value in pairs(case.change) do
+          if value == vim.NIL then
+            context[key] = nil
+          else
+            context[key] = value
+          end
+        end
+
+        local candidates, rejected = build(context, case.catalogs)
+
+        assert.are.equal(0, #candidates)
+        assert.are.equal(1, rejected)
+      end)
+    end
   end)
-
   it("notifies when hardcoded scan fails", function()
     local buf = make_buf({ "Hello" }, "typescriptreact", "/tmp/project/src/page_err.tsx")
 
@@ -293,139 +396,6 @@ describe("extract orchestrator", function()
     assert.is_nil(result)
     assert.is_true(notify_calls[1].msg:find("no languages detected", 1, true) ~= nil)
     assert.are.equal(vim.log.levels.WARN, notify_calls[1].level)
-  end)
-
-  it("rejects candidates without a translation function in scope", function()
-    local buf = make_buf({ "Hello" }, "typescriptreact")
-    add_stub(scan, "translation_context_at", function()
-      return {
-        namespace = "common",
-        t_func = nil,
-        found_hook = false,
-        has_any_hook = false,
-      }
-    end)
-
-    local candidates, rejected = extract._test.build_candidates(buf, {
-      {
-        lnum = 0,
-        col = 0,
-        end_lnum = 0,
-        end_col = 5,
-        text = "Hello",
-        source_text = "Hello",
-        kind = "jsx_text",
-        replacement_context = "jsx_child",
-      },
-    }, "common", { key_separator = "-" }, {})
-
-    assert.are.equal(0, #candidates)
-    assert.are.equal(1, rejected)
-  end)
-
-  it("rejects ambiguous translation functions and queries the candidate byte column", function()
-    local buf = make_buf({ "const label = <p>Hello</p>" }, "typescriptreact")
-    local queried_col
-    add_stub(scan, "translation_context_at", function(_bufnr, _row, opts)
-      queried_col = opts.col
-      return {
-        namespace = "common",
-        t_func = "t",
-        binding_id = "t@42",
-        hook = "useTranslation",
-        framework = "i18next",
-        source_key_policy = "canonical",
-        namespace_resolution = "static",
-        found_hook = true,
-        has_any_hook = true,
-        ambiguous = true,
-      }
-    end)
-
-    local candidates, rejected = extract._test.build_candidates(buf, {
-      {
-        lnum = 0,
-        col = 17,
-        end_lnum = 0,
-        end_col = 22,
-        text = "Hello",
-        source_text = "Hello",
-        kind = "jsx_text",
-        replacement_context = "jsx_child",
-      },
-    }, "common", { key_separator = "-" }, {})
-
-    assert.are.equal(17, queried_col)
-    assert.are.equal(0, #candidates)
-    assert.are.equal(1, rejected)
-  end)
-
-  it("rejects next-intl translators without a static namespace", function()
-    local buf = make_buf({ "const label = <p>Hello</p>" }, "typescriptreact")
-    add_stub(scan, "translation_context_at", function()
-      return {
-        namespace = "common",
-        t_func = "t",
-        binding_id = "t@42",
-        hook = "useTranslations",
-        framework = "next_intl",
-        source_key_policy = "canonical",
-        namespace_resolution = "absent",
-        found_hook = true,
-        has_any_hook = true,
-        ambiguous = false,
-      }
-    end)
-
-    local candidates, rejected = extract._test.build_candidates(buf, {
-      {
-        lnum = 0,
-        col = 17,
-        end_lnum = 0,
-        end_col = 22,
-        text = "Hello",
-        source_text = "Hello",
-        kind = "jsx_text",
-        replacement_context = "jsx_child",
-      },
-    }, "common", { key_separator = "-" }, {})
-
-    assert.are.equal(0, #candidates)
-    assert.are.equal(1, rejected)
-  end)
-
-  it("rejects dynamically resolved namespaces", function()
-    local buf = make_buf({ "const label = <p>Hello</p>" }, "typescriptreact")
-    add_stub(scan, "translation_context_at", function()
-      return {
-        namespace = "common",
-        t_func = "t",
-        binding_id = "t@42",
-        hook = "useTranslation",
-        framework = "i18next",
-        source_key_policy = "canonical",
-        namespace_resolution = "dynamic",
-        found_hook = true,
-        has_any_hook = true,
-        ambiguous = false,
-      }
-    end)
-
-    local candidates, rejected = extract._test.build_candidates(buf, {
-      {
-        lnum = 0,
-        col = 17,
-        end_lnum = 0,
-        end_col = 22,
-        text = "Hello",
-        source_text = "Hello",
-        kind = "jsx_text",
-        replacement_context = "jsx_child",
-      },
-    }, "common", { key_separator = "-" }, {})
-
-    assert.are.equal(0, #candidates)
-    assert.are.equal(1, rejected)
   end)
 
   it("aborts when the source changes while the review is being built", function()
