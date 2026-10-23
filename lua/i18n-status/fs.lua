@@ -251,13 +251,23 @@ function M.read_file(path)
   return data
 end
 
+local ENSURE_DIR_ATTEMPTS = 3
+
 ---@param path string
 ---@return boolean
 function M.ensure_dir(path)
   if M.is_dir(path) then
     return true
   end
-  return vim.fn.mkdir(path, "p") == 1
+  -- Another process can create a missing component between mkdir's existence check and its
+  -- own mkdir, which raises E739; retry so the remaining components are still created.
+  for _ = 1, ENSURE_DIR_ATTEMPTS do
+    local ok, created = pcall(vim.fn.mkdir, path, "p")
+    if (ok and created == 1) or M.is_dir(path) then
+      return true
+    end
+  end
+  return false
 end
 
 ---@param path string
