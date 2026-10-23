@@ -254,14 +254,17 @@ describe("failure scenarios", function()
     end)
   end)
 
-  it("handles large buffers without error", function()
+  it("renders every reference in a large buffer", function()
     local root = helpers.tmpdir()
-    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
-    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
-    local lines = {}
-    for _ = 1, 400 do
-      table.insert(lines, 't("login.title")')
+    local ja, en, lines = {}, {}, {}
+    for i = 1, 400 do
+      local key = string.format("k%03d", i)
+      ja[key] = string.format("値%03d", i)
+      en[key] = string.format("value%03d", i)
+      table.insert(lines, string.format('t("%s")', key))
     end
+    helpers.write_file(root .. "/locales/ja/common.json", vim.json.encode(ja))
+    helpers.write_file(root .. "/locales/en/common.json", vim.json.encode(en))
     helpers.with_cwd(root, function()
       local buf = make_buf(lines)
       local config = config_mod.setup({
@@ -270,7 +273,20 @@ describe("failure scenarios", function()
       })
 
       core.refresh_now(buf, config)
-      assert.is_true(inline_text(buf):find("ログイン", 1, true) ~= nil)
+
+      local marks = vim.api.nvim_buf_get_extmarks(buf, render.namespace(), 0, -1, { details = true })
+      assert.are.equal(400, #marks)
+      for index, mark in ipairs(marks) do
+        assert.are.equal(index - 1, mark[2])
+      end
+      for _, row in ipairs({ 0, 199, 399 }) do
+        local chunks = {}
+        for _, chunk in ipairs(marks[row + 1][4].virt_text or {}) do
+          table.insert(chunks, chunk[1])
+        end
+        local expected = string.format("値%03d", row + 1)
+        assert.is_truthy(table.concat(chunks, ""):find(expected, 1, true), "row " .. row)
+      end
     end)
   end)
 end)

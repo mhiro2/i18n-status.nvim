@@ -41,28 +41,6 @@ describe("render", function()
     state.init("ja", {})
   end)
 
-  it("renders extmarks at eol", function()
-    local root = helpers.tmpdir()
-    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
-    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
-    helpers.with_cwd(root, function()
-      local buf = make_buf({ 't("login.title")' }, "typescript")
-      local config = config_mod.setup({
-        primary_lang = "ja",
-        inline = {
-          position = "eol",
-          max_len = 40,
-          visible_only = false,
-        },
-      })
-      core.refresh_now(buf, config)
-      local ns = render.namespace()
-      local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
-      assert.are.equal(1, #marks)
-      assert.is_not_nil(marks[1][4].virt_text)
-    end)
-  end)
-
   it("renders inline after key", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
@@ -136,7 +114,10 @@ describe("render", function()
       core.refresh_now(buf, config)
       local ns = render.namespace()
       local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+      assert.are.equal(1, #marks)
+      assert.are.equal(0, marks[1][2])
       assert.are.equal("eol", marks[1][4].virt_text_pos)
+      assert.is_truthy(inline_text(buf, ns):find("ログイン", 1, true))
 
       config.inline.position = "after_key"
       core.refresh_now(buf, config)
@@ -275,28 +256,35 @@ describe("render", function()
     end)
   end)
 
-  it("truncates long text", function()
+  it("truncates long text to max_len characters", function()
     local root = helpers.tmpdir()
     helpers.write_file(
       root .. "/locales/ja/common.json",
-      '{"login":{"title":"これはとても長いテキストです"}}'
+      '{"long":"これはとても長いテキストです","exact":"ちょうど八文字だ","short":"短い"}'
     )
-    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"This is a very long text"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"long":"Long","exact":"Exact","short":"Short"}')
     helpers.with_cwd(root, function()
-      local buf = make_buf({ 't("login.title")' }, "typescript")
-      local config = config_mod.setup({
-        primary_lang = "ja",
-        inline = {
-          position = "eol",
-          max_len = 8,
-          visible_only = false,
-        },
-      })
-      core.refresh_now(buf, config)
+      local buf = make_buf({ 't("long")', 't("exact")', 't("short")' }, "typescript")
       local ns = render.namespace()
-      local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
-      local text = marks[1][4].virt_text[1][1]
-      assert.is_true(text:sub(-3) == "...")
+      local function render_with(max_len)
+        local config = config_mod.setup({
+          primary_lang = "ja",
+          inline = {
+            position = "eol",
+            max_len = max_len,
+            visible_only = false,
+          },
+        })
+        core.refresh_now(buf, config)
+        local texts = {}
+        for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })) do
+          table.insert(texts, mark[4].virt_text[1][1])
+        end
+        return texts
+      end
+
+      assert.are.same({ "これはとて...", "ちょうど八文字だ", "短い" }, render_with(8))
+      assert.are.same({ "..", "..", "短い" }, render_with(2))
     end)
   end)
 
