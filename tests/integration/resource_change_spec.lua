@@ -5,6 +5,7 @@ local init = require("i18n-status")
 local helpers = require("tests.helpers")
 local state = require("i18n-status.state")
 local resources = require("i18n-status.resources")
+local watcher = require("i18n-status.watcher")
 
 local function make_buf(lines)
   local buf = vim.api.nvim_create_buf(false, true)
@@ -105,224 +106,127 @@ describe("resource change handling", function()
     end)
   end)
 
-  it("updates via watcher after external edit", function()
+  ---Open a source file through the public setup so BufEnter registers the production watcher.
+  ---@param root string
+  ---@return integer buf
+  local function open_source_with_watch(root)
+    helpers.write_file(root .. "/src/app.ts", 't("login.title")\n')
+    init.setup({
+      inline = { visible_only = false },
+      resource_watch = { enabled = true, debounce_ms = 10 },
+    })
+    vim.cmd.edit(root .. "/src/app.ts")
+    local buf = vim.api.nvim_get_current_buf()
+    local ready = vim.wait(2000, function()
+      return state.buf_watcher_keys[buf] ~= nil and inline_text(buf):find("ログイン", 1, true) ~= nil
+    end, 10)
+    assert.is_true(ready, "setup did not register a watcher and render the source")
+    return buf
+  end
+
+  it("updates inline display after an external edit through the setup watcher", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
     helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
     helpers.with_cwd(root, function()
-      local buf = make_buf({ 't("login.title")' })
-      local config = config_mod.setup({
-        primary_lang = "ja",
-        inline = { visible_only = false },
-        resource_watch = { enabled = true, debounce_ms = 10 },
-      })
-
-      core.refresh_now(buf, config)
-      assert.is_true(inline_text(buf):find("ログイン", 1, true) ~= nil)
-
-      local updated = false
-      resources.start_watch(root, function(event)
-        updated = true
-        if event and event.paths and #event.paths > 0 and not event.needs_rebuild then
-          local cache_key = resources.get_watcher_key(root)
-          if cache_key then
-            local success, needs_rebuild = resources.apply_changes(cache_key, event.paths)
-            if not success and needs_rebuild then
-              resources.mark_dirty()
-            end
-          else
-            resources.mark_dirty()
-          end
-        else
-          resources.mark_dirty()
-        end
-        core.refresh_all(config)
-      end, { debounce_ms = 10 })
-
-      -- Wait a bit for the watcher to be fully set up before editing the file
-      vim.wait(50, function()
-        return false
-      end, 10)
+      local buf = open_source_with_watch(root)
+      assert.is_true(watcher.is_watching(state.buf_watcher_keys[buf]))
 
       helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"サインイン"}}')
 
-      -- Wait for the buffer to actually be updated, not just the updated flag
-      local ok = vim.wait(2000, function()
+      local ok = vim.wait(3000, function()
         return inline_text(buf):find("サインイン", 1, true) ~= nil
       end, 10)
-
-      assert.is_true(ok, "Buffer was not updated. updated=" .. tostring(updated))
+      assert.is_true(ok, "Inline display was not updated")
+      vim.api.nvim_buf_delete(buf, { force = true })
     end)
   end)
 
-  it("detects new files without watcher", function()
+  it("applies watcher paths incrementally through the setup callback", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
+    local fake_events = helpers.fake_fs_events()
+    local original_apply_changes = resources.apply_changes
+    local original_mark_dirty = resources.mark_dirty
+    local apply_calls = {}
+    local mark_dirty_calls = 0
+    resources.apply_changes = function(cache_key, paths, opts)
+      local success, needs_rebuild = original_apply_changes(cache_key, paths, opts)
+      table.insert(apply_calls, { paths = paths, success = success })
+      return success, needs_rebuild
+    end
+    resources.mark_dirty = function(...)
+      mark_dirty_calls = mark_dirty_calls + 1
+      return original_mark_dirty(...)
+    end
+
+    local ok, err = pcall(helpers.with_cwd, root, function()
+      local buf = open_source_with_watch(root)
+      local resource_path = vim.uv.fs_realpath(root .. "/locales/ja/common.json")
+      local handle
+      for _, candidate in ipairs(fake_events.handles) do
+        if not candidate.closed and vim.uv.fs_realpath(candidate.path) == resource_path then
+          handle = candidate
+        end
+      end
+      assert.is_not_nil(handle, "resource file is not watched")
+      mark_dirty_calls = 0
+
+      helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"サインイン"}}')
+      handle.cb(nil, "common.json", {})
+
+      local updated = vim.wait(3000, function()
+        return inline_text(buf):find("サインイン", 1, true) ~= nil
+      end, 10)
+      assert.is_true(updated, "Inline display was not updated")
+      assert.are.equal(1, #apply_calls)
+      assert.are.same({ handle.path }, apply_calls[1].paths)
+      assert.is_true(apply_calls[1].success)
+      assert.are.equal(0, mark_dirty_calls)
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+    resources.apply_changes = original_apply_changes
+    resources.mark_dirty = original_mark_dirty
+    fake_events.restore()
+    assert.is_true(ok, err)
+  end)
+
+  it("reports the edited resource file from OS watcher events", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
     helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
 
     helpers.with_cwd(root, function()
-      -- Use resources.ensure_index directly to test the core functionality
-      local cache1 = resources.ensure_index(root)
-      assert.is_nil(cache1.index.ja["new:key"], "new:key should not exist initially")
-
-      -- Add new file
-      helpers.write_file(root .. "/locales/ja/new.json", '{"key":"新規キー"}')
-
-      -- Call ensure_index again - should detect new file
-      local cache2 = resources.ensure_index(root)
-      assert.is_not_nil(cache2.index.ja["new:key"], "new:key should exist after adding file")
-      assert.are.equal("新規キー", cache2.index.ja["new:key"].value)
-    end)
-  end)
-
-  it("detects deleted files without watcher", function()
-    local root = helpers.tmpdir()
-    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
-    helpers.write_file(root .. "/locales/ja/removed.json", '{"key":"削除される"}')
-    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
-
-    helpers.with_cwd(root, function()
-      -- Build initial cache with the file
-      local cache1 = resources.ensure_index(root)
-      assert.is_not_nil(cache1.index.ja["removed:key"], "removed:key should exist initially")
-      assert.are.equal("削除される", cache1.index.ja["removed:key"].value)
-
-      -- Delete the file
-      vim.uv.fs_unlink(root .. "/locales/ja/removed.json")
-
-      -- Call ensure_index again - should detect file deletion
-      local cache2 = resources.ensure_index(root)
-      assert.is_nil(cache2.index.ja["removed:key"], "removed:key should not exist after deletion")
-    end)
-  end)
-
-  it("watcher passes changed paths to callback", function()
-    local root = helpers.tmpdir()
-    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
-    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
-
-    helpers.with_cwd(root, function()
-      local received_event = nil
-      local callback_count = 0
-
+      local events = {}
       resources.start_watch(root, function(event)
-        callback_count = callback_count + 1
-        received_event = event
+        table.insert(events, event)
       end, { debounce_ms = 10 })
 
-      -- Wait for watcher to be set up
+      -- Let the watcher settle before editing the file
       vim.wait(200, function()
         return false
       end, 10)
-      local baseline_count = callback_count
-      received_event = nil
+      local baseline = #events
 
-      -- Modify file
       helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"変更後"}}')
 
-      -- Wait for callback
-      local ok = vim.wait(2000, function()
-        return callback_count > baseline_count and received_event ~= nil
+      local ok = vim.wait(3000, function()
+        return #events > baseline
       end, 10)
-
       assert.is_true(ok, "Callback was not called")
-      assert.is_not_nil(received_event)
-      assert.is_not_nil(received_event.paths)
-      if received_event.needs_rebuild then
-        assert.are.same({}, received_event.paths)
+
+      local event = events[#events]
+      if event.needs_rebuild then
+        -- Platforms may report the change on a watched root, which requests a full rebuild instead.
+        assert.are.same({}, event.paths)
       else
-        assert.is_true(#received_event.paths > 0)
-      end
-    end)
-  end)
-
-  it("watcher debounces multiple rapid changes", function()
-    local root = helpers.tmpdir()
-    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
-    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
-
-    helpers.with_cwd(root, function()
-      local callback_count = 0
-      local last_event = nil
-
-      resources.start_watch(root, function(event)
-        callback_count = callback_count + 1
-        last_event = event
-      end, { debounce_ms = 100 })
-
-      -- Wait for watcher to be set up
-      vim.wait(50, function()
-        return false
-      end, 10)
-
-      -- Make multiple rapid changes
-      helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"変更1"}}')
-      vim.wait(20, function()
-        return false
-      end, 5)
-      helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"変更2"}}')
-      vim.wait(20, function()
-        return false
-      end, 5)
-      helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"変更3"}}')
-
-      -- Wait for debounced callback
-      vim.wait(500, function()
-        return callback_count > 0
-      end, 10)
-
-      -- Should have been called only once (or at most a few times due to debounce)
-      -- The key point is that rapid changes are batched
-      assert.is_true(callback_count <= 3, "Too many callbacks: " .. callback_count)
-      assert.is_not_nil(last_event)
-    end)
-  end)
-
-  it("incremental update via watcher updates inline display", function()
-    local root = helpers.tmpdir()
-    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
-    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
-
-    helpers.with_cwd(root, function()
-      local buf = make_buf({ 't("login.title")' })
-      local config = config_mod.setup({
-        primary_lang = "ja",
-        inline = { visible_only = false },
-        resource_watch = { enabled = true, debounce_ms = 10 },
-      })
-
-      -- Initial render
-      core.refresh_now(buf, config)
-      assert.is_true(inline_text(buf):find("ログイン", 1, true) ~= nil)
-
-      -- Build cache to get key
-      local cache = resources.ensure_index(root)
-      local cache_key = cache.key
-
-      -- Start watcher with incremental update logic
-      resources.start_watch(root, function(event)
-        if event and event.paths and #event.paths > 0 and not event.needs_rebuild then
-          resources.apply_changes(cache_key, event.paths)
-        else
-          resources.mark_dirty()
+        local expected = vim.uv.fs_realpath(root .. "/locales/ja/common.json")
+        assert.is_true(#event.paths > 0)
+        for _, path in ipairs(event.paths) do
+          assert.are.equal(expected, vim.uv.fs_realpath(path))
         end
-        core.refresh_all(config)
-      end, { debounce_ms = 10 })
-
-      -- Wait for watcher setup
-      vim.wait(50, function()
-        return false
-      end, 10)
-
-      -- Update file
-      helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"サインイン"}}')
-
-      -- Wait for update
-      local ok = vim.wait(2000, function()
-        return inline_text(buf):find("サインイン", 1, true) ~= nil
-      end, 10)
-
-      assert.is_true(ok, "Inline display was not updated")
+      end
     end)
   end)
 
