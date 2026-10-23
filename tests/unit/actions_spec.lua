@@ -211,38 +211,4 @@ describe("actions (unit)", function()
     })
     assert.is_false(ok)
   end)
-
-  it("extracts fallback value when primary language is missing", function()
-    state.set_current(nil, "ja")
-    local item = {
-      key = "common:missing.key",
-      hover = {
-        values = {
-          en = { file = "/tmp/en.json", value = "Fallback Value" },
-          fr = { file = "/tmp/fr.json", value = "Valeur de secours" },
-        },
-      },
-    }
-
-    -- Since ja (primary) is missing, should fall back to available language
-    local hover_values = item.hover.values
-    assert.is_nil(hover_values.ja, "ja should be missing")
-    assert.is_not_nil(hover_values.en or hover_values.fr, "should have fallback value")
-  end)
-
-  it("prefers primary language over fallback when both exist", function()
-    state.set_current(nil, "ja")
-    local item = {
-      hover = {
-        values = {
-          ja = { file = "/tmp/ja.json", value = "日本語" },
-          en = { file = "/tmp/en.json", value = "English" },
-        },
-      },
-    }
-
-    local hover_values = item.hover.values
-    assert.is_not_nil(hover_values.ja, "ja should exist")
-    assert.are.equal("日本語", hover_values.ja.value)
-  end)
 end)

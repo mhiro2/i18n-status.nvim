@@ -68,7 +68,7 @@ describe("hardcoded rpc retry", function()
     assert.are.equal(0, #items)
   end)
 
-  it("returns empty result without error after retryable failures", function()
+  it("returns empty items with the last error once retries are exhausted", function()
     local calls = 0
     rpc.request_sync = function(_method, _params)
       calls = calls + 1

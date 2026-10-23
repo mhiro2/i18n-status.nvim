@@ -44,19 +44,8 @@ describe("fs", function()
 
     it("normalizes unresolved relative path with base_dir", function()
       local normalized = fs.normalize_path("nested/new.json", base_dir)
-      local real_base = (vim.uv.fs_realpath(base_dir) or base_dir):gsub("\\", "/")
-      if real_base:sub(-1) ~= "/" then
-        real_base = real_base .. "/"
-      end
-      local base_hint = base_dir:gsub("\\", "/")
-      if base_hint:sub(-1) ~= "/" then
-        base_hint = base_hint .. "/"
-      end
 
-      assert.is_true(
-        type(normalized) == "string"
-          and (normalized:find(real_base, 1, true) == 1 or normalized:find(base_hint, 1, true) == 1)
-      )
+      assert.are.equal(vim.uv.fs_realpath(base_dir) .. "/nested/new.json", normalized)
     end)
 
     it("checks whether a path is under a root", function()
@@ -135,29 +124,17 @@ describe("fs", function()
       vim.fn.writefile({ "{}" }, file_path)
 
       local path, err = fs.sanitize_path(file_path, base_dir)
-      local real_base = (vim.uv.fs_realpath(base_dir) or base_dir):gsub("\\", "/")
-      if real_base:sub(-1) ~= "/" then
-        real_base = real_base .. "/"
-      end
 
       assert.is_nil(err)
-      assert.is_true(path:find(real_base, 1, true) == 1)
+      assert.are.equal(vim.uv.fs_realpath(base_dir) .. "/dir/file.json", path)
     end)
 
     it("accepts non-existent files within base", function()
       local file_path = fs.path_join(base_dir, "new", "file.json")
       local path, err = fs.sanitize_path(file_path, base_dir)
-      local real_base = (vim.uv.fs_realpath(base_dir) or base_dir):gsub("\\", "/")
-      if real_base:sub(-1) ~= "/" then
-        real_base = real_base .. "/"
-      end
-      local base_hint = base_dir:gsub("\\", "/")
-      if base_hint:sub(-1) ~= "/" then
-        base_hint = base_hint .. "/"
-      end
 
       assert.is_nil(err)
-      assert.is_true(path:find(real_base, 1, true) == 1 or path:find(base_hint, 1, true) == 1)
+      assert.are.equal(vim.uv.fs_realpath(base_dir) .. "/new/file.json", path)
     end)
 
     it("rejects paths outside base", function()
