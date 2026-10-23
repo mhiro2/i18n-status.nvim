@@ -5,12 +5,15 @@ local state = require("i18n-status.state")
 local resources = require("i18n-status.resources")
 local stub = require("luassert.stub")
 
+---Run a diagnosis that is expected to complete; a cancelled or failed run fails the test.
 local function diagnose(bufnr, config)
   local done = false
   local result = nil
   local context = nil
-  doctor.diagnose(bufnr, config, function(issues, _, ctx)
+  local run_status = nil
+  doctor.diagnose(bufnr, config, function(issues, status, ctx)
     result = issues
+    run_status = status
     context = ctx
     done = true
   end)
@@ -18,7 +21,20 @@ local function diagnose(bufnr, config)
     return done
   end)
   assert.is_true(ok, "doctor.diagnose timed out")
+  assert.is_nil(run_status, "doctor.diagnose did not complete: " .. vim.inspect(run_status))
   return result, context
+end
+
+---@param issues table[]
+---@return table<string, boolean>
+local function unused_keys(issues)
+  local unused = {}
+  for _, issue in ipairs(issues) do
+    if issue.kind == "unused" then
+      unused[issue.key] = true
+    end
+  end
+  return unused
 end
 
 local function init_git_repo()
@@ -128,37 +144,40 @@ describe("doctor", function()
     end)
   end)
 
-  it("delegates project root resolution to resources.project_root", function()
+  it("limits the project scan to the root from resources.project_root", function()
     local root = helpers.tmpdir()
-    helpers.write_file(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
-    helpers.write_file(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
-    helpers.write_file(root .. "/src/app.ts", 't("login.title")')
+    helpers.write_file(root .. "/locales/ja/common.json", '{"inside":"内","outside":"外"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"inside":"In","outside":"Out"}')
+    helpers.write_file(root .. "/src/app.ts", 't("inside")')
+    helpers.write_file(root .. "/lib/other.ts", 't("outside")')
 
     helpers.with_cwd(root, function()
       local buf = vim.api.nvim_create_buf(false, true)
       vim.api.nvim_buf_set_name(buf, root .. "/src/app.ts")
-      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("login.title")' })
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 't("inside")' })
       vim.bo[buf].filetype = "typescript"
-
       local config = config_mod.setup({ primary_lang = "ja" })
+
+      local whole_project = unused_keys(diagnose(buf, config))
+      assert.is_nil(whole_project["common:inside"])
+      assert.is_nil(whole_project["common:outside"], "lib/other.ts is part of the default project")
+
+      local src_dir = vim.uv.fs_realpath(root .. "/src")
       local called = nil
       local project_root_stub = stub(resources, "project_root", function(start_dir, roots)
         called = { start_dir = start_dir, roots = roots }
-        return start_dir
+        return src_dir
       end)
-
-      local ok, issues_or_err = pcall(function()
-        return diagnose(buf, config)
-      end)
-
+      local ok, issues_or_err, ctx = pcall(diagnose, buf, config)
       project_root_stub:revert()
-
       assert.is_true(ok, issues_or_err)
-      assert.is_true(type(issues_or_err) == "table")
-      assert.is_not_nil(called)
-      local expected_start_dir = vim.uv.fs_realpath(root .. "/src") or (root .. "/src")
-      assert.are.equal(expected_start_dir, called.start_dir)
-      assert.is_true(type(called.roots) == "table")
+
+      assert.are.same({ start_dir = src_dir, roots = called.roots }, called)
+      assert.is_true(#called.roots > 0)
+      assert.are.equal(src_dir, ctx.project_root)
+      local narrowed = unused_keys(issues_or_err)
+      assert.is_nil(narrowed["common:inside"])
+      assert.is_true(narrowed["common:outside"], "keys used only outside the resolved root are unused")
     end)
   end)
 
@@ -282,8 +301,8 @@ describe("doctor", function()
 
   it("does not allocate anonymous buffers when scanning project files", function()
     local root = helpers.tmpdir()
-    helpers.write_file(root .. "/locales/ja/common.json", '{"used":"使用中"}')
-    helpers.write_file(root .. "/locales/en/common.json", '{"used":"Used"}')
+    helpers.write_file(root .. "/locales/ja/common.json", '{"used":"使用中","unused":"未使用"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"used":"Used","unused":"Unused"}')
     helpers.write_file(root .. "/src/app.tsx", 't("common:used")')
     helpers.with_cwd(root, function()
       local buf = vim.api.nvim_create_buf(false, true)
@@ -300,13 +319,14 @@ describe("doctor", function()
         error("doctor should not allocate extra buffers")
       end
 
-      local ok, err = pcall(function()
-        diagnose(buf, config)
-      end)
+      local ok, issues_or_err = pcall(diagnose, buf, config)
 
       vim.api.nvim_create_buf = original_create_buf
 
-      assert.is_true(ok, err)
+      assert.is_true(ok, issues_or_err)
+      local unused = unused_keys(issues_or_err)
+      assert.is_nil(unused["common:used"])
+      assert.is_true(unused["common:unused"])
     end)
   end)
 
@@ -348,8 +368,8 @@ describe("doctor", function()
     end
     write_i18next(root, "ja", "core", '{"alpha":"A"}')
     write_i18next(root, "en", "core", '{"alpha":"A"}')
-    write_i18next(root, "ja", "feature", '{"item":{"label":"X"}}')
-    write_i18next(root, "en", "feature", '{"item":{"label":"X"}}')
+    write_i18next(root, "ja", "feature", '{"item":{"label":"X","unused":"Y"}}')
+    write_i18next(root, "en", "feature", '{"item":{"label":"X","unused":"Y"}}')
 
     helpers.write_file(
       root .. "/frontend/src/app/feature.tsx",
@@ -374,6 +394,8 @@ describe("doctor", function()
     end
 
     assert.is_nil(unused["feature:item.label"], "feature:item.label should not be unused")
+    assert.is_true(unused["feature:item.unused"], "feature:item.unused should be unused")
+    assert.is_true(unused["core:alpha"], "core:alpha must not absorb the feature key")
   end)
 
   it("uses fallback namespace when useTranslation() has no args", function()
@@ -442,8 +464,8 @@ describe("doctor", function()
     if not root then
       return
     end
-    write_i18next(root, "ja", "feature", '{"alpha":{"beta":"B"}}')
-    write_i18next(root, "en", "feature", '{"alpha":{"beta":"B"}}')
+    write_i18next(root, "ja", "feature", '{"alpha":{"beta":"B","unused":"U"}}')
+    write_i18next(root, "en", "feature", '{"alpha":{"beta":"B","unused":"U"}}')
 
     helpers.write_file(root .. "/frontend/src/app/a.ts", 't("feature:alpha.beta")')
 
@@ -462,6 +484,7 @@ describe("doctor", function()
     end
 
     assert.is_nil(unused["feature:alpha.beta"], "feature:alpha.beta should not be unused")
+    assert.is_true(unused["feature:alpha.unused"], "feature:alpha.unused should be unused")
   end)
 
   it("scans tsx files for project usage", function()
@@ -469,8 +492,8 @@ describe("doctor", function()
     if not root then
       return
     end
-    write_i18next(root, "ja", "feature", '{"alpha":{"beta":"B"}}')
-    write_i18next(root, "en", "feature", '{"alpha":{"beta":"B"}}')
+    write_i18next(root, "ja", "feature", '{"alpha":{"beta":"B","unused":"U"}}')
+    write_i18next(root, "en", "feature", '{"alpha":{"beta":"B","unused":"U"}}')
 
     helpers.write_file(root .. "/frontend/src/app/feature.tsx", 'const label = t("feature:alpha.beta")')
 
@@ -489,6 +512,7 @@ describe("doctor", function()
     end
 
     assert.is_nil(unused["feature:alpha.beta"], "feature:alpha.beta should not be unused")
+    assert.is_true(unused["feature:alpha.unused"], "feature:alpha.unused should be unused")
   end)
 
   it("keeps interactive RPC responsive while Doctor resource IO is blocked", function()
