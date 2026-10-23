@@ -408,27 +408,6 @@ function M.is_watching(key)
   return watch ~= nil and watch.signature ~= nil and watch.handles ~= nil and #watch.handles > 0
 end
 
----Get the structural signature for a watcher.
----@param key string
----@return string|nil
-function M.signature(key)
-  local watch = M.watchers[key]
-  if watch then
-    return watch.signature
-  end
-  return nil
-end
-
----Update the structural signature for a watcher.
----@param key string
----@param sig string
-function M.set_signature(key, sig)
-  local watch = M.watchers[key]
-  if watch then
-    watch.signature = sig
-  end
-end
-
 ---Increment reference count manually (for cases where start is skipped).
 ---@param key string
 function M.inc_refcount(key)
