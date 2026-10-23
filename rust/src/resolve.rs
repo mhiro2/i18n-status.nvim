@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::scan::TranslationFramework;
 use crate::util::extract_placeholders;
@@ -66,6 +66,9 @@ pub struct HoverInfo {
     pub localized_langs: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mismatch_langs: Option<Vec<String>>,
+    /// Placeholder names of the primary language and each mismatched language, as compared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placeholders: Option<BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -154,6 +157,7 @@ pub fn compute(params: ComputeParams) -> Result<Value> {
         let mut missing_langs = Vec::new();
         let mut localized_langs = Vec::new();
         let mut mismatch_langs = Vec::new();
+        let mut placeholders = BTreeMap::new();
 
         // Collect compare items for placeholder check
         let mut compare_values: Vec<(&str, &str, Option<TranslationFramework>)> = Vec::new();
@@ -202,16 +206,16 @@ pub fn compute(params: ComputeParams) -> Result<Value> {
                 primary_value.unwrap_or(""),
                 primary_entry.and_then(|e| e.framework),
             );
-            let mut has_mismatch = false;
             for (lang, value, framework) in &compare_values {
                 let current_placeholders = extract_placeholders(value, *framework);
-                if !placeholder_equal_vecs(&base_placeholders, &current_placeholders) {
-                    has_mismatch = true;
+                if current_placeholders != base_placeholders {
                     mismatch_langs.push(lang.to_string());
+                    placeholders.insert(lang.to_string(), current_placeholders);
                 }
             }
 
-            if has_mismatch {
+            if !mismatch_langs.is_empty() {
+                placeholders.insert(primary.clone(), base_placeholders);
                 status = "!";
                 reason = Some("placeholder_mismatch");
             } else if any_missing {
@@ -251,6 +255,11 @@ pub fn compute(params: ComputeParams) -> Result<Value> {
             } else {
                 Some(mismatch_langs)
             },
+            placeholders: if placeholders.is_empty() {
+                None
+            } else {
+                Some(placeholders)
+            },
         };
 
         resolved.push(ResolvedItem {
@@ -262,8 +271,4 @@ pub fn compute(params: ComputeParams) -> Result<Value> {
     }
 
     Ok(serde_json::json!({ "resolved": resolved }))
-}
-
-fn placeholder_equal_vecs(a: &[String], b: &[String]) -> bool {
-    a == b
 }

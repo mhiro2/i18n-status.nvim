@@ -164,6 +164,53 @@ fn status_icu_plural_argument_missing_is_mismatch() {
 }
 
 #[test]
+fn placeholder_mismatch_reports_the_compared_names() {
+    let mut index: HashMap<String, HashMap<String, resolve::ResourceItemInput>> = HashMap::new();
+    let mut en = HashMap::new();
+    en.insert(
+        "common:message".to_string(),
+        make_resource("{name} has {count, plural, one {# item} other {# items}}"),
+    );
+    index.insert("en".to_string(), en);
+    let mut ja = HashMap::new();
+    ja.insert("common:message".to_string(), make_resource("{name} の商品"));
+    index.insert("ja".to_string(), ja);
+    let mut fr = HashMap::new();
+    fr.insert(
+        "common:message".to_string(),
+        make_resource("{name} a {count, plural, one {# article} other {# articles}}"),
+    );
+    index.insert("fr".to_string(), fr);
+
+    let items = vec![make_item("common:message", "common")];
+    let result = compute(items, index, vec!["en", "fr", "ja"]);
+
+    let hover = &result["resolved"][0]["hover"];
+    assert_eq!(hover["status"], "!");
+    assert_eq!(hover["mismatch_langs"], serde_json::json!(["ja"]));
+    assert_eq!(
+        hover["placeholders"],
+        serde_json::json!({ "en": ["count", "name"], "ja": ["name"] })
+    );
+}
+
+#[test]
+fn placeholders_are_omitted_without_a_mismatch() {
+    let mut index: HashMap<String, HashMap<String, resolve::ResourceItemInput>> = HashMap::new();
+    let mut en = HashMap::new();
+    en.insert("common:message".to_string(), make_resource("Hi {name}"));
+    index.insert("en".to_string(), en);
+    let mut ja = HashMap::new();
+    ja.insert("common:message".to_string(), make_resource("{name} さん"));
+    index.insert("ja".to_string(), ja);
+
+    let items = vec![make_item("common:message", "common")];
+    let result = compute(items, index, vec!["en", "ja"]);
+
+    assert!(result["resolved"][0]["hover"].get("placeholders").is_none());
+}
+
+#[test]
 fn status_icu_typed_argument_spacing_is_not_mismatch() {
     assert_eq!(
         status_for("{count, number} items", "{count,number} 件"),

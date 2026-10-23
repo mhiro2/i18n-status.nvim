@@ -1,26 +1,6 @@
 local text = require("i18n-status.text")
 
 describe("text", function()
-  describe("extract_placeholders", function()
-    it("extracts brace placeholders", function()
-      local placeholders = text.extract_placeholders("Hello {{name}}, your balance is {balance}")
-
-      assert.is_true(placeholders.name)
-      assert.is_true(placeholders.balance)
-    end)
-
-    it("returns an empty table when no placeholders exist", function()
-      assert.are.same({}, text.extract_placeholders("Hello world"))
-    end)
-  end)
-
-  describe("placeholder_equal", function()
-    it("compares placeholder sets", function()
-      assert.is_true(text.placeholder_equal({ name = true }, { name = true }))
-      assert.is_false(text.placeholder_equal({ name = true }, { other = true }))
-    end)
-  end)
-
   describe("split_i18n_key", function()
     it("splits namespace and key path", function()
       local namespace, key_path = text.split_i18n_key("common:greeting.message")
