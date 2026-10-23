@@ -8,6 +8,7 @@ local resources = require("i18n-status.resources")
 local scan = require("i18n-status.scan")
 local watcher = require("i18n-status.watcher")
 local helpers = require("tests.helpers")
+require("plugin.i18n-status")
 
 local function make_buf(lines, ft, name)
   local buf = vim.api.nvim_create_buf(false, false)
@@ -28,19 +29,6 @@ local function find_review_window(ft)
     local buf = vim.api.nvim_win_get_buf(win)
     if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].filetype == ft then
       return win
-    end
-  end
-  return nil
-end
-
----@param buf integer
----@param needle string
----@return integer|nil
-local function find_line(buf, needle)
-  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  for i, line in ipairs(lines) do
-    if line:find(needle, 1, true) then
-      return i
     end
   end
   return nil
@@ -97,32 +85,6 @@ describe("extract review integration", function()
         end
       end
     end
-  end)
-
-  it("opens review UI when extraction starts", function()
-    local root = helpers.tmpdir()
-    helpers.write_file(root .. "/locales/ja/common.json", "{}")
-    helpers.write_file(root .. "/locales/en/common.json", "{}")
-
-    helpers.with_cwd(root, function()
-      local buf = make_buf({
-        'const { t } = useTranslation("common")',
-        "export function Page() {",
-        "  return <p>Hello world</p>",
-        "}",
-      }, "typescriptreact", root .. "/src/page.tsx")
-
-      local cfg = config_mod.setup({ primary_lang = "ja" })
-      local ctx = extract.run(buf, cfg, {})
-      assert.is_not_nil(ctx)
-
-      local opened = vim.wait(500, function()
-        return find_review_window("i18n-status-extract-review") ~= nil
-      end, 10)
-
-      assert.is_true(opened)
-      assert.is_not_nil(find_review_window("i18n-status-extract-review"))
-    end)
   end)
 
   it("aborts when opening review windows changes the source", function()
@@ -189,28 +151,16 @@ describe("extract review integration", function()
       end, 10)
 
       assert.is_true(focused)
-    end)
-  end)
+      assert.are.equal("i18n-status-extract-review", vim.bo[vim.api.nvim_win_get_buf(ctx.list_win)].filetype)
 
-  it("does not duplicate help hint in list body on open", function()
-    local root = helpers.tmpdir()
-    helpers.write_file(root .. "/locales/ja/common.json", "{}")
-    helpers.write_file(root .. "/locales/en/common.json", "{}")
-
-    helpers.with_cwd(root, function()
-      local buf = make_buf({
-        'const { t } = useTranslation("common")',
-        "export function Page() {",
-        "  return <p>Hello world</p>",
-        "}",
-      }, "typescriptreact", root .. "/src/page.tsx")
-
-      local cfg = config_mod.setup({ primary_lang = "ja" })
-      local ctx = extract.run(buf, cfg, {})
-      assert.is_not_nil(ctx)
-
-      local duplicated = find_line(ctx.list_buf, "?:help q:quit")
-      assert.is_nil(duplicated)
+      -- The key hints live in the winbar, not in the candidate list.
+      local winbar = vim.wo[ctx.list_win].winbar
+      assert.is_truthy(winbar:find("?:help", 1, true))
+      assert.is_truthy(winbar:find("q:quit", 1, true))
+      for _, line in ipairs(vim.api.nvim_buf_get_lines(ctx.list_buf, 0, -1, false)) do
+        local normalized = line:gsub("%s+", " ")
+        assert.is_falsy(normalized:find("?:help q:quit", 1, true), line)
+      end
     end)
   end)
 
@@ -1528,7 +1478,7 @@ describe("extract review integration", function()
     end)
   end)
 
-  it("applies extraction only within specified range", function()
+  it("applies extraction only within the range of an I18nExtract command", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", "{}")
     helpers.write_file(root .. "/locales/en/common.json", "{}")
@@ -1543,18 +1493,26 @@ describe("extract review integration", function()
         "  </>",
         "}",
       }, "typescriptreact", root .. "/src/page.tsx")
+      vim.api.nvim_set_current_buf(buf)
+      require("i18n-status").setup({ primary_lang = "ja" })
 
-      local cfg = config_mod.setup({ primary_lang = "ja" })
-      local ctx = extract.run(buf, cfg, {
-        range = {
-          start_line = 3,
-          end_line = 3,
-        },
-      })
+      local ctx
+      local original_run = extract.run
+      add_stub(extract, "run", function(...)
+        ctx = original_run(...)
+        return ctx
+      end)
+      -- Line 4 holds only the first paragraph.
+      vim.cmd("4,4I18nExtract")
       assert.is_not_nil(ctx)
 
+      local texts = vim.tbl_map(function(candidate)
+        return candidate.text
+      end, ctx.candidates)
+      assert.are.same({ "First text" }, texts)
+
       vim.api.nvim_set_current_win(ctx.list_win)
-      vim.api.nvim_feedkeys(" ", "x", false)
+      vim.api.nvim_feedkeys("a", "x", false)
       vim.api.nvim_feedkeys("\r", "x", false)
 
       local applied = vim.wait(1000, function()
@@ -1564,8 +1522,13 @@ describe("extract review integration", function()
       assert.is_true(applied)
 
       local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-      assert.is_true(lines[4]:find('{t("common:first-text")}', 1, true) ~= nil)
+      assert.are.equal('    <p>{t("common:first-text")}</p>', lines[4])
       assert.are.equal("    <p>Second text</p>", lines[5])
+      assert.are.same(
+        { ["first-text"] = "First text" },
+        vim.json.decode(helpers.read_file(root .. "/locales/ja/common.json"))
+      )
+      assert.are.same({ ["first-text"] = "" }, vim.json.decode(helpers.read_file(root .. "/locales/en/common.json")))
     end)
   end)
 
@@ -1610,6 +1573,57 @@ describe("extract review integration", function()
       local after_en = helpers.read_file(root .. "/locales/en/common.json")
       assert.are.equal(before_ja, after_ja)
       assert.are.equal(before_en, after_en)
+    end)
+  end)
+
+  it("switches between reuse and the generated new key with u and U", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/ja/common.json", '{"hello-world":"登録済み"}')
+    helpers.write_file(root .. "/locales/en/common.json", '{"hello-world":"Registered"}')
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf({
+        'const { t } = useTranslation("common")',
+        "export function Page() {",
+        "  return <p>Hello world</p>",
+        "}",
+      }, "typescriptreact", root .. "/src/page.tsx")
+
+      local ctx = extract.run(buf, config_mod.setup({ primary_lang = "ja" }), {})
+      assert.is_not_nil(ctx)
+      local candidate = ctx.candidates[1]
+      local generated_key = candidate.new_key
+      local line = find_candidate_line(ctx, "Hello world")
+      local function list_line()
+        return vim.api.nvim_buf_get_lines(ctx.list_buf, line - 1, line, false)[1]
+      end
+      local new_mode_line = list_line()
+      assert.are.equal("conflict_existing", candidate.status)
+      assert.is_false(candidate.selected)
+
+      add_stub(vim.ui, "select", function(items, _opts, on_choice)
+        on_choice(items[1])
+      end)
+      vim.api.nvim_set_current_win(ctx.list_win)
+      vim.api.nvim_win_set_cursor(ctx.list_win, { line, 0 })
+      vim.api.nvim_feedkeys("u", "x", false)
+
+      assert.are.equal("reuse", candidate.mode)
+      assert.are.equal("ready", candidate.status)
+      assert.are_not.equal(new_mode_line, list_line())
+
+      -- Editing the key in reuse mode must not survive switching back to a new key.
+      candidate.proposed_key = "common:edited"
+      candidate.selected = false
+      candidate.apply_error = "previous apply failed"
+      vim.api.nvim_feedkeys("U", "x", false)
+
+      assert.are.equal("new", candidate.mode)
+      assert.is_true(candidate.selected)
+      assert.are.equal(generated_key, candidate.proposed_key)
+      assert.is_nil(candidate.apply_error)
+      assert.are.equal("conflict_existing", candidate.status)
+      assert.are.equal((new_mode_line:gsub("^%[ %]", "[x]")), list_line())
     end)
   end)
 
