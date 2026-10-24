@@ -2,23 +2,10 @@
 local M = {}
 
 local fs = require("i18n-status.fs")
-local extract_candidate = require("i18n-status.extract_candidate")
 local resources = require("i18n-status.resources")
 local text_utils = require("i18n-status.text")
 
 local split_key = text_utils.split_i18n_key
-
----@param candidate I18nStatusExtractCandidate
----@return string[]
-function M.source_diff_lines(candidate)
-  local source_text = candidate.source_text or ""
-  local replacement, replacement_err = extract_candidate.replacement(candidate)
-  return {
-    "Source diff:",
-    "- " .. source_text,
-    "+ " .. (replacement or "(" .. (replacement_err or "invalid replacement") .. ")"),
-  }
-end
 
 ---@param start_dir string|nil
 ---@param lang string
@@ -83,28 +70,5 @@ function M.resource_diff_lines(candidate, languages, primary_lang, start_dir, ro
   end
   return lines
 end
-
----@param candidate I18nStatusExtractCandidate
----@param languages string[]
----@param primary_lang string
----@param start_dir string|nil
----@return string[]
-function M.build_preview_lines(candidate, languages, primary_lang, start_dir)
-  local lines = {}
-  local source = M.source_diff_lines(candidate)
-  local resource_lines = M.resource_diff_lines(candidate, languages, primary_lang, start_dir)
-  for _, line in ipairs(source) do
-    lines[#lines + 1] = line
-  end
-  lines[#lines + 1] = ""
-  for _, line in ipairs(resource_lines) do
-    lines[#lines + 1] = line
-  end
-  return lines
-end
-
-M._test = {
-  split_key = text_utils.split_i18n_key,
-}
 
 return M

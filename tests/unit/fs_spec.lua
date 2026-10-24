@@ -33,6 +33,40 @@ describe("fs", function()
       assert.is_truthy(fs.file_mtime(file_path))
     end)
 
+    it("creates directories whose parent another process creates concurrently", function()
+      local parent = fs.path_join(base_dir, "shared")
+      local target = fs.path_join(parent, "child")
+      local original_mkdir = vim.fn.mkdir
+      local calls = 0
+      vim.fn.mkdir = function(...)
+        calls = calls + 1
+        if calls == 1 then
+          -- Another process wins the race for the parent directory.
+          vim.uv.fs_mkdir(parent, 448)
+          error("Vim:E739: Cannot create directory " .. parent .. ": file already exists")
+        end
+        return original_mkdir(...)
+      end
+
+      local ok, created = pcall(fs.ensure_dir, target)
+      vim.fn.mkdir = original_mkdir
+
+      assert.is_true(ok, created)
+      assert.is_true(created)
+      assert.is_true(fs.is_dir(target))
+      assert.are.equal(2, calls)
+    end)
+
+    it("reports failure when the directory cannot be created", function()
+      local blocker = fs.path_join(base_dir, "blocker")
+      vim.fn.writefile({ "" }, blocker)
+
+      local ok, created = pcall(fs.ensure_dir, fs.path_join(blocker, "child"))
+
+      assert.is_true(ok, created)
+      assert.is_false(created)
+    end)
+
     it("normalizes existing path with realpath", function()
       local file_path = fs.path_join(base_dir, "a.json")
       vim.fn.writefile({ "{}" }, file_path)
@@ -44,19 +78,8 @@ describe("fs", function()
 
     it("normalizes unresolved relative path with base_dir", function()
       local normalized = fs.normalize_path("nested/new.json", base_dir)
-      local real_base = (vim.uv.fs_realpath(base_dir) or base_dir):gsub("\\", "/")
-      if real_base:sub(-1) ~= "/" then
-        real_base = real_base .. "/"
-      end
-      local base_hint = base_dir:gsub("\\", "/")
-      if base_hint:sub(-1) ~= "/" then
-        base_hint = base_hint .. "/"
-      end
 
-      assert.is_true(
-        type(normalized) == "string"
-          and (normalized:find(real_base, 1, true) == 1 or normalized:find(base_hint, 1, true) == 1)
-      )
+      assert.are.equal(vim.uv.fs_realpath(base_dir) .. "/nested/new.json", normalized)
     end)
 
     it("checks whether a path is under a root", function()
@@ -135,29 +158,17 @@ describe("fs", function()
       vim.fn.writefile({ "{}" }, file_path)
 
       local path, err = fs.sanitize_path(file_path, base_dir)
-      local real_base = (vim.uv.fs_realpath(base_dir) or base_dir):gsub("\\", "/")
-      if real_base:sub(-1) ~= "/" then
-        real_base = real_base .. "/"
-      end
 
       assert.is_nil(err)
-      assert.is_true(path:find(real_base, 1, true) == 1)
+      assert.are.equal(vim.uv.fs_realpath(base_dir) .. "/dir/file.json", path)
     end)
 
     it("accepts non-existent files within base", function()
       local file_path = fs.path_join(base_dir, "new", "file.json")
       local path, err = fs.sanitize_path(file_path, base_dir)
-      local real_base = (vim.uv.fs_realpath(base_dir) or base_dir):gsub("\\", "/")
-      if real_base:sub(-1) ~= "/" then
-        real_base = real_base .. "/"
-      end
-      local base_hint = base_dir:gsub("\\", "/")
-      if base_hint:sub(-1) ~= "/" then
-        base_hint = base_hint .. "/"
-      end
 
       assert.is_nil(err)
-      assert.is_true(path:find(real_base, 1, true) == 1 or path:find(base_hint, 1, true) == 1)
+      assert.are.equal(vim.uv.fs_realpath(base_dir) .. "/new/file.json", path)
     end)
 
     it("rejects paths outside base", function()

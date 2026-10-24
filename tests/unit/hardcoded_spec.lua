@@ -62,21 +62,40 @@ describe("hardcoded", function()
     assert.are.equal(0, #items)
   end)
 
-  it("respects range and min_length", function()
+  it("limits extraction to the requested range", function()
     local buf = make_buf({
       "export function Page() {",
       "  return (",
       "    <>",
-      "      <p>Ok</p>",
-      "      <p>Hi</p>",
+      "      <p>Inside</p>",
+      "      <p>Outside</p>",
       "    </>",
       "  )",
       "}",
     }, "typescriptreact")
     local items = hardcoded.extract(buf, {
-      min_length = 3,
+      min_length = 2,
       range = { start_line = 3, end_line = 3 },
     })
-    assert.are.equal(0, #items)
+    assert.are.equal(1, #items)
+    assert.are.equal("Inside", items[1].text)
+    assert.are.equal(3, items[1].lnum)
+    assert.are.equal(9, items[1].col)
+  end)
+
+  it("keeps text whose length equals min_length and drops shorter text", function()
+    local buf = make_buf({
+      "export function Page() {",
+      "  return (",
+      "    <>",
+      "      <p>Yo</p>",
+      "      <p>Hey</p>",
+      "    </>",
+      "  )",
+      "}",
+    }, "typescriptreact")
+    local items = hardcoded.extract(buf, { min_length = 3 })
+    assert.are.equal(1, #items)
+    assert.are.equal("Hey", items[1].text)
   end)
 end)

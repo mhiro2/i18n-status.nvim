@@ -40,7 +40,7 @@ end
 local function ensure_index_async(start_dir)
   local done = false
   local result = nil
-  resources.ensure_index_async(start_dir, nil, function(cache)
+  resources.ensure_index_async(start_dir, function(cache)
     result = cache
     done = true
   end)
@@ -90,7 +90,7 @@ describe("resources", function()
       return original_request(method, params, cb)
     end
     local done, failed_cache, failed_err = false, nil, nil
-    resources.ensure_index_async(root, nil, function(result, err)
+    resources.ensure_index_async(root, function(result, err)
       failed_cache, failed_err, done = result, err, true
     end)
     local ok = vim.wait(5000, function()
@@ -349,40 +349,6 @@ describe("resources", function()
     cache = resources.ensure_index(root)
     assert.are.equal("value1", cache.index.ja["common:key1"].value)
     assert.is_nil(cache.index.ja["temp:key2"])
-  end)
-
-  it("validates structure before checking file mtimes", function()
-    local root = helpers.tmpdir()
-    write(root .. "/locales/ja/common.json", '{"key":"value1"}')
-
-    local cache = resources.ensure_index(root)
-    assert.are.equal("value1", cache.index.ja["common:key"].value)
-
-    write(root .. "/locales/ja/new.json", '{"key2":"value2"}')
-
-    cache = resources.ensure_index(root)
-    assert.are.equal("value2", cache.index.ja["new:key2"].value)
-  end)
-
-  it("supports cooperative yields during large index rebuilds", function()
-    local root = helpers.tmpdir()
-    for i = 1, 60 do
-      write(root .. "/locales/ja/ns" .. i .. ".json", '{"k":"ja"}')
-      write(root .. "/locales/en/ns" .. i .. ".json", '{"k":"en"}')
-    end
-
-    local resume_count = 0
-    local co = coroutine.create(function()
-      resources.ensure_index(root, { cooperative = true })
-    end)
-
-    while coroutine.status(co) ~= "dead" do
-      resume_count = resume_count + 1
-      local ok, err = coroutine.resume(co)
-      assert.is_true(ok, err)
-    end
-
-    assert.is_true(resume_count > 1)
   end)
 
   it("computes project root from common ancestor when no git root", function()
@@ -1556,29 +1522,6 @@ describe("resources", function()
   describe("incremental scan", function()
     local uv = vim.uv
 
-    it("builds cache with entries_by_key and file_entries", function()
-      local root = helpers.tmpdir()
-      write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
-      write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
-
-      local cache = resources.ensure_index(root)
-
-      -- Check that new data structures are populated
-      assert.is_not_nil(cache.entries_by_key)
-      assert.is_not_nil(cache.file_entries)
-      assert.is_not_nil(cache.file_meta)
-
-      -- Check entries_by_key has the expected structure
-      assert.is_not_nil(cache.entries_by_key.ja)
-      assert.is_not_nil(cache.entries_by_key.ja["common:login.title"])
-      assert.are.equal(1, #cache.entries_by_key.ja["common:login.title"])
-
-      -- Check file_entries has entries for the json file (use normalized path for lookup)
-      local ja_file = uv.fs_realpath(root .. "/locales/ja/common.json")
-      assert.is_not_nil(cache.file_entries[ja_file])
-      assert.is_true(#cache.file_entries[ja_file] > 0)
-    end)
-
     it("apply_changes updates single file correctly", function()
       local root = helpers.tmpdir()
       write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
@@ -1667,6 +1610,11 @@ describe("resources", function()
       -- Should record error
       assert.is_not_nil(cache.file_errors)
       assert.is_not_nil(cache.file_errors[ja_file])
+      local reported = vim.tbl_filter(function(entry)
+        return entry.file == ja_file
+      end, cache.errors or {})
+      assert.are.equal(1, #reported)
+      assert.are.equal("ja", reported[1].lang)
     end)
 
     it("apply_changes clears error on recovery", function()
@@ -1843,33 +1791,54 @@ describe("resources", function()
       assert.is_true(found_error)
     end)
 
-    it("apply_changes keeps cache valid while watching after new file", function()
+    it("serves a watched cache after an incremental change without rebuilding", function()
       local root = helpers.tmpdir()
       write(root .. "/locales/ja/common.json", '{"login":{"title":"ログイン"}}')
       write(root .. "/locales/en/common.json", '{"login":{"title":"Login"}}')
 
       local cache = resources.ensure_index(root)
       local cache_key = cache.key
+      local fake_events = helpers.fake_fs_events()
+      local resource_roots = require("i18n-status.resource_roots")
+      local original_build_index = resources.build_index
+      local original_resolve_roots = resource_roots.resolve_roots_sync
+      local build_count = 0
+      local resolve_count = 0
 
-      resources.start_watch(root, function() end, { debounce_ms = 10 })
+      local ok, err = pcall(function()
+        resources.start_watch(root, function() end, { debounce_ms = 10 })
+        assert.is_true(watcher.is_watching(cache_key))
 
-      -- Add new file and apply incremental update
-      local new_file = root .. "/locales/ja/extra.json"
-      write(new_file, '{"extra":"追加"}')
-      local success, needs_rebuild = resources.apply_changes(cache_key, { new_file })
+        local new_file = root .. "/locales/ja/extra.json"
+        write(new_file, '{"extra":"追加"}')
+        local success, needs_rebuild = resources.apply_changes(cache_key, { new_file })
+        assert.is_true(success)
+        assert.is_falsy(needs_rebuild)
 
-      assert.is_true(success)
-      assert.is_falsy(needs_rebuild)
+        resources.build_index = function(...)
+          build_count = build_count + 1
+          return original_build_index(...)
+        end
+        resource_roots.resolve_roots_sync = function(...)
+          resolve_count = resolve_count + 1
+          return original_resolve_roots(...)
+        end
+        -- Pretend the validation interval has elapsed; a watched cache stays authoritative.
+        cache.checked_at = 0
 
-      -- Wait beyond CACHE_VALIDATE_INTERVAL_MS to trigger structural validation
-      vim.wait(1100, function()
-        return false
-      end, 10)
+        local cache2 = resources.ensure_index(root)
+        assert.is_true(cache == cache2)
+        assert.is_false(cache2.dirty)
+        assert.are.equal("追加", cache2.index.ja["extra:extra"].value)
+        assert.are.equal(0, build_count)
+        assert.are.equal(0, resolve_count)
+      end)
 
-      local cache2 = resources.ensure_index(root)
-      assert.is_true(cache == cache2)
-
+      resources.build_index = original_build_index
+      resource_roots.resolve_roots_sync = original_resolve_roots
       resources.stop_watch()
+      fake_events.restore()
+      assert.is_true(ok, err)
     end)
 
     it("apply_changes treats non-json changes under root as rebuild-needed", function()

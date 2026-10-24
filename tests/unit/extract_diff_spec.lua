@@ -20,59 +20,6 @@ describe("extract diff", function()
     stubs = {}
   end)
 
-  it("builds source diff lines", function()
-    local lines = extract_diff.source_diff_lines({
-      text = "Hello",
-      source_text = "Hello",
-      t_func = "t",
-      proposed_key = "common:hello",
-      source_key_policy = "canonical",
-      replacement_context = "jsx_child",
-    })
-
-    assert.are.same({
-      "Source diff:",
-      "- Hello",
-      '+ {t("common:hello")}',
-    }, lines)
-  end)
-
-  it("builds expression-context replacement without duplicate braces", function()
-    local lines = extract_diff.source_diff_lines({
-      text = "Hello",
-      source_text = '"Hello"',
-      t_func = "t",
-      proposed_key = "common:hello",
-      source_key_policy = "canonical",
-      replacement_context = "jsx_expression",
-    })
-
-    assert.are.same({
-      "Source diff:",
-      '- "Hello"',
-      '+ t("common:hello")',
-    }, lines)
-  end)
-
-  it("previews a namespace-relative key for a scoped next-intl translator", function()
-    local lines = extract_diff.source_diff_lines({
-      text = " Hello ",
-      source_text = " Hello ",
-      namespace = "Home",
-      framework = "next_intl",
-      t_func = "t",
-      proposed_key = "Home:greeting",
-      source_key_policy = "namespace_relative",
-      replacement_context = "jsx_child",
-    })
-
-    assert.are.same({
-      "Source diff:",
-      "-  Hello ",
-      '+ {t("greeting")}',
-    }, lines)
-  end)
-
   it("builds resource diff lines for new key", function()
     local lines = extract_diff.resource_diff_lines({
       text = "Hello",
@@ -114,24 +61,6 @@ describe("extract diff", function()
       "Resource diff:",
       "(reuse existing key: no resource changes)",
     }, lines)
-  end)
-
-  it("preserves multibyte text in source and resource previews", function()
-    local lines = extract_diff.build_preview_lines({
-      text = "日本語テキスト",
-      message = "日本語テキスト",
-      source_text = "日本語テキスト",
-      t_func = "tr",
-      proposed_key = "common:key",
-      source_key_policy = "canonical",
-      mode = "new",
-      replacement_context = "jsx_child",
-    }, { "ja", "en" }, "ja")
-
-    assert.is_true(lines[2]:find("日本語テキスト", 1, true) ~= nil)
-    assert.is_true(lines[3]:find('tr("common:key")', 1, true) ~= nil)
-    local joined = table.concat(lines, "\n")
-    assert.is_true(joined:find('ja/common.json: + "key": "日本語テキスト"', 1, true) ~= nil)
   end)
 
   it("uses resolved resource path and key path when start_dir is provided", function()

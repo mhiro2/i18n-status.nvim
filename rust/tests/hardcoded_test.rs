@@ -154,15 +154,45 @@ fn excluded_inside_trans_component() {
 
 #[test]
 fn excluded_inside_t_call() {
-    // A string literal that is an argument to t() should not be flagged as hardcoded.
-    // The hardcoded detector only looks at JSX children, so we put it in a JSX expression
-    // container that uses t().
-    let source = r#"const App = () => <div>{t("hello")}</div>;"#;
-    let result = extract(source, "tsx");
-    let items = result["items"].as_array().unwrap();
-    // t("hello") is a call expression, not a string literal in JSX context,
-    // so it should not be detected as hardcoded
-    assert_eq!(items.len(), 0);
+    // JSX passed as an argument to t() is already translated content, while the same
+    // structure passed to any other call is still user-visible hardcoded text.
+    let source_for = |callee: &str| {
+        format!(
+            r#"const App = () => <div>{{{callee}("greeting", {{ defaultValue: <span>Hello there</span>, title: <b>{{"Welcome back"}}</b> }})}}</div>;"#
+        )
+    };
+
+    let texts_for = |callee: &str| -> Vec<(String, String)> {
+        let result = extract(&source_for(callee), "tsx");
+        result["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                (
+                    item["kind"].as_str().unwrap().to_string(),
+                    item["text"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+
+    assert_eq!(
+        texts_for("format"),
+        vec![
+            ("jsx_text".to_string(), "Hello there".to_string()),
+            ("jsx_literal".to_string(), "Welcome back".to_string()),
+        ],
+        "JSX inside a non-translation call should be detected"
+    );
+    assert!(
+        texts_for("t").is_empty(),
+        "JSX inside t() arguments should be excluded"
+    );
+    assert!(
+        texts_for("i18n.t").is_empty(),
+        "JSX inside member t() arguments should be excluded"
+    );
 }
 
 #[test]
@@ -217,10 +247,7 @@ fn whitespace_only_jsx_text_excluded() {
     let items = result["items"].as_array().unwrap();
     // Only "Hello" should be detected, not the whitespace between tags
     let texts: Vec<&str> = items.iter().map(|i| i["text"].as_str().unwrap()).collect();
-    assert!(
-        texts.iter().all(|t| t.trim().len() >= 2),
-        "all items should have meaningful text"
-    );
+    assert_eq!(texts, vec!["Hello"]);
 }
 
 #[test]

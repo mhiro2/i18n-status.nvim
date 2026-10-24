@@ -230,24 +230,6 @@ function Page() {
     }
 
     #[test]
-    fn resolves_each_translator_alias_to_its_own_namespace() {
-        let items = extract_items(
-            r#"
-function Page() {
-  const { t: commonT } = useTranslation("common");
-  const { t: adminT } = useTranslation("admin");
-  return [commonT("title"), adminT("save")];
-}
-"#,
-            "translation",
-        );
-
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].key, "common:title");
-        assert_eq!(items[1].key, "admin:save");
-    }
-
-    #[test]
     fn shadowed_const_keys_are_not_resolved_statically() {
         let items = extract_items(
             r#"

@@ -665,25 +665,7 @@ end
 M._test = {
   normalize_key_input = extract_review_apply.normalize_key_input,
   status_icon = review_buffers.extract_status_icon,
-  refresh_candidate_statuses = function(candidates, existing_keys)
-    extract_review_apply.refresh_candidate_statuses(candidates, nil, existing_keys)
-  end,
-  applicable_candidates = function(candidates, existing_keys)
-    local ctx = {
-      candidates = candidates,
-      existing_keys = existing_keys,
-      framework_catalogs = {},
-      statuses_dirty = true,
-    }
-    return extract_review_apply.applicable_candidates(ctx, candidates)
-  end,
   build_apply_message = extract_review_apply.build_apply_message,
-  set_reuse_mode = function(candidate)
-    candidate.mode = "reuse"
-  end,
-  set_new_mode = function(candidate)
-    candidate.mode = "new"
-  end,
 }
 
 return M

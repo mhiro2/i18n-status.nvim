@@ -178,30 +178,6 @@ describe("blink", function()
     end)
   end)
 
-  it("returns sorted items even when reaching the completion limit", function()
-    local root = helpers.tmpdir()
-    -- Create enough keys to exceed the internal limit
-    local keys = {}
-    for i = 1, 120 do
-      keys[string.format("k%03d", i)] = string.format("v%03d", i)
-    end
-    helpers.write_file(root .. "/locales/ja/common.json", vim.json.encode(keys))
-    with_cwd(root, function()
-      local result = nil
-      blink.complete({}, function(items)
-        result = items
-      end)
-      assert.is_true(#result >= 2)
-      -- Verify items are sorted by sortText
-      for i = 2, #result do
-        assert.is_true(
-          result[i - 1].sortText <= result[i].sortText,
-          string.format("items not sorted at index %d: %s > %s", i, result[i - 1].sortText, result[i].sortText)
-        )
-      end
-    end)
-  end)
-
   it("completes only inside the first string argument of a translation call", function()
     local buf = vim.api.nvim_create_buf(false, true)
     vim.bo[buf].filetype = "typescript"
@@ -274,6 +250,13 @@ describe("blink", function()
       local all = request('t("')
       assert.are.equal(100, #all.items)
       assert.is_true(all.is_incomplete_forward)
+      -- The limit keeps the first 100 keys in sort order.
+      for i, item in ipairs(all.items) do
+        assert.are.equal(string.format("k%03d", i), item.label)
+        if i > 1 then
+          assert.is_true(all.items[i - 1].sortText <= item.sortText, "items are not sorted at index " .. i)
+        end
+      end
 
       local narrowed = request('t("k12')
       local labels = {}

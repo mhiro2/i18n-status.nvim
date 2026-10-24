@@ -19,26 +19,78 @@ fail() {
 
 bash "${ROOT_DIR}/scripts/verify-release-contract.sh" "v${VERSION}" >/dev/null
 
-global_permissions="$(sed -n '/^permissions:/,/^jobs:/p' "$WORKFLOW")"
-if ! printf '%s\n' "$global_permissions" | grep -Fq 'contents: read' \
-  || printf '%s\n' "$global_permissions" | grep -Fq 'contents: write'; then
-  fail "workflow-wide contents permission is not read-only"
-fi
-release_job="$(sed -n '/^  release:/,$p' "$WORKFLOW")"
-if ! printf '%s\n' "$release_job" | grep -Fq 'contents: write'; then
-  fail "release job lacks its scoped write permission"
-fi
-checkout_count="$(grep -c 'uses: actions/checkout@' "$WORKFLOW")"
-nonpersisting_checkout_count="$(grep -c 'persist-credentials: false' "$WORKFLOW")"
-if [ "$checkout_count" -ne "$nonpersisting_checkout_count" ]; then
-  fail "a checkout persists write-capable credentials"
-fi
+# Read the workflow as YAML so comments and step placement cannot satisfy the checks.
+command -v ruby >/dev/null || fail "ruby is required to parse the release workflow"
+check_workflow() {
+  ruby -ryaml - "$1" <<'RUBY'
+workflow = YAML.safe_load(File.read(ARGV.fetch(0)))
+errors = []
 
-cross_step="$(sed -n '/      - name: Build (cross)/,/      - name: Package binary/p' "$WORKFLOW")"
-if ! printf '%s\n' "$cross_step" \
-  | grep -Fq 'cross build --locked --release --manifest-path rust/Cargo.toml --target'; then
-  fail "cross build does not use the locked workspace manifest"
-fi
+global = workflow["permissions"]
+unless global.is_a?(Hash) && global["contents"] == "read" &&
+       global.values.all? { |value| %w[read none].include?(value) }
+  errors << "workflow-wide permissions are not read-only"
+end
+
+jobs = workflow.fetch("jobs")
+jobs.each do |name, job|
+  writes = (job["permissions"] || {}).select { |_, value| value == "write" }.keys
+  expected = name == "release" ? ["contents"] : []
+  errors << "job #{name} has write permissions #{writes.inspect}" unless writes == expected
+end
+
+jobs.each do |name, job|
+  (job["steps"] || []).each do |step|
+    next unless step["uses"].to_s.start_with?("actions/checkout@")
+    unless (step["with"] || {})["persist-credentials"] == false
+      errors << "checkout in job #{name} persists credentials"
+    end
+  end
+end
+
+cross_runs = (jobs.dig("build", "steps") || []).map { |step| step["run"].to_s }
+  .select { |run| run.match?(/^\s*cross build\b/) }
+unless cross_runs.size == 1 &&
+       cross_runs.first.include?("cross build --locked --release --manifest-path rust/Cargo.toml --target")
+  errors << "cross build does not use the locked workspace manifest"
+end
+
+abort errors.join("\n") unless errors.empty?
+RUBY
+}
+
+check_workflow "$WORKFLOW" || fail "release workflow violates its safety contract"
+
+reject_workflow() {
+  local description="$1"
+  local mutation="$2"
+  local mutated="${TEST_DIR}/release.yaml"
+  perl -0pe "$mutation" "$WORKFLOW" > "$mutated"
+  if cmp -s "$WORKFLOW" "$mutated"; then
+    fail "workflow mutation did not apply: ${description}"
+  fi
+  if check_workflow "$mutated" >/dev/null 2>&1; then
+    fail "$description"
+  fi
+}
+
+# The mutations are Perl substitutions, so their capture references stay unexpanded.
+# shellcheck disable=SC2016
+reject_workflow "a workflow-wide write permission was accepted" \
+  's/^permissions:\n  contents: read\n/permissions:\n  contents: write\n/m'
+reject_workflow "a release job without its write permission was accepted" \
+  's/^    permissions:\n      contents: write\n//m'
+# shellcheck disable=SC2016
+reject_workflow "a write permission outside the release job was accepted" \
+  's/^(  build:\n)/$1    permissions:\n      contents: write\n/m'
+reject_workflow "a commented-out persist-credentials setting was accepted" \
+  's/^          persist-credentials: false\n          fetch-depth: 0\n/          # persist-credentials: false\n          fetch-depth: 0\n/m'
+# shellcheck disable=SC2016
+reject_workflow "persist-credentials on a non-checkout step was accepted" \
+  's/^(      - name: Checkout\n        uses: actions\/checkout@.*\n        with:\n)          persist-credentials: false\n(      - name: Download native)/$1          fetch-depth: 1\n$2/m; s/^(          name: i18n-status-core-linux-x86_64\n)/$1          persist-credentials: false\n/m'
+# shellcheck disable=SC2016
+reject_workflow "a cross build without the locked workspace manifest was accepted" \
+  's/^(        # With --manifest-path.*\n        run: cross build) --locked/$1/m'
 
 # Every duplicate of a contract value has to drift-check against the manifest.
 fixture="${TEST_DIR}/plugin[contract]&"

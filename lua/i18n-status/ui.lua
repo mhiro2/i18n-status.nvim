@@ -2,68 +2,6 @@
 local M = {}
 
 local fs = require("i18n-status.fs")
-local text = require("i18n-status.text")
-
----@alias UiMenuItem { label: string, action: string }|string
-
----@class UiSelectOptions
----@field prompt? string
----@field format_item? fun(item: UiMenuItem): string
-
----@param items UiMenuItem[]
----@param opts UiSelectOptions
----@param on_choice fun(item: UiMenuItem|nil)
-function M.select(items, opts, on_choice)
-  opts = opts or {}
-  local format_item = opts.format_item
-  if not format_item then
-    format_item = function(item)
-      if type(item) == "table" then
-        return item.label or item.action or vim.inspect(item)
-      end
-      if item == nil then
-        return ""
-      end
-      return tostring(item)
-    end
-    opts.format_item = format_item
-  end
-
-  local has_telescope, telescope = pcall(require, "telescope.pickers")
-  if has_telescope and telescope then
-    local finders = require("telescope.finders")
-    local conf = require("telescope.config").values
-    local pickers = require("telescope.pickers")
-    local entry_maker = function(item)
-      local formatted = format_item(item)
-      return {
-        value = item,
-        display = formatted,
-        ordinal = formatted,
-      }
-    end
-    pickers
-      .new({}, {
-        prompt_title = opts.prompt or "select",
-        finder = finders.new_table({ results = items, entry_maker = entry_maker }),
-        sorter = conf.generic_sorter({}),
-        attach_mappings = function(prompt_bufnr)
-          local actions = require("telescope.actions")
-          local action_state = require("telescope.actions.state")
-          actions.select_default:replace(function()
-            actions.close(prompt_bufnr)
-            local selection = action_state.get_selected_entry()
-            on_choice(selection and selection.value or nil)
-          end)
-          return true
-        end,
-      })
-      :find()
-    return
-  end
-
-  vim.ui.select(items, opts, on_choice)
-end
 
 ---@class FormatHoverLinesOptions
 ---@field include_actions? boolean
@@ -151,32 +89,23 @@ function M.format_hover_lines(item, opts)
     end
   end
 
-  if item.hover and item.hover.status == "!" then
+  local placeholders = item.hover and item.hover.status == "!" and item.hover.placeholders
+  if placeholders then
     local primary = item.hover.primary_lang
-    local primary_info = item.hover.values and item.hover.values[primary]
-    if primary_info then
-      local base = text.extract_placeholders(primary_info.value or "")
-      local base_list = {}
-      for name, _ in pairs(base) do
-        table.insert(base_list, name)
+    table.insert(lines, "")
+    table.insert(lines, "## Placeholders")
+    -- The core reports the primary language and every mismatched language.
+    local placeholder_langs = { primary }
+    for _, lang in ipairs(order) do
+      if lang ~= primary then
+        table.insert(placeholder_langs, lang)
       end
-      table.sort(base_list)
-      table.insert(lines, "")
-      table.insert(lines, "## Placeholders")
-      table.insert(lines, "- " .. md_escape(primary) .. ": " .. md_escape_join(base_list, ", "))
-      for _, lang in ipairs(order) do
-        if lang ~= primary then
-          local info = item.hover.values and item.hover.values[lang]
-          local current = text.extract_placeholders(info and info.value or "")
-          if not text.placeholder_equal(base, current) then
-            local list = {}
-            for name, _ in pairs(current) do
-              table.insert(list, name)
-            end
-            table.sort(list)
-            table.insert(lines, "- " .. md_escape(lang) .. ": " .. md_escape_join(list, ", "))
-          end
-        end
+    end
+    for _, lang in ipairs(placeholder_langs) do
+      local names = placeholders[lang]
+      if names then
+        local listed = #names > 0 and md_escape_join(names, ", ") or "(none)"
+        table.insert(lines, "- " .. md_escape(lang) .. ": " .. listed)
       end
     end
   end

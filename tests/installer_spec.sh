@@ -8,6 +8,7 @@ MOCK_BIN="${TEST_DIR}/mock-bin"
 MOCK_RESPONDER="${TEST_DIR}/mock-core-responder"
 MOCK_CARGO_LOG="${TEST_DIR}/cargo.log"
 MOCK_CURL_LOG="${TEST_DIR}/curl.log"
+MOCK_CHECKSUM_LOG="${TEST_DIR}/checksum.log"
 VERSION="$(bash "${ROOT_DIR}/scripts/core-contract.sh" --field version)"
 
 cleanup() {
@@ -57,9 +58,11 @@ run_installer() {
   local rust_host="${5:-test-host}"
   : > "$MOCK_CARGO_LOG"
   : > "$MOCK_CURL_LOG"
+  : > "$MOCK_CHECKSUM_LOG"
   PATH="${MOCK_BIN}:${PATH}" \
     MOCK_ARCHIVE_MODE="$archive_mode" \
     MOCK_CARGO_LOG="$MOCK_CARGO_LOG" \
+    MOCK_CHECKSUM_LOG="$MOCK_CHECKSUM_LOG" \
     MOCK_CURL_LOG="$MOCK_CURL_LOG" \
     MOCK_FIXTURE="$fixture" \
     MOCK_RESPONDER="$MOCK_RESPONDER" \
@@ -122,7 +125,11 @@ write_executable "$MOCK_RESPONDER" \
   'name="$(sed -n '\''s/.*"core_name"[^\"]*"\([^\"]*\)".*/\1/p'\'' "$manifest")"' \
   'version="$(sed -n '\''s/.*"version"[^\"]*"\([^\"]*\)".*/\1/p'\'' "$manifest")"' \
   'protocol="$(sed -n '\''s/.*"protocol_version"[^0-9]*\([0-9]*\).*/\1/p'\'' "$manifest")"' \
-  'IFS= read -r _request' \
+  'client="$(sed -n '\''s/.*"client_name"[^\"]*"\([^\"]*\)".*/\1/p'\'' "$manifest")"' \
+  'expected_initialize="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"client\":{\"name\":\"${client}\",\"version\":\"${version}\"},\"protocol_version\":${protocol}}}"' \
+  'expected_shutdown='\''{"jsonrpc":"2.0","id":2,"method":"shutdown","params":{}}'\''' \
+  'IFS= read -r request || request=""' \
+  'if [ "$request" != "$expected_initialize" ]; then echo "unexpected initialize request: ${request}" >&2; exit 4; fi' \
   'if [ "${MOCK_ARCHIVE_MODE:-normal}" = hung-handshake ]; then sleep 30; exit 0; fi' \
   'if [ "${MOCK_ARCHIVE_MODE:-normal}" = spoofed-handshake ]; then' \
   '  printf '\''{"jsonrpc":"2.0","id":1,"result":{"core":{"name":"wrong","version":"wrong"},"protocol_version":999},"name":"%s","protocol_version":%s,"version":"%s"}\n'\'' "$name" "$protocol" "$version"' \
@@ -132,7 +139,8 @@ write_executable "$MOCK_RESPONDER" \
   'fi' \
   'if [ "${MOCK_ARCHIVE_MODE:-normal}" = wrong-handshake ]; then sleep 30; fi' \
   'if [ "${MOCK_ARCHIVE_MODE:-normal}" = crash-after-handshake ]; then exit 3; fi' \
-  'IFS= read -r _shutdown || true'
+  'IFS= read -r request || request=""' \
+  'if [ "$request" != "$expected_shutdown" ]; then echo "unexpected shutdown request: ${request}" >&2; exit 4; fi'
 
 # shellcheck disable=SC2016
 write_executable "${MOCK_BIN}/rustc" \
@@ -185,7 +193,11 @@ write_executable "${MOCK_BIN}/curl" \
   '  archive="${output%.sha256}"' \
   '  if command -v sha256sum >/dev/null 2>&1; then digest="$(sha256sum "$archive")"; else digest="$(shasum -a 256 "$archive")"; fi' \
   '  digest="${digest%% *}"' \
-  '  if [ "${MOCK_ARCHIVE_MODE:-normal}" = corrupt-download ]; then digest="${digest//a/b}"; fi' \
+  '  if [ "${MOCK_ARCHIVE_MODE:-normal}" = corrupt-download ]; then' \
+  '    corrupt=0; [ "${digest:0:1}" != 0 ] || corrupt=1' \
+  '    printf "%s %s\n" "$digest" "${corrupt}${digest:1}" >> "${MOCK_CHECKSUM_LOG:?}"' \
+  '    digest="${corrupt}${digest:1}"' \
+  '  fi' \
   '  printf "%s  %s\n" "$digest" "$(basename "$archive")" > "$output"' \
   '  printf 200' \
   '  exit 0' \
@@ -288,6 +300,12 @@ assert_hard_failure() {
 
 assert_hard_failure "${TEST_DIR}/corrupt-download" corrupt-download \
   "a release failing its checksum was accepted"
+read -r published_digest corrupted_digest < "$MOCK_CHECKSUM_LOG" \
+  || fail "the corrupt download fixture did not publish a checksum"
+[[ "$published_digest" =~ ^[0-9a-f]{64}$ ]] && [[ "$corrupted_digest" =~ ^[0-9a-f]{64}$ ]] \
+  || fail "the corrupt download fixture published a malformed checksum"
+[ "$published_digest" != "$corrupted_digest" ] \
+  || fail "the corrupt download fixture left the checksum intact"
 assert_hard_failure "${TEST_DIR}/symlink-archive" symlink \
   "a symlink archive member was accepted"
 assert_hard_failure "${TEST_DIR}/extra-member-archive" extra-member \
@@ -314,5 +332,42 @@ assert_hard_failure "${TEST_DIR}/server-error" server-error \
   "a server error was treated as a missing release"
 assert_hard_failure "${TEST_DIR}/network-down" network-down \
   "an unreachable network was treated as a missing release"
+
+# The mock core accepts only the exact requests the packaged smoke test sends.
+assert_rejected_smoke_request() {
+  local fixture="$1"
+  local request="$2"
+  local replacement="$3"
+  local rejection="$4"
+  local description="$5"
+  local stderr_log="${TEST_DIR}/smoke-request.stderr"
+  make_fixture "$fixture"
+  grep -Fq -- "$request" "${fixture}/scripts/smoke-core-contract.sh" \
+    || fail "smoke request fixture does not contain ${request}"
+  REQUEST="$request" REPLACEMENT="$replacement" \
+    perl -pi -e 's/\Q$ENV{REQUEST}\E/$ENV{REPLACEMENT}/g' "${fixture}/scripts/smoke-core-contract.sh"
+  if run_installer "$fixture" 2> "$stderr_log"; then
+    fail "$description"
+  fi
+  grep -Fq "$rejection" "$stderr_log" || fail "${description} (not rejected by the core)"
+  [ ! -e "${fixture}/bin/i18n-status-core" ] || fail "${description} (installed anyway)"
+}
+
+# shellcheck disable=SC2016
+assert_rejected_smoke_request "${TEST_DIR}/wrong-initialize-method" \
+  '\"method\":\"initialize\"' '\"method\":\"init\"' "unexpected initialize request" \
+  "a smoke test sending the wrong initialize method was accepted"
+# shellcheck disable=SC2016
+assert_rejected_smoke_request "${TEST_DIR}/wrong-initialize-client" \
+  '\"name\":\"${client_name}\"' '\"name\":\"other.nvim\"' "unexpected initialize request" \
+  "a smoke test identifying the wrong client was accepted"
+# shellcheck disable=SC2016
+assert_rejected_smoke_request "${TEST_DIR}/wrong-initialize-protocol" \
+  '\"protocol_version\":${protocol_version}}}' '\"protocol_version\":99}}' \
+  "unexpected initialize request" \
+  "a smoke test requesting the wrong protocol was accepted"
+assert_rejected_smoke_request "${TEST_DIR}/missing-shutdown" \
+  '"method":"shutdown"' '"method":"exit"' "unexpected shutdown request" \
+  "a smoke test without its shutdown request was accepted"
 
 echo "installer tests passed"

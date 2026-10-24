@@ -447,23 +447,6 @@ mod tests {
     }
 
     #[test]
-    fn extracts_root_resource_namespaces() {
-        let items = extract_items(
-            r#"{
-  "common": { "login": { "title": "Login" } },
-  "admin": { "save": "Save" }
-}"#,
-            "ignored",
-            true,
-            None,
-        );
-
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].key, "common:login.title");
-        assert_eq!(items[1].key, "admin:save");
-    }
-
-    #[test]
     fn rejects_deeply_nested_input_instead_of_overflowing() {
         let depth = crate::util::MAX_RECURSION_DEPTH + 50;
         let mut source = String::new();

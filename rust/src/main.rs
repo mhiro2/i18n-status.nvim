@@ -1,15 +1,7 @@
-mod doctor;
-mod hardcoded;
-mod resolve;
-mod resource;
-mod rpc;
-mod scan;
-mod util;
-
 use anyhow::{Context, Result};
 use i18n_status_core::contract::{self, InitializeParams, InitializeResult};
-use resource::index::IndexCache;
-use rpc::{
+use i18n_status_core::resource::index::IndexCache;
+use i18n_status_core::rpc::{
     INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, Notification,
     REQUEST_CANCELLED, Response, RpcSender, Transport,
 };
@@ -21,6 +13,8 @@ use std::sync::{
     mpsc,
 };
 use std::time::{Duration, Instant};
+
+use i18n_status_core::{doctor, hardcoded, resolve, resource, scan, util};
 
 const DOCTOR_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const DOCTOR_CANCEL_GRACE: Duration = Duration::from_millis(50);
