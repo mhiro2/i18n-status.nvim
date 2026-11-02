@@ -15,12 +15,12 @@ jobs:
       publish_core: ${{ steps.contract.outputs.publish_core }}
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        uses: dtolnay/rust-toolchain@stable
       - name: Verify the unified source contract
         id: contract
         env:
@@ -52,11 +52,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - name: Install cross
@@ -79,7 +79,7 @@ jobs:
           tar czf ${{ matrix.artifact }}.tar.gz -C "$package_dir" ${{ matrix.artifact }} core-contract.json
           shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
       - name: Upload artifact
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -92,11 +92,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Download native Linux artifact
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        uses: actions/download-artifact@v8.0.2
         with:
           name: i18n-status-core-linux-x86_64
           path: dist
@@ -123,9 +123,9 @@ jobs:
     steps:
       - name: Download all artifacts
         if: needs.verify-contract.outputs.publish_core == 'true'
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        uses: actions/download-artifact@v8.0.2
       - name: Create Release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        uses: softprops/action-gh-release@v3.0.3
         with:
           files: ${{ needs.verify-contract.outputs.publish_core == 'true' && 'i18n-status-core-*/*.tar.gz*' || '' }}
           generate_release_notes: true
