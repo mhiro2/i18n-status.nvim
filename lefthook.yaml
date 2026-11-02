@@ -16,6 +16,9 @@ pre-commit:
       run: make rustfmt-check
     typos:
       run: typos {staged_files}
+    actions-lock:
+      glob: ".github/workflows/*"
+      run: gh actions-lock --verify-local
 
 pre-push:
   parallel: true
