@@ -450,7 +450,8 @@ Keymaps:
   a           Select all
   A           Deselect all
   r           Edit key name
-  u           Reuse existing key (for conflicting keys)
+  u           Reuse an existing key (a conflicting key, or a key whose
+              primary value already has the same text)
   U           Switch back to new key mode
   <CR>        Apply selected candidates
   ?           Toggle keymap help overlay
@@ -466,6 +467,15 @@ status are skipped. Results are reported as applied/skipped/failed counts.
 When a key conflicts with an existing one, pressing `u` lets you reuse
 the existing key: source text is replaced but no resource file is written.
 Press `U` to switch back to creating a new key.
+
+Existing keys whose primary-language value already stores the candidate's
+text are listed under "same text" in the preview, and the mode column shows
+`new ≈`. Only keys the candidate's translator can reach are listed, up to 10:
+i18next keys of the translator's namespace (other namespaces may not be
+loaded) and next-intl keys below the bound namespace. They are never reused
+automatically, because the same text may need a different translation in
+another context: press `u` to pick one (directly when it is the only option).
+Apply rejects a picked key whose primary value no longer matches the text.
 
 Extract only offers candidates that have an unambiguous translation function
 obtained from useTranslation(), useTranslations(), or an awaited

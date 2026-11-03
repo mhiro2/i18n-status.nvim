@@ -31,6 +31,8 @@ local EXTRACT_REVIEW_TRACK_NS = vim.api.nvim_create_namespace("i18n-status-extra
 ---@field extract_safe boolean
 ---@field proposed_key string
 ---@field new_key string
+---@field reuse_suggestions string[]|nil Existing keys whose primary value already stores `message`
+---@field reuse_same_text boolean|nil Whether the reused key was chosen for storing the same text
 ---@field mode 'new'|'reuse'
 ---@field selected boolean
 ---@field status 'ready'|'conflict_existing'|'invalid_key'|'error'
@@ -270,6 +272,7 @@ local function edit_candidate_key(ctx, candidate)
       return
     end
     candidate.mode = "new"
+    candidate.reuse_same_text = nil
     candidate.selected = true
     candidate.proposed_key = vim.trim(input)
     clear_apply_error(candidate)
@@ -327,40 +330,65 @@ local function choose_reuse_mode(ctx)
 
   local catalog = ctx.framework_catalogs[candidate.framework]
   local existing_keys = (catalog and catalog.existing_keys) or ctx.existing_keys
-  if not existing_keys[candidate.proposed_key] then
+  -- A key picked for its text stays a same-text target, so picking it again keeps its revalidation.
+  local conflict_key = not candidate.reuse_same_text
+      and existing_keys[candidate.proposed_key]
+      and candidate.proposed_key
+    or nil
+  local targets = { conflict_key }
+  for _, key in ipairs(candidate.reuse_suggestions or {}) do
+    if key ~= conflict_key and existing_keys[key] then
+      targets[#targets + 1] = key
+    end
+  end
+  if #targets == 0 then
     vim.notify("i18n-status extract: no existing key to reuse for " .. candidate.proposed_key, vim.log.levels.INFO)
     return
   end
 
-  if candidate.status ~= "conflict_existing" or candidate.mode ~= "new" then
+  ---@param key string
+  local function reuse(key)
     candidate.mode = "reuse"
+    candidate.proposed_key = key
+    candidate.reuse_same_text = key ~= conflict_key
     candidate.selected = true
     clear_apply_error(candidate)
     refresh_views(ctx, candidate.id)
+  end
+
+  local resolving_conflict = conflict_key ~= nil and candidate.status == "conflict_existing" and candidate.mode == "new"
+  if #targets == 1 and not resolving_conflict then
+    reuse(targets[1])
     return
   end
 
-  local options = {
-    "Reuse existing key (Recommended)",
-    "Edit key",
-    "Skip",
-  }
+  local options = {}
+  for _, key in ipairs(targets) do
+    local label = key == conflict_key and "Reuse existing key" or "Reuse key with the same text"
+    options[#options + 1] = { label = label .. ": " .. key, key = key }
+  end
+  local prompt = "Reuse an existing key for: " .. candidate.text
+  if resolving_conflict then
+    options[1].label = options[1].label .. " (Recommended)"
+    options[#options + 1] = { label = "Edit key", action = "edit" }
+    options[#options + 1] = { label = "Skip", action = "skip" }
+    prompt = "Resolve key conflict: " .. candidate.proposed_key
+  end
 
   vim.ui.select(options, {
-    prompt = "Resolve key conflict: " .. candidate.proposed_key,
+    prompt = prompt,
+    format_item = function(option)
+      return option.label
+    end,
   }, function(choice)
-    if choice == options[1] then
-      candidate.mode = "reuse"
-      candidate.selected = true
-      clear_apply_error(candidate)
-      refresh_views(ctx, candidate.id)
+    if not choice then
       return
     end
-    if choice == options[2] then
+    if choice.key then
+      reuse(choice.key)
+    elseif choice.action == "edit" then
       edit_candidate_key(ctx, candidate)
-      return
-    end
-    if choice == options[3] then
+    elseif choice.action == "skip" then
       candidate.selected = false
       refresh_views(ctx, candidate.id)
     end
@@ -374,6 +402,7 @@ local function choose_new_mode(ctx)
     return
   end
   candidate.mode = "new"
+  candidate.reuse_same_text = nil
   candidate.selected = true
   candidate.proposed_key = candidate.new_key or candidate.proposed_key
   clear_apply_error(candidate)

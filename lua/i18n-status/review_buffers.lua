@@ -647,6 +647,9 @@ function M.render_extract_list(ctx, namespace, preferred_candidate_id)
     local key_col = preview_text(candidate.proposed_key, key_w)
     local icon = M.extract_status_icon(candidate.status)
     local mode_label = candidate.mode == "reuse" and "reuse" or "new"
+    if candidate.mode == "new" and candidate.reuse_suggestions and #candidate.reuse_suggestions > 0 then
+      mode_label = mode_label .. " ≈"
+    end
     lines[#lines + 1] =
       string.format("[%s] %-" .. text_w .. "s %-" .. key_w .. "s %s %s", marker, text_col, key_col, icon, mode_label)
     local line_nr = #lines
@@ -735,6 +738,14 @@ function M.render_extract_resource_preview(ctx, namespace, deps)
       col_start = #"reason: ",
       col_end = -1,
     }
+  end
+  if candidate.reuse_suggestions and #candidate.reuse_suggestions > 0 then
+    lines[#lines + 1] = "same text (u: reuse):"
+    decorations[#decorations + 1] = { line = #lines - 1, group = "I18nStatusReviewMeta" }
+    for _, key in ipairs(candidate.reuse_suggestions) do
+      lines[#lines + 1] = "  " .. key
+      decorations[#decorations + 1] = { line = #lines - 1, group = "I18nStatusReviewKey", col_start = 2, col_end = -1 }
+    end
   end
   lines[#lines + 1] = ""
 

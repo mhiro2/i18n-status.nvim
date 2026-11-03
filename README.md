@@ -325,7 +325,7 @@ Run `:I18nExtract` (or `:'<,'>I18nExtract` for a range) to detect hardcoded JSX 
 - **`a`**: Select all
 - **`A`**: Deselect all
 - **`r`**: Edit key name
-- **`u`**: Reuse existing key (for conflicting keys)
+- **`u`**: Reuse an existing key (a conflicting key, or a key whose primary value already has the same text)
 - **`U`**: Switch back to new key mode
 - **`<CR>`**: Apply selected candidates
 - **`?`**: Toggle keymap help overlay
@@ -333,6 +333,7 @@ Run `:I18nExtract` (or `:'<,'>I18nExtract` for a range) to detect hardcoded JSX 
 Candidates are unselected by default. Select targets with `<Space>`, then use `<CR>`.
 The list pane keeps shortcut hints minimal (`?:help`, `q:quit`). Use `?` to view the full keymap.
 The diff preview shows both the source replacement and the resource file changes that will be written. When a key conflicts with an existing one, `u` lets you reuse it (source replacement only, no resource write).
+Existing keys whose primary-language value already stores the candidate's text are listed under "same text" in the preview (mode column `new ≈`). Only keys the candidate's translator can reach are listed, up to 10: i18next keys of the translator's namespace and next-intl keys below the bound namespace. They are never reused automatically because the same text may need a different translation elsewhere; press `u` to pick one. Apply rejects a picked key whose primary value no longer matches the text.
 
 Extraction is offered only when an unambiguous translation function obtained from `useTranslation`, `useTranslations`, or an awaited `getTranslations` is available in the candidate's lexical scope; the command does not invent a global `t` or insert imports/hooks. Dynamic namespace expressions and `useTranslation` options that can change key semantics, including `keyPrefix`, are refused.
 
