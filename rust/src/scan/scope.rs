@@ -44,6 +44,13 @@ impl SymbolBinding {
         self.translator && self.declaration_end <= pos
     }
 
+    /// Whether keys written for this translator cannot be spelled from its metadata: its
+    /// namespace is dynamic, or i18next options such as `keyPrefix` rewrite every key.
+    pub(super) fn has_opaque_keys(&self) -> bool {
+        self.namespace_resolution == Some(NamespaceResolution::Dynamic)
+            || (matches!(self.hook, Some(TranslationHook::UseTranslation)) && !self.extract_safe)
+    }
+
     pub(super) fn binding_id(&self) -> String {
         format!("{}@{}", self.name, self.declaration_end)
     }

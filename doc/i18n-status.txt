@@ -273,6 +273,37 @@ The plugin creates the following user commands:
                       writes are rolled back when their files have not changed
                       again.
 
+  :I18nFind[!] [text] Search keys whose name or translated value (in any
+                      language) contains {text}, ignoring case. Prompts when
+                      {text} is omitted. Results list exact value matches
+                      first, then partial value matches, then key name
+                      matches; primary language matches come first within
+                      each group. Up to 200 results are offered through
+                      |vim.ui.select()|.
+                      In an editable JS/TS buffer the chosen key is inserted
+                      at the cursor, spelled for the translator that owns the
+                      position:
+                        - inside the string literal key of a translation
+                          call (including aliased translators and calls
+                          spanning lines) the string contents are replaced
+                        - inside another string, only the key's full path is
+                          inserted (`ns:key` for i18next, `Ns.key` for
+                          next-intl)
+                        - elsewhere, a call to the translator in scope is
+                          inserted (e.g. `t("key")`), or the key's full path
+                          when none is in scope
+                      i18next keys of the bound namespace are written
+                      relative to it and keys of other namespaces keep their
+                      `ns:` prefix. next-intl keys are written relative to the
+                      bound namespace; keys outside it are refused, as are
+                      translators with a dynamic namespace or a `keyPrefix`
+                      option. Like the scanner, per-call options such as
+                      `{ ns: "..." }` are not taken into account.
+                      In other buffers, or with [!], the translation file of
+                      the matched language is opened instead.
+                      Lua: `require("i18n-status").find({ query = "...",`
+                      `action = "insert" | "open" })`.
+
   :I18nExtract        Detect hardcoded JSX text and open the Extract Review UI.
                       Supports ranges (e.g. :'<,'>I18nExtract).
                       See |i18n-status-extract| for Review UI details.
@@ -301,6 +332,8 @@ Example keymaps:
     { desc = "Add new i18n key" })
   vim.keymap.set("n", "<leader>ix", "<Cmd>I18nExtract<CR>",
     { desc = "Extract hardcoded text" })
+  vim.keymap.set({ "n", "i" }, "<C-g>f", "<Cmd>I18nFind<CR>",
+    { desc = "Find and insert i18n key" })
 <
 
 Inline goto-definition is opt-in. Define your own mapping that calls

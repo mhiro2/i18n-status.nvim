@@ -442,6 +442,14 @@ function M.add_key()
   review.add_key_command(config)
 end
 
+---Search keys by name or translated text, then insert the chosen key or open its definition.
+---@param opts I18nStatusFindOptions|nil
+function M.find(opts)
+  ensure_modules()
+  M.ensure_setup()
+  require("i18n-status.find").run(vim.api.nvim_get_current_buf(), opts)
+end
+
 ---@param opts? { start_line?: integer, end_line?: integer }
 function M.extract(opts)
   ensure_modules()

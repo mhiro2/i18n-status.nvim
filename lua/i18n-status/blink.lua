@@ -6,7 +6,7 @@ Source.__index = Source
 ---@class I18nStatusBlinkCompat
 local M = {}
 
-local next_intl_key = require("i18n-status.next_intl_key")
+local key_spelling = require("i18n-status.key_spelling")
 local resources = require("i18n-status.resources")
 local scan = require("i18n-status.scan")
 local state = require("i18n-status.state")
@@ -35,78 +35,6 @@ local function is_missing_value(key, value)
   return false
 end
 
----@class I18nStatusCompletionArg
----@field prefix string Text typed inside the string literal before the cursor
----@field member_call boolean Whether the translator is called as a member (`i18n.t(...)`)
-
----Find the translation call whose first string argument contains the end of `before`, the line
----text up to the cursor. Strings, template interpolations, and comments are tracked so that `t(`
----inside strings or comments, closed arguments such as `t("a") + "`, and calls like
----`axios.get("` do not count. Quotes directly after a word (`Don't` in JSX text) and `//` after a
----URL scheme are text, not delimiters.
----@param before string
----@return I18nStatusCompletionArg|nil
-local function translation_arg_at(before)
-  local quote, quote_start = nil, nil
-  ---@type boolean|nil Member flag of a `t(` that is still waiting for its first argument
-  local pending = nil
-  ---@type boolean|nil Member flag of the call whose first argument is the open string
-  local arg_member = nil
-  -- Brace depth of the code and, per open `${`, the depth at which its template resumes.
-  local depth = 0
-  local templates = {}
-  local i, n = 1, #before
-  while i <= n do
-    local c = before:sub(i, i)
-    local prev = i > 1 and before:sub(i - 1, i - 1) or ""
-    if quote then
-      if c == "\\" then
-        i = i + 1
-      elseif c == quote then
-        quote, arg_member = nil, nil
-      elseif quote == "`" and before:sub(i, i + 1) == "${" then
-        quote, arg_member, pending = nil, nil, nil
-        depth = depth + 1
-        templates[#templates + 1] = depth
-        i = i + 1
-      end
-    elseif before:sub(i, i + 1) == "//" and not before:sub(1, i - 1):match("%a:$") then
-      return nil
-    elseif before:sub(i, i + 1) == "/*" then
-      local close = before:find("*/", i + 2, true)
-      if not close then
-        return nil
-      end
-      i = close + 1
-    elseif c == "`" or ((c == '"' or c == "'") and not prev:match("[%w_$]")) then
-      quote, quote_start = c, i
-      arg_member, pending = pending, nil
-    elseif c == "}" and templates[#templates] == depth then
-      templates[#templates] = nil
-      depth = depth - 1
-      quote, arg_member, pending = "`", nil, nil
-    else
-      local call_end = c == "t" and not prev:match("[%w_$]") and select(2, before:find("^t%s*%(", i))
-      if call_end then
-        pending = prev == "."
-        i = call_end
-      elseif not c:match("%s") then
-        pending = nil
-        if c == "{" then
-          depth = depth + 1
-        elseif c == "}" then
-          depth = depth - 1
-        end
-      end
-    end
-    i = i + 1
-  end
-  if not quote or arg_member == nil then
-    return nil
-  end
-  return { prefix = before:sub(quote_start + 1), member_call = arg_member }
-end
-
 ---@param ctx table|nil
 ---@return integer, integer, string
 local function current_position(ctx)
@@ -132,13 +60,13 @@ end
 ---every key without a translation call.
 ---@param ctx table|nil
 ---@return boolean complete
----@return I18nStatusCompletionArg|nil arg
+---@return I18nStatusTranslationArg|nil arg
 local function completion_target(ctx)
   if not ctx or next(ctx) == nil then
     return true, nil
   end
   local _, col, line = current_position(ctx)
-  local arg = translation_arg_at(line:sub(1, col))
+  local arg = key_spelling.translation_arg_at(line:sub(1, col))
   return arg ~= nil, arg
 end
 
@@ -162,10 +90,8 @@ local function get_completion_items(ctx)
   local primary = (project and project.primary_lang) or cache.languages[1]
   local entries = cache.index[primary] or {}
   local prefix = arg and arg.prefix or ""
-  local explicit_ns = false
-  local ns = nil
-  ---@type { namespace: string|nil }|nil
-  local next_intl_translator = nil
+  ---@type I18nStatusKeySpelling
+  local spelling = { namespace = nil }
 
   if arg then
     local row, col = current_position(ctx)
@@ -180,18 +106,14 @@ local function get_completion_items(ctx)
     if ctx_result.shadowed then
       return {}, false, false
     end
-    local policy = ctx_result.source_key_policy
     if prefix:find(":", 1, true) then
-      ns = prefix:match("^(.-):")
-      explicit_ns = true
-    elseif
-      ctx_result.found_hook
-      and ctx_result.framework == "next_intl"
-      and (policy == "namespace_relative" or policy == "canonical")
-    then
-      next_intl_translator = { namespace = policy == "namespace_relative" and ctx_result.namespace or nil }
+      spelling = { namespace = prefix:match("^(.-):"), explicit_namespace = true }
     else
-      ns = ctx_result.found_hook and ctx_result.namespace or fallback_ns
+      local resolved = key_spelling.for_context(ctx_result, fallback_ns)
+      if not resolved then
+        return {}, false, false
+      end
+      spelling = resolved
     end
   end
 
@@ -215,16 +137,7 @@ local function get_completion_items(ctx)
   ---@param key string
   ---@return string|nil
   local function source_key_for(key)
-    if next_intl_translator then
-      return (next_intl_key.source_key(next_intl_translator.namespace, key))
-    end
-    if ns and key:sub(1, #ns + 1) ~= ns .. ":" then
-      return nil
-    end
-    if ns and not explicit_ns then
-      return key:match("^[^:]+:(.+)$") or key
-    end
-    return key
+    return (key_spelling.source_key(spelling, key))
   end
 
   -- Collect every key matching the typed text before applying the limit, so the kept items do

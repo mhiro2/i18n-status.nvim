@@ -85,6 +85,7 @@ Examples:
 - 🗂️ **Translation file inline**: When you open a resource JSON file, show another language inline (controlled by `:I18nLang`).
 - 💬 **Hover details**: Values for all languages + reason + file path (git-relative when possible).
 - 🔁 **Language cycling**: yankround-style next/prev + "back to previous".
+- 🔎 **Find keys by text**: Search key names and translated values, then insert the key spelled for the translator in scope.
 - 🎯 **Inline goto definition (opt-in)**: Map any keys (e.g. `gd`) to jump straight to the translation file under the cursor.
 - 🩺 **Doctor + Review**: Diagnose project-wide issues and review/fix them in a two-pane floating UI where the left list drives every action and the right side stays as a live preview.
 - ✂️ **Interactive JSX extraction**: Detect hardcoded JSX text and open a Review UI with diff preview, bulk selection, and one-shot apply.
@@ -136,6 +137,7 @@ vim.keymap.set("n", "<leader>in", "<Cmd>I18nLangNext<CR>", { desc = "Next langua
 vim.keymap.set("n", "<leader>ip", "<Cmd>I18nLangPrev<CR>", { desc = "Previous language" })
 vim.keymap.set("n", "<leader>id", "<Cmd>I18nDoctor<CR>", { desc = "i18n doctor" })
 vim.keymap.set("n", "<leader>ia", "<Cmd>I18nAddKey<CR>", { desc = "Add new i18n key" })
+vim.keymap.set({ "n", "i" }, "<C-g>f", "<Cmd>I18nFind<CR>", { desc = "Find and insert i18n key" })
 
 -- Inline goto-definition is opt-in. Configure it per-buffer so LSP mappings don't override it.
 vim.api.nvim_create_autocmd("LspAttach", {
@@ -228,8 +230,11 @@ If none is found, a best-effort fallback is used and `:checkhealth` will warn.
 - **`:I18nDoctor`**: Diagnose i18n issues across the entire project and open Review UI
 - **`:I18nDoctorCancel`**: Cancel a running doctor scan
 - **`:I18nAddKey`**: Add a new i18n key to all language files interactively (create-only, with all targets preflighted and earlier writes rolled back if a later write fails)
+- **`:I18nFind[!] [text]`**: Search keys whose name or translated value contains the text, then insert the chosen key at the cursor (or open its translation file with `!` / outside JS/TS buffers)
 - **`:I18nExtract`**: Detect hardcoded JSX text and open the Extract Review UI (supports `:'<,'>I18nExtract` for range extraction)
 - **`:I18nRefresh`**: Force refresh current buffer
+
+`:I18nFind` matches every language case-insensitively and lists exact value matches first, then partial value matches, then key name matches (up to 200 through `vim.ui.select()`). The inserted key follows the translator that owns the cursor position: inside the string literal key of a translation call (aliased translators and calls spanning lines included) the string contents are replaced, inside another string only the full key path is inserted, elsewhere a call such as `t("key")` to the translator in scope is inserted, and without one the full key path is inserted. i18next keys of the bound namespace are written relative to it while other namespaces keep their `ns:` prefix; next-intl keys are written relative to the bound namespace and keys outside it are refused, as are translators with a dynamic namespace or a `keyPrefix` option.
 
 Doctor reads unsaved source from open buffers of the diagnosed project only: named normal or `nofile` buffers under the project root whose directory resolves to the same resource roots. Unnamed buffers, other special buffers, and buffers of other (including nested) projects are ignored.
 

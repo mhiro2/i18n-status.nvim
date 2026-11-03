@@ -117,6 +117,7 @@ impl<'a> CallVisitor<'a> {
                 framework: binding.and_then(|binding| binding.framework),
                 source_key_policy: binding.and_then(|binding| binding.source_key_policy),
                 translator_namespace: binding.and_then(|binding| binding.namespace.clone()),
+                opaque_binding: binding.is_some_and(SymbolBinding::has_opaque_keys),
             });
         }
     }
@@ -403,6 +404,26 @@ function Page() {
         );
 
         assert!(items.is_empty(), "unexpected items: {items:?}");
+    }
+
+    #[test]
+    fn flags_translators_whose_keys_cannot_be_spelled_from_metadata() {
+        let items = extract_items(
+            r#"
+import { t as globalT } from "i18next";
+function Page({ ns }) {
+  const { t } = useTranslation("auth", { keyPrefix: "login" });
+  const { t: plain } = useTranslation("auth", { useSuspense: false });
+  const { t: dynamic } = useTranslation(ns);
+  const next = useTranslations(ns);
+  return [t("title"), plain("title"), dynamic("title"), next("title"), globalT("title")];
+}
+"#,
+            "translation",
+        );
+
+        let flags: Vec<_> = items.iter().map(|item| item.opaque_binding).collect();
+        assert_eq!(flags, [true, false, true, true, false]);
     }
 
     #[test]

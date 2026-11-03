@@ -28,6 +28,10 @@ pub struct ScanItem {
     /// Namespace argument bound to the owning translator, as written in source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translator_namespace: Option<String>,
+    /// Whether the owning translator rewrites keys in ways its metadata cannot describe (a
+    /// dynamic namespace or i18next options such as `keyPrefix`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub opaque_binding: bool,
 }
 
 #[derive(Debug, Deserialize)]
