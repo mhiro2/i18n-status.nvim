@@ -1,11 +1,17 @@
-use swc_common::{SourceMap, Spanned};
+use swc_common::{SourceMap, SourceMapper, Spanned};
 use swc_ecma_ast::*;
 use swc_ecma_visit::{Visit, VisitWith};
 
-use super::const_eval::eval_string_exprs;
+use super::const_eval::{KeyCandidate, eval_key_candidates};
 use super::parser::span_to_byte_range;
 use super::scope::{ScopeAnalysis, SymbolBinding};
-use super::{NamespaceResolution, Range, ScanItem, TranslationFramework};
+use super::{
+    ExtractResult, NamespaceResolution, Range, ScanItem, TranslationFramework, UnresolvedReason,
+    UnresolvedRef,
+};
+
+/// Longest key expression kept for display, in characters.
+const MAX_EXPRESSION_CHARS: usize = 80;
 
 pub(super) fn extract_calls(
     module: &Module,
@@ -13,17 +19,17 @@ pub(super) fn extract_calls(
     scopes: &ScopeAnalysis,
     fallback_namespace: &str,
     range: &Option<Range>,
-) -> Vec<ScanItem> {
-    let mut items = Vec::new();
+) -> ExtractResult {
+    let mut result = ExtractResult::default();
     let mut visitor = CallVisitor {
         cm,
         scopes,
         fallback_namespace,
         range,
-        items: &mut items,
+        result: &mut result,
     };
     module.visit_with(&mut visitor);
-    items
+    result
 }
 
 struct CallVisitor<'a> {
@@ -31,7 +37,19 @@ struct CallVisitor<'a> {
     scopes: &'a ScopeAnalysis,
     fallback_namespace: &'a str,
     range: &'a Option<Range>,
-    items: &'a mut Vec<ScanItem>,
+    result: &'a mut ExtractResult,
+}
+
+/// Source text of `expr` on one line, shortened to `MAX_EXPRESSION_CHARS`.
+fn expression_text(cm: &SourceMap, expr: &Expr) -> String {
+    let snippet = cm.span_to_snippet(expr.span()).unwrap_or_default();
+    let collapsed = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= MAX_EXPRESSION_CHARS {
+        return collapsed;
+    }
+    let mut shortened: String = collapsed.chars().take(MAX_EXPRESSION_CHARS - 1).collect();
+    shortened.push('…');
+    shortened
 }
 
 impl Visit for CallVisitor<'_> {
@@ -96,15 +114,59 @@ impl<'a> CallVisitor<'a> {
             return;
         }
 
-        let values = eval_string_exprs(&first_arg.expr, &|ident| self.scopes.const_value(ident));
-        if values.is_empty() {
-            return;
+        let candidates =
+            eval_key_candidates(&first_arg.expr, &|ident| self.scopes.const_value(ident));
+        let mut prefixes = Vec::new();
+        let reason = match &candidates {
+            None => {
+                prefixes.push(String::new());
+                Some(UnresolvedReason::Limit)
+            }
+            Some(candidates) => {
+                prefixes.extend(candidates.iter().filter_map(|candidate| match candidate {
+                    KeyCandidate::Prefix(prefix) => Some(prefix.clone()),
+                    KeyCandidate::Exact(_) => None,
+                }));
+                if prefixes.is_empty() {
+                    None
+                } else if prefixes.iter().any(String::is_empty) {
+                    Some(UnresolvedReason::Dynamic)
+                } else {
+                    Some(UnresolvedReason::Partial)
+                }
+            }
+        };
+        if let Some(reason) = reason {
+            let mut key_prefixes: Vec<String> = Vec::new();
+            let mut unbounded = false;
+            for prefix in &prefixes {
+                let (ranges, any_key) = self.key_ranges(prefix, binding);
+                unbounded |= any_key;
+                for range in ranges {
+                    if !key_prefixes.contains(&range) {
+                        key_prefixes.push(range);
+                    }
+                }
+            }
+            self.result.unresolved.push(UnresolvedRef {
+                lnum,
+                col,
+                end_lnum,
+                end_col,
+                reason,
+                expression: expression_text(self.cm, &first_arg.expr),
+                key_prefixes,
+                unbounded,
+            });
         }
 
         let refactorable = is_direct_literal(&first_arg.expr);
-        for value in values {
+        for candidate in candidates.into_iter().flatten() {
+            let KeyCandidate::Exact(value) = candidate else {
+                continue;
+            };
             let (key, namespace, fallback) = self.resolve_namespace(&value, binding);
-            self.items.push(ScanItem {
+            self.result.items.push(ScanItem {
                 key,
                 raw: value,
                 namespace,
@@ -127,6 +189,46 @@ impl<'a> CallVisitor<'a> {
             return binding.is_callable_translator_at(call_pos);
         }
         func_name == "t"
+    }
+
+    /// Canonical `namespace:path` prefixes of the keys whose source spelling starts with
+    /// `prefix`, and whether such a key may also be any other key.
+    ///
+    /// An i18next key may carry its own `ns:` in the runtime part, which replaces the bound
+    /// namespace: the key then starts with `prefix` itself (its namespace starts with it), and an
+    /// empty prefix may reach any key.
+    fn key_ranges(&self, prefix: &str, binding: Option<&SymbolBinding>) -> (Vec<String>, bool) {
+        if binding.is_some_and(SymbolBinding::has_opaque_keys) {
+            return (Vec::new(), true);
+        }
+        if let Some(binding) =
+            binding.filter(|binding| binding.framework == Some(TranslationFramework::NextIntl))
+        {
+            let path = match binding.namespace.as_deref() {
+                Some(namespace) => format!("{namespace}.{prefix}"),
+                None => prefix.to_string(),
+            };
+            return match path.split_once('.') {
+                Some((namespace, key_path)) if !namespace.is_empty() => {
+                    (vec![format!("{namespace}:{key_path}")], false)
+                }
+                _ => (Vec::new(), true),
+            };
+        }
+        if prefix.contains(':') {
+            return (vec![prefix.to_string()], false);
+        }
+        let namespace = binding
+            .and_then(|binding| binding.namespace.as_deref())
+            .or((!prefix.is_empty()).then_some(self.fallback_namespace));
+        let mut ranges: Vec<String> = namespace
+            .map(|namespace| format!("{namespace}:{prefix}"))
+            .into_iter()
+            .collect();
+        if !prefix.is_empty() {
+            ranges.push(prefix.to_string());
+        }
+        (ranges, prefix.is_empty())
     }
 
     fn resolve_namespace(
@@ -196,10 +298,14 @@ mod tests {
     use crate::scan::scope::collect_scopes_precise;
     use crate::scan::{SourceKeyPolicy, TranslationFramework};
 
-    fn extract_items(source: &str, fallback_namespace: &str) -> Vec<ScanItem> {
+    fn extract_all(source: &str, fallback_namespace: &str) -> ExtractResult {
         let (module, cm) = parse_module(source, "tsx").expect("source should parse");
         let scopes = collect_scopes_precise(&module, &cm);
         extract_calls(&module, &cm, &scopes, fallback_namespace, &None)
+    }
+
+    fn extract_items(source: &str, fallback_namespace: &str) -> Vec<ScanItem> {
+        extract_all(source, fallback_namespace).items
     }
 
     #[test]
@@ -427,6 +533,119 @@ function Page({ ns }) {
     }
 
     #[test]
+    fn reports_unresolved_calls_with_their_canonical_key_range() {
+        let result = extract_all(
+            r#"
+function Page({ code, section, ns }) {
+  const { t } = useTranslation("common");
+  const { t: tp } = useTranslation("common", { keyPrefix: "form" });
+  const nt = useTranslations("Home.Form");
+  const root = useTranslations();
+  return [
+    t(`errors.${code}`),
+    t(section),
+    t(flag ? "title" : `admin:menu.${section}`),
+    nt(`fields.${code}`),
+    nt(code),
+    root(`Auth.${code}`),
+    root(code),
+    tp(code),
+    i18n.t(code),
+    i18n.t(`banner.${code}`),
+  ];
+}
+"#,
+            "translation",
+        );
+
+        let refs: Vec<_> = result
+            .unresolved
+            .iter()
+            .map(|reference| {
+                (
+                    reference.expression.as_str(),
+                    reference.reason,
+                    reference.key_prefixes.clone(),
+                    reference.unbounded,
+                )
+            })
+            .collect();
+        let strings = |values: &[&str]| values.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            refs,
+            [
+                (
+                    "`errors.${code}`",
+                    UnresolvedReason::Partial,
+                    strings(&["common:errors.", "errors."]),
+                    false
+                ),
+                (
+                    "section",
+                    UnresolvedReason::Dynamic,
+                    strings(&["common:"]),
+                    true
+                ),
+                (
+                    r#"flag ? "title" : `admin:menu.${section}`"#,
+                    UnresolvedReason::Partial,
+                    strings(&["admin:menu."]),
+                    false
+                ),
+                (
+                    "`fields.${code}`",
+                    UnresolvedReason::Partial,
+                    strings(&["Home:Form.fields."]),
+                    false
+                ),
+                (
+                    "code",
+                    UnresolvedReason::Dynamic,
+                    strings(&["Home:Form."]),
+                    false
+                ),
+                (
+                    "`Auth.${code}`",
+                    UnresolvedReason::Partial,
+                    strings(&["Auth:"]),
+                    false
+                ),
+                ("code", UnresolvedReason::Dynamic, Vec::new(), true),
+                ("code", UnresolvedReason::Dynamic, Vec::new(), true),
+                ("code", UnresolvedReason::Dynamic, Vec::new(), true),
+                (
+                    "`banner.${code}`",
+                    UnresolvedReason::Partial,
+                    strings(&["translation:banner.", "banner."]),
+                    false
+                ),
+            ]
+        );
+        let keys: Vec<_> = result.items.iter().map(|item| item.key.as_str()).collect();
+        assert_eq!(keys, ["common:title"]);
+    }
+
+    #[test]
+    fn reports_expansions_over_the_candidate_limit_as_unresolved() {
+        let mut key = "\"a\"".to_string();
+        for index in 0..7 {
+            write!(key, " + (flag{index} ? \"a\" : \"b\")")
+                .expect("writing to a string should succeed");
+        }
+        let source = format!("const {{ t }} = useTranslation(\"common\");\nt({key});");
+        let result = extract_all(&source, "translation");
+
+        assert!(result.items.is_empty());
+        assert_eq!(result.unresolved.len(), 1);
+        let reference = &result.unresolved[0];
+        assert_eq!(reference.reason, UnresolvedReason::Limit);
+        assert_eq!(reference.key_prefixes, ["common:"]);
+        assert!(reference.unbounded);
+        assert!(reference.expression.ends_with('…'));
+        assert_eq!(reference.expression.chars().count(), MAX_EXPRESSION_CHARS);
+    }
+
+    #[test]
     fn member_call_does_not_borrow_a_hook_namespace() {
         let items = extract_items(
             r#"
@@ -483,7 +702,7 @@ function Page() {
         );
 
         scopes.reset_lookup_work();
-        let items = extract_calls(&module, &cm, &scopes, "translation", &None);
+        let items = extract_calls(&module, &cm, &scopes, "translation", &None).items;
         let extraction_work = scopes.lookup_work();
 
         assert_eq!(items.len(), 1);

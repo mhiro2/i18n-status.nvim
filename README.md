@@ -193,6 +193,7 @@ For full option and command details, see `:help i18n-status`.
   },
   doctor = {
     ignore_keys = {},
+    dynamic_keys = {}, -- keys used through runtime-built keys; reported as "possibly used", not unused
     float = {
       width = 0.8, -- 0.0-1.0
       height = 0.8, -- 0.0-1.0
@@ -280,7 +281,7 @@ In **Overview**, `=` means the value matches the primary language, and `≠` mea
 - **`E`**: Select locale to edit
 - **`r`**: Rename key (updates resources + open buffers)
 - **`a`**: Add missing key (only for missing primary keys; prompts only the locales that lack the key)
-- **`gd`**: Jump to definition file (Overview: open resource file)
+- **`gd`**: Jump to definition file (Overview: open resource file; unresolved reference: jump to the call site)
 - **`?`**: Toggle keymap help overlay
 
 Locale edits (`e`/`E`) read the target file when the prompt opens and commit against that snapshot: if the file changes before the input is confirmed, the edit is rejected without overwriting the concurrent change. Values that have nested keys cannot be replaced by a string.
@@ -306,12 +307,20 @@ All groups are created with `default=true` and linked to Telescope/Diagnostic gr
 | --- | --- |
 | `missing` | key is missing in the primary language |
 | `mismatch` | placeholder mismatch between languages |
-| `unused` | key exists in resources but is not referenced |
+| `unused` | key exists in resources but is not referenced, and no unresolved reference or `doctor.dynamic_keys` pattern can reach it |
+| `possibly used` | key has no static reference but falls in the range of an unresolved reference (e.g. `errors.*`) or matches `doctor.dynamic_keys` |
+| `unresolved` | a translation call whose key is not static, with its location, expression, and reason (`dynamic`, `partial`, or `limit`) |
 | `drift` | key differs across languages (missing/extra) |
 | `resource errors` | invalid JSON or read errors |
 | `source errors` | a source file or directory could not be read or parsed; unused detection is skipped for that run |
 | `roots missing` | no resource root found (`locales/`, `public/locales/`, or `messages/`) |
 
+
+### Unresolved references and unused keys
+
+A translation call whose key cannot be evaluated statically is listed under **Unresolved references** with its location, key expression, and reason: `dynamic` (`t(code)`), `partial` (only a leading part is static, as in `` t(`errors.${code}`) ``), or `limit` (more than 64 candidates). When the namespace and static prefix are known, the reference covers every key starting with that canonical prefix (`common:errors.*`, or the whole bound namespace for `t(code)` under `useTranslation("common")`), and those keys are listed as **Possibly used (dynamic)** instead of unused. Because an i18next key may carry its own `ns:` at runtime, a static prefix without `:` also covers keys whose namespace starts with it (`errors.*`), and a fully dynamic i18next key may reach any key. A reference that may reach any key (also a root next-intl translator, a dynamic namespace, or a `keyPrefix` option) keeps unused keys listed together with a warning that the result is uncertain. `gd` on an unresolved reference jumps to the call site.
+
+Keys that are used through runtime-built keys the scanner cannot see can be declared with `doctor.dynamic_keys` (same pattern syntax as `ignore_keys`). Unlike `ignore_keys`, missing, mismatch, and drift checks still apply to them. No static reference does not mean a key is safe to delete.
 
 ## ✂️ Extract Review UI
 
@@ -434,6 +443,8 @@ Not supported:
 - Expressions with function calls
 - Conditional const bindings (`const K = cond ? "a" : "b"; t(K)` — use `t(cond ? "a" : "b")` directly instead)
 - Expressions that expand to more than 64 distinct keys (or 64 KiB of key text), and constant substitution beyond 1 MiB per file; they are treated as dynamic
+
+Calls whose keys are not supported are reported by Doctor as unresolved references, keeping any static prefix (`` t(`errors.${code}`) `` covers `errors.*`) so unused detection does not report keys they may reach.
 
 ## 📄 License
 

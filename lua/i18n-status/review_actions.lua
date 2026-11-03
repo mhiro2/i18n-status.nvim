@@ -174,12 +174,23 @@ local function review_base_dir(ctx)
   return base_dir
 end
 
+---Key actions do not apply to unresolved translation calls, which have no single key.
+---@param item table|nil
+---@return boolean
+local function is_reference(item)
+  if item and item.reference then
+    vim.notify("i18n-status review: not available for an unresolved reference", vim.log.levels.INFO)
+    return true
+  end
+  return false
+end
+
 ---@param deps I18nStatusReviewActionDeps
 ---@param ctx I18nStatusReviewCtx
 ---@param lang string
 local function edit_lang(deps, ctx, lang)
   local item = ctx.detail_item
-  if not item then
+  if not item or is_reference(item) then
     return
   end
 
@@ -276,7 +287,7 @@ end
 ---@param ctx I18nStatusReviewCtx
 local function edit_locale_select(deps, ctx)
   local item = ctx.detail_item
-  if not item then
+  if not item or is_reference(item) then
     return
   end
 
@@ -421,7 +432,7 @@ end
 ---@param ctx I18nStatusReviewCtx
 local function rename_item(deps, ctx)
   local item = ctx.detail_item
-  if not item then
+  if not item or is_reference(item) then
     return
   end
 
@@ -452,7 +463,7 @@ end
 ---@param ctx I18nStatusReviewCtx
 local function add_key(deps, ctx)
   local item = ctx.detail_item
-  if not item then
+  if not item or is_reference(item) then
     return
   end
   if item.status ~= "×" then
@@ -504,6 +515,19 @@ end
 local function jump_to_definition(deps, ctx)
   local item = ctx.detail_item
   if not item then
+    return
+  end
+
+  if item.reference then
+    local issue = item.reference
+    local sanitized_path, err = fs.sanitize_path(issue.file or "", review_base_dir(ctx))
+    if err or not sanitized_path then
+      vim.notify("i18n-status review: invalid file path (" .. tostring(err) .. ")", vim.log.levels.WARN)
+      return
+    end
+    deps.close_review(ctx)
+    vim.api.nvim_cmd({ cmd = "edit", args = { sanitized_path } }, {})
+    pcall(vim.api.nvim_win_set_cursor, 0, { (issue.lnum or 0) + 1, issue.col or 0 })
     return
   end
 

@@ -290,6 +290,96 @@ function M.render_doctor_list(ctx, namespace)
   M.update_review_winbar(ctx)
 end
 
+local REFERENCE_REASONS = {
+  dynamic = "the key is decided at runtime",
+  partial = "only a leading part of the key is static",
+  limit = "the key expands to too many candidates to enumerate",
+}
+local MAX_MATCHING_KEYS = 50
+
+---@param ctx I18nStatusReviewCtx
+---@param namespace integer
+---@param item table List entry of an unresolved translation call
+local function render_reference_detail(ctx, namespace, item)
+  local issue = item.reference
+  local reference = issue.reference or {}
+  local lines = {}
+  local decorations = {}
+  local function append(text, group)
+    lines[#lines + 1] = text
+    if group then
+      decorations[#decorations + 1] = { line = #lines - 1, group = group }
+    end
+  end
+
+  append(item.key, "I18nStatusReviewHeader")
+  append(string.rep("-", math.max(math.min(vim.fn.strdisplaywidth(item.key), 80), 8)), "I18nStatusReviewDivider")
+  append("status: [~] unresolved reference", "I18nStatusReviewStatusFallback")
+  append("reason: " .. (REFERENCE_REASONS[reference.reason] or "unknown"), "I18nStatusReviewMeta")
+  if reference.expression then
+    append("expression: " .. reference.expression, "I18nStatusReviewText")
+  end
+  append(
+    string.format(
+      "location: %s:%d:%d",
+      fs.shorten_path(issue.file or "(buffer)"),
+      (issue.lnum or 0) + 1,
+      (issue.col or 0) + 1
+    ),
+    "I18nStatusReviewPath"
+  )
+
+  local prefixes = reference.key_prefixes or {}
+  if #prefixes > 0 then
+    append("key range: " .. table.concat(prefixes, "*, ") .. "*", "I18nStatusReviewKey")
+  end
+  if reference.unbounded or #prefixes == 0 then
+    append("key range: any key (unused results are uncertain)", "I18nStatusReviewStatusMismatch")
+  end
+
+  local matching = {}
+  local entries = (ctx.cache and ctx.cache.index and ctx.cache.index[ctx.primary_lang]) or {}
+  for key in pairs(entries) do
+    for _, prefix in ipairs(prefixes) do
+      if key:sub(1, #prefix) == prefix then
+        matching[#matching + 1] = key
+        break
+      end
+    end
+  end
+  table.sort(matching)
+  if #prefixes > 0 then
+    append("", nil)
+    append(string.format("Matching keys (%d):", #matching), "I18nStatusReviewTableHeader")
+    for index = 1, math.min(#matching, MAX_MATCHING_KEYS) do
+      append("  " .. matching[index], "I18nStatusReviewKey")
+    end
+    if #matching > MAX_MATCHING_KEYS then
+      append(string.format("  … %d more", #matching - MAX_MATCHING_KEYS), "I18nStatusReviewMeta")
+    end
+  end
+
+  M.set_lines(ctx.detail_buf, lines)
+  M.apply_decorations(ctx.detail_buf, namespace, decorations)
+end
+
+---@param item table
+---@return string|nil
+local function usage_line(item)
+  if item.unused then
+    return "usage: unused" .. (item.unused_note and (" (" .. item.unused_note .. ")") or "")
+  end
+  local dynamic = item.possibly_used and item.possibly_used.reference
+  if not dynamic then
+    return nil
+  end
+  if dynamic.declared_pattern then
+    return "usage: possibly used (matches doctor.dynamic_keys pattern '" .. dynamic.declared_pattern .. "')"
+  end
+  local prefix = (dynamic.key_prefixes or {})[1]
+  return "usage: possibly used by a dynamic key starting with '" .. tostring(prefix) .. "'"
+end
+
 ---@param ctx I18nStatusReviewCtx
 ---@param namespace integer
 function M.render_doctor_detail(ctx, namespace)
@@ -301,6 +391,10 @@ function M.render_doctor_detail(ctx, namespace)
   local item = ctx.detail_item
   if not item then
     M.render_empty_buffer(buf, namespace, "(no selection)")
+    return
+  end
+  if item.reference then
+    render_reference_detail(ctx, namespace, item)
     return
   end
 
@@ -359,8 +453,9 @@ function M.render_doctor_detail(ctx, namespace)
   if hover.reason then
     append("reason: " .. hover.reason, "I18nStatusReviewMeta")
   end
-  if item.unused then
-    append("usage: unused", "I18nStatusReviewMeta")
+  local usage = usage_line(item)
+  if usage then
+    append(usage, "I18nStatusReviewMeta")
   end
 
   local meta = {}

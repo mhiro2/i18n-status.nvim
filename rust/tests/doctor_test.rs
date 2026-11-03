@@ -54,6 +54,7 @@ fn diagnose_marks_cancelled_when_token_file_exists() {
         languages: vec!["en".to_string()],
         fallback_namespace: "translation".to_string(),
         ignore_patterns: vec![],
+        dynamic_patterns: vec![],
         open_buf_paths: vec![],
         open_buffers: vec![],
         cancel_token_path: Some(token_path.to_string_lossy().to_string()),
@@ -76,6 +77,7 @@ fn diagnose_without_cancel_token_keeps_normal_result() {
         languages: vec!["en".to_string()],
         fallback_namespace: "translation".to_string(),
         ignore_patterns: vec![],
+        dynamic_patterns: vec![],
         open_buf_paths: vec![],
         open_buffers: vec![],
         cancel_token_path: None,
@@ -100,6 +102,7 @@ fn diagnose_honors_server_side_cancellation() {
         languages: vec!["en".to_string()],
         fallback_namespace: "translation".to_string(),
         ignore_patterns: vec![],
+        dynamic_patterns: vec![],
         open_buf_paths: vec![],
         open_buffers: vec![],
         cancel_token_path: None,
@@ -134,6 +137,7 @@ fn diagnose_reports_scan_error_and_skips_unused_when_parse_fails() {
         languages: vec!["en".to_string()],
         fallback_namespace: "common".to_string(),
         ignore_patterns: vec![],
+        dynamic_patterns: vec![],
         open_buf_paths: vec![],
         open_buffers: vec![],
         cancel_token_path: None,
@@ -194,6 +198,7 @@ fn diagnose_reports_unreadable_sources_and_skips_unused() {
         languages: vec!["en".to_string()],
         fallback_namespace: "common".to_string(),
         ignore_patterns: vec![],
+        dynamic_patterns: vec![],
         open_buf_paths: vec![],
         open_buffers: vec![],
         cancel_token_path: None,
@@ -251,6 +256,7 @@ fn diagnose_cancels_during_file_collection() {
         languages: vec!["en".to_string()],
         fallback_namespace: "common".to_string(),
         ignore_patterns: vec![],
+        dynamic_patterns: vec![],
         open_buf_paths: vec![],
         open_buffers: vec![],
         cancel_token_path: Some(token_path.to_string_lossy().to_string()),
@@ -282,5 +288,173 @@ fn diagnose_cancels_during_file_collection() {
     assert_eq!(result["cancelled"], true);
 
     let _ = fs::remove_file(token_path);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn diagnose_separates_dynamic_usage_from_unused_keys() {
+    let root = unique_temp_dir("doctor-dynamic");
+    let locales_dir = root.join("locales");
+    write_file(
+        &locales_dir.join("en/common.json"),
+        r#"{"title":"Title","errors":{"notFound":"Not found","timeout":"Timeout"},"legacy":{"banner":"Banner"},"stale":"Stale"}"#,
+    );
+    write_file(
+        &locales_dir.join("en/admin.json"),
+        r#"{"menu":{"users":"Users"}}"#,
+    );
+    write_file(
+        &root.join("src/app.ts"),
+        r#"
+const { t } = useTranslation("common");
+t("title");
+t(`errors.${code}`);
+"#,
+    );
+    write_file(
+        &root.join("src/admin.ts"),
+        r#"
+const { t } = useTranslation("admin");
+t(`menu.${section}`);
+"#,
+    );
+
+    let params = DiagnoseParams {
+        project_root: root.to_string_lossy().to_string(),
+        roots: vec![RootConfig {
+            kind: "i18next".to_string(),
+            path: locales_dir.to_string_lossy().to_string(),
+        }],
+        primary_lang: "en".to_string(),
+        languages: vec!["en".to_string()],
+        fallback_namespace: "common".to_string(),
+        ignore_patterns: vec![],
+        dynamic_patterns: vec!["^common:legacy.".to_string()],
+        open_buf_paths: vec![],
+        open_buffers: vec![],
+        cancel_token_path: None,
+        deadline_ms: doctor::DEFAULT_DEADLINE_MS,
+    };
+
+    let result = doctor::diagnose(params, &|_, _| {}, &|| false).expect("diagnose should succeed");
+    let issues = result["issues"]
+        .as_array()
+        .expect("issues should be an array");
+    let mut keys_by_kind: Vec<(String, String)> = issues
+        .iter()
+        .filter(|issue| matches!(issue["kind"].as_str(), Some("unused" | "possibly_used")))
+        .map(|issue| {
+            (
+                issue["kind"].as_str().unwrap_or_default().to_string(),
+                issue["key"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    keys_by_kind.sort();
+    assert_eq!(
+        keys_by_kind,
+        [
+            ("possibly_used", "admin:menu.users"),
+            ("possibly_used", "common:errors.notFound"),
+            ("possibly_used", "common:errors.timeout"),
+            ("possibly_used", "common:legacy.banner"),
+            ("unused", "common:stale"),
+        ]
+        .map(|(kind, key)| (kind.to_string(), key.to_string()))
+    );
+
+    let declared = issues
+        .iter()
+        .find(|issue| issue["key"] == "common:legacy.banner")
+        .expect("declared dynamic key should be reported");
+    assert_eq!(declared["reference"]["declared_pattern"], "^common:legacy.");
+
+    let mut unresolved: Vec<_> = issues
+        .iter()
+        .filter(|issue| issue["kind"] == "unresolved")
+        .map(|issue| {
+            (
+                issue["reference"]["reason"].as_str().unwrap_or_default(),
+                issue["reference"]["key_prefixes"].clone(),
+                issue["lnum"].as_u64(),
+            )
+        })
+        .collect();
+    unresolved.sort_by_key(|(_, prefixes, _)| prefixes.to_string());
+    assert_eq!(
+        unresolved,
+        [
+            (
+                "partial",
+                serde_json::json!(["admin:menu.", "menu."]),
+                Some(2)
+            ),
+            (
+                "partial",
+                serde_json::json!(["common:errors.", "errors."]),
+                Some(3)
+            ),
+        ]
+    );
+    assert!(
+        !issues
+            .iter()
+            .any(|issue| issue["kind"] == "unused_uncertain"),
+        "every dynamic key has a known range"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn diagnose_flags_unused_results_as_uncertain_for_unbounded_keys() {
+    let root = unique_temp_dir("doctor-unbounded");
+    let locales_dir = root.join("locales");
+    write_file(&locales_dir.join("en/common.json"), r#"{"title":"Title"}"#);
+    write_file(&locales_dir.join("en/admin.json"), r#"{"stale":"Stale"}"#);
+    // A bound namespace does not limit a fully dynamic key: it may carry its own `ns:`.
+    write_file(
+        &root.join("src/app.ts"),
+        "const { t } = useTranslation(\"common\");\nt(\"title\");\nt(key);\n",
+    );
+
+    let params = DiagnoseParams {
+        project_root: root.to_string_lossy().to_string(),
+        roots: vec![RootConfig {
+            kind: "i18next".to_string(),
+            path: locales_dir.to_string_lossy().to_string(),
+        }],
+        primary_lang: "en".to_string(),
+        languages: vec!["en".to_string()],
+        fallback_namespace: "common".to_string(),
+        ignore_patterns: vec![],
+        dynamic_patterns: vec![],
+        open_buf_paths: vec![],
+        open_buffers: vec![],
+        cancel_token_path: None,
+        deadline_ms: doctor::DEFAULT_DEADLINE_MS,
+    };
+
+    let result = doctor::diagnose(params, &|_, _| {}, &|| false).expect("diagnose should succeed");
+    let issues = result["issues"]
+        .as_array()
+        .expect("issues should be an array");
+    let unused = issues
+        .iter()
+        .find(|issue| issue["kind"] == "unused")
+        .expect("a key outside the bound namespace is still unused");
+    assert_eq!(unused["key"], "admin:stale");
+    let unresolved = issues
+        .iter()
+        .find(|issue| issue["kind"] == "unresolved")
+        .expect("dynamic call should be reported");
+    assert_eq!(unresolved["reference"]["unbounded"], true);
+    assert_eq!(unresolved["reference"]["expression"], "key");
+    let uncertain = issues
+        .iter()
+        .find(|issue| issue["kind"] == "unused_uncertain")
+        .expect("unused results should be flagged as uncertain");
+    assert_eq!(uncertain["severity"], 1);
+
     let _ = fs::remove_dir_all(root);
 }

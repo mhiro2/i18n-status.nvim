@@ -165,6 +165,7 @@ Full default settings:
     },
     doctor = {
       ignore_keys = {},
+      dynamic_keys = {},
       float = {
         width = 0.8, -- 0.0-1.0
         height = 0.8, -- 0.0-1.0
@@ -219,6 +220,14 @@ resource_watch.debounce_ms (default: 200)
 
 doctor.ignore_keys (default: {})
     Patterns that doctor should skip when reporting missing keys.
+
+doctor.dynamic_keys (default: {})
+    Patterns (same syntax as doctor.ignore_keys: plain text matches anywhere,
+    "^" anchors the start and "$" the end) of keys that are used at runtime
+    through keys the scanner cannot read, such as `t(`status.${code}`)` in a
+    helper. Matching keys without a static reference are reported as
+    "possibly used" instead of unused. Unlike ignore_keys, every other check
+    (missing, mismatch, drift) still applies to them.
 
 auto_hover.enabled (default: true)
     Show the hover window automatically on CursorHold for JS/TS buffers.
@@ -376,12 +385,38 @@ Doctor capacity, Doctor reports a busy error; retry after earlier work finishes.
 Issue types:
   missing         key is missing in the primary language
   mismatch        placeholder mismatch between languages
-  unused          key exists in resources but is not referenced
+  unused          key exists in resources but is not referenced, and no
+                  unresolved reference or doctor.dynamic_keys pattern can
+                  reach it
+  possibly used   key has no static reference but falls in the range of an
+                  unresolved reference (e.g. `errors.*`) or matches
+                  doctor.dynamic_keys
+  unresolved      a translation call whose key is not static (see below)
   drift           key differs across languages (missing/extra)
   resource errors invalid JSON or read errors
   source errors   a source file or directory could not be read or parsed;
                   unused detection is skipped for that run
   roots missing   no resource root found (locales/, public/locales/, messages/)
+
+Unresolved references:
+  A translation call whose key cannot be evaluated statically is reported with
+  its location, its key expression, and why:
+    dynamic   the key is decided at runtime (`t(code)`)
+    partial   only a leading part is static (`t(`errors.${code}`)`)
+    limit     the key expands to more than 64 candidates (or 64 KiB)
+  When the namespace and static prefix are known, the reference covers every
+  key starting with that canonical prefix (`common:errors.*`, or the whole
+  bound namespace such as `common:*` for `t(code)` under
+  useTranslation("common")). Such keys are listed as "possibly used" rather
+  than unused. Because an i18next key may carry its own `ns:` at runtime, a
+  static prefix without `:` also covers keys whose namespace starts with it
+  (`errors.*`), and a fully dynamic i18next key may reach any key. A
+  reference that may reach any key (also a root next-intl translator, a
+  dynamic namespace, or a keyPrefix option) keeps unused keys listed,
+  together with a warning that the result is uncertain.
+  Conditional keys report their static branches as references and only the
+  dynamic branches as unresolved.
+  No static reference does not mean a key is safe to delete.
 
 Review UI:
   Doctor opens a floating window with two panes (left: key list, right: colored preview).
@@ -404,8 +439,15 @@ Review UI:
     r         Rename key (updates resources + open buffers)
     a         Add missing key (only for missing primary keys; prompts only
               the locales that lack the key)
-    gd        Jump to definition file (Overview opens resource file)
+    gd        Jump to definition file (Overview opens resource file; on an
+              unresolved reference, jump to the call site)
     ?         Toggle keymap help overlay (statusline shows quick hints)
+
+  Problems groups keys into Unused, Possibly used (dynamic), Unresolved
+  references, and the status sections. The detail pane of an unresolved
+  reference shows its reason, expression, location, key range, and the
+  existing keys in that range. Key actions (e/E/r/a) are not available on
+  unresolved references.
 
   Locale edits (e/E) read the target file when the prompt opens and commit
   against that snapshot. If the file changes before the input is confirmed,
@@ -599,6 +641,10 @@ Not supported:
   - expressions that expand to more than 64 distinct keys (or 64 KiB of key
     text), and constant substitution beyond 1 MiB per file; they are treated
     as dynamic
+
+  Doctor reports unsupported calls as unresolved references and keeps their
+  static prefix, so `t(`errors.${code}`)` covers `errors.*` in unused
+  detection. See |i18n-status-doctor|.
 
 Rename safety:
   Rename rewrites only direct string literals and template literals without

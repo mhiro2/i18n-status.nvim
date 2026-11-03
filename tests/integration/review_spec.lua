@@ -67,6 +67,87 @@ describe("doctor review", function()
     end
   end)
 
+  it("separates dynamic usage and unresolved references from unused keys", function()
+    state.init("en", { "en" })
+    local root = helpers.tmpdir()
+    helpers.write_file(
+      root .. "/locales/en/common.json",
+      '{"title":"Title","errors":{"notFound":"Not found"},"legacy":"Legacy","stale":"Stale"}'
+    )
+    local source = {
+      'const { t } = useTranslation("common");',
+      't("title");',
+      "t(`errors.${code}`);",
+      "i18n.t(key);",
+    }
+    helpers.write_file(root .. "/src/app.ts", table.concat(source, "\n"))
+
+    helpers.with_cwd(root, function()
+      local doctor = require("i18n-status.doctor")
+      local buf = make_named_source(root .. "/src/app.ts", source, "typescript")
+      vim.bo[buf].modified = false
+      vim.api.nvim_set_current_buf(buf)
+      local config = config_mod.setup({ primary_lang = "en", doctor = { dynamic_keys = { "^common:legacy" } } })
+
+      local done = nil
+      doctor.diagnose(buf, config, function(issues, status, ctx)
+        done = { issues = issues, status = status, ctx = ctx }
+      end)
+      assert.is_true(vim.wait(5000, function()
+        return done ~= nil
+      end, 10))
+      assert.is_nil(done.status)
+
+      local ctx = review.open_doctor_results(done.issues, done.ctx, config)
+      local lines = vim.api.nvim_buf_get_lines(ctx.list_buf, 0, -1, false)
+      local text = table.concat(lines, "\n")
+      assert.is_truthy(text:find("▼ Unused (1)\n  common:stale [=]", 1, true), text)
+      assert.is_truthy(
+        text:find("▼ Possibly used (dynamic) (2)\n  common:errors.notFound [=]\n  common:legacy [=]", 1, true),
+        text
+      )
+      assert.is_truthy(text:find("▼ Unresolved references (2)", 1, true), text)
+
+      local function select_line(pattern)
+        for index, line in ipairs(lines) do
+          if line:find(pattern, 1, true) then
+            vim.api.nvim_win_set_cursor(ctx.list_win, { index, 0 })
+            vim.api.nvim_exec_autocmds("CursorMoved", { buffer = ctx.list_buf })
+            return table.concat(vim.api.nvim_buf_get_lines(ctx.detail_buf, 0, -1, false), "\n")
+          end
+        end
+        error("line not found: " .. pattern)
+      end
+
+      local partial = select_line("app.ts:3  common:errors.*, errors.* [~]")
+      assert.is_truthy(partial:find("reason: only a leading part of the key is static", 1, true), partial)
+      assert.is_truthy(partial:find("expression: `errors.${code}`", 1, true), partial)
+      assert.is_truthy(partial:find("Matching keys (1):\n  common:errors.notFound", 1, true), partial)
+
+      local unbounded = select_line("app.ts:4  (any key) [~]")
+      assert.is_truthy(unbounded:find("key range: any key", 1, true), unbounded)
+
+      local stale = select_line("  common:stale [=]")
+      assert.is_truthy(stale:find("usage: unused (1 translation call(s) use keys", 1, true), stale)
+      local legacy = select_line("  common:legacy [=]")
+      assert.is_truthy(legacy:find("matches doctor.dynamic_keys pattern '^common:legacy'", 1, true), legacy)
+
+      select_line("app.ts:3  common:errors.*, errors.* [~]")
+      local rename_prompted = false
+      local original_input = vim.ui.input
+      vim.ui.input = function()
+        rename_prompted = true
+      end
+      vim.api.nvim_feedkeys("r", "x", false)
+      vim.ui.input = original_input
+      assert.is_false(rename_prompted)
+
+      vim.api.nvim_feedkeys("gd", "x", false)
+      assert.are.equal(buf, vim.api.nvim_get_current_buf())
+      assert.are.same({ 3, 2 }, vim.api.nvim_win_get_cursor(0))
+    end)
+  end)
+
   it("shows list and detail in floating window", function()
     state.init("en", { "en", "ja" })
 
