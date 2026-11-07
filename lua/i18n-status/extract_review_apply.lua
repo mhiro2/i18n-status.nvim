@@ -590,6 +590,12 @@ local function apply_candidate(ctx, candidate, deps)
       if not current_catalog.existing_keys[candidate.proposed_key] then
         return false, "reuse target changed since the review opened: not found"
       end
+      if candidate.reuse_same_text then
+        local entry = (current_catalog.index[candidate.primary_lang] or {})[candidate.proposed_key]
+        if not entry or entry.value ~= candidate.message then
+          return false, "reuse target changed since the review opened: its text no longer matches"
+        end
+      end
       return true, nil
     end
   end

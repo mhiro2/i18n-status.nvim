@@ -85,6 +85,7 @@ Examples:
 - 🗂️ **Translation file inline**: When you open a resource JSON file, show another language inline (controlled by `:I18nLang`).
 - 💬 **Hover details**: Values for all languages + reason + file path (git-relative when possible).
 - 🔁 **Language cycling**: yankround-style next/prev + "back to previous".
+- 🔎 **Find keys by text**: Search key names and translated values, then insert the key spelled for the translator in scope.
 - 🎯 **Inline goto definition (opt-in)**: Map any keys (e.g. `gd`) to jump straight to the translation file under the cursor.
 - 🩺 **Doctor + Review**: Diagnose project-wide issues and review/fix them in a two-pane floating UI where the left list drives every action and the right side stays as a live preview.
 - ✂️ **Interactive JSX extraction**: Detect hardcoded JSX text and open a Review UI with diff preview, bulk selection, and one-shot apply.
@@ -136,6 +137,7 @@ vim.keymap.set("n", "<leader>in", "<Cmd>I18nLangNext<CR>", { desc = "Next langua
 vim.keymap.set("n", "<leader>ip", "<Cmd>I18nLangPrev<CR>", { desc = "Previous language" })
 vim.keymap.set("n", "<leader>id", "<Cmd>I18nDoctor<CR>", { desc = "i18n doctor" })
 vim.keymap.set("n", "<leader>ia", "<Cmd>I18nAddKey<CR>", { desc = "Add new i18n key" })
+vim.keymap.set({ "n", "i" }, "<C-g>f", "<Cmd>I18nFind<CR>", { desc = "Find and insert i18n key" })
 
 -- Inline goto-definition is opt-in. Configure it per-buffer so LSP mappings don't override it.
 vim.api.nvim_create_autocmd("LspAttach", {
@@ -191,6 +193,7 @@ For full option and command details, see `:help i18n-status`.
   },
   doctor = {
     ignore_keys = {},
+    dynamic_keys = {}, -- keys used through runtime-built keys; reported as "possibly used", not unused
     float = {
       width = 0.8, -- 0.0-1.0
       height = 0.8, -- 0.0-1.0
@@ -228,8 +231,11 @@ If none is found, a best-effort fallback is used and `:checkhealth` will warn.
 - **`:I18nDoctor`**: Diagnose i18n issues across the entire project and open Review UI
 - **`:I18nDoctorCancel`**: Cancel a running doctor scan
 - **`:I18nAddKey`**: Add a new i18n key to all language files interactively (create-only, with all targets preflighted and earlier writes rolled back if a later write fails)
+- **`:I18nFind[!] [text]`**: Search keys whose name or translated value contains the text, then insert the chosen key at the cursor (or open its translation file with `!` / outside JS/TS buffers)
 - **`:I18nExtract`**: Detect hardcoded JSX text and open the Extract Review UI (supports `:'<,'>I18nExtract` for range extraction)
 - **`:I18nRefresh`**: Force refresh current buffer
+
+`:I18nFind` matches every language case-insensitively and lists exact value matches first, then partial value matches, then key name matches (up to 200 through `vim.ui.select()`). The inserted key follows the translator that owns the cursor position: inside the string literal key of a translation call (aliased translators and calls spanning lines included) the string contents are replaced, inside another string only the full key path is inserted, elsewhere a call such as `t("key")` to the translator in scope is inserted, and without one the full key path is inserted. i18next keys of the bound namespace are written relative to it while other namespaces keep their `ns:` prefix; next-intl keys are written relative to the bound namespace and keys outside it are refused, as are translators with a dynamic namespace or a `keyPrefix` option.
 
 Doctor reads unsaved source from open buffers of the diagnosed project only: named normal or `nofile` buffers under the project root whose directory resolves to the same resource roots. Unnamed buffers, other special buffers, and buffers of other (including nested) projects are ignored.
 
@@ -275,7 +281,7 @@ In **Overview**, `=` means the value matches the primary language, and `≠` mea
 - **`E`**: Select locale to edit
 - **`r`**: Rename key (updates resources + open buffers)
 - **`a`**: Add missing key (only for missing primary keys; prompts only the locales that lack the key)
-- **`gd`**: Jump to definition file (Overview: open resource file)
+- **`gd`**: Jump to definition file (Overview: open resource file; unresolved reference: jump to the call site)
 - **`?`**: Toggle keymap help overlay
 
 Locale edits (`e`/`E`) read the target file when the prompt opens and commit against that snapshot: if the file changes before the input is confirmed, the edit is rejected without overwriting the concurrent change. Values that have nested keys cannot be replaced by a string.
@@ -301,12 +307,20 @@ All groups are created with `default=true` and linked to Telescope/Diagnostic gr
 | --- | --- |
 | `missing` | key is missing in the primary language |
 | `mismatch` | placeholder mismatch between languages |
-| `unused` | key exists in resources but is not referenced |
+| `unused` | key exists in resources but is not referenced, and no unresolved reference or `doctor.dynamic_keys` pattern can reach it |
+| `possibly used` | key has no static reference but falls in the range of an unresolved reference (e.g. `errors.*`) or matches `doctor.dynamic_keys` |
+| `unresolved` | a translation call whose key is not static, with its location, expression, and reason (`dynamic`, `partial`, or `limit`) |
 | `drift` | key differs across languages (missing/extra) |
 | `resource errors` | invalid JSON or read errors |
 | `source errors` | a source file or directory could not be read or parsed; unused detection is skipped for that run |
 | `roots missing` | no resource root found (`locales/`, `public/locales/`, or `messages/`) |
 
+
+### Unresolved references and unused keys
+
+A translation call whose key cannot be evaluated statically is listed under **Unresolved references** with its location, key expression, and reason: `dynamic` (`t(code)`), `partial` (only a leading part is static, as in `` t(`errors.${code}`) ``), or `limit` (more than 64 candidates). When the namespace and static prefix are known, the reference covers every key starting with that canonical prefix (`common:errors.*`, or the whole bound namespace for `t(code)` under `useTranslation("common")`), and those keys are listed as **Possibly used (dynamic)** instead of unused. Because an i18next key may carry its own `ns:` at runtime, a static prefix without `:` also covers keys whose namespace starts with it (`errors.*`), and a fully dynamic i18next key may reach any key. A reference that may reach any key (also a root next-intl translator, a dynamic namespace, or a `keyPrefix` option) keeps unused keys listed together with a warning that the result is uncertain. `gd` on an unresolved reference jumps to the call site.
+
+Keys that are used through runtime-built keys the scanner cannot see can be declared with `doctor.dynamic_keys` (same pattern syntax as `ignore_keys`). Unlike `ignore_keys`, missing, mismatch, and drift checks still apply to them. No static reference does not mean a key is safe to delete.
 
 ## ✂️ Extract Review UI
 
@@ -320,7 +334,7 @@ Run `:I18nExtract` (or `:'<,'>I18nExtract` for a range) to detect hardcoded JSX 
 - **`a`**: Select all
 - **`A`**: Deselect all
 - **`r`**: Edit key name
-- **`u`**: Reuse existing key (for conflicting keys)
+- **`u`**: Reuse an existing key (a conflicting key, or a key whose primary value already has the same text)
 - **`U`**: Switch back to new key mode
 - **`<CR>`**: Apply selected candidates
 - **`?`**: Toggle keymap help overlay
@@ -328,6 +342,7 @@ Run `:I18nExtract` (or `:'<,'>I18nExtract` for a range) to detect hardcoded JSX 
 Candidates are unselected by default. Select targets with `<Space>`, then use `<CR>`.
 The list pane keeps shortcut hints minimal (`?:help`, `q:quit`). Use `?` to view the full keymap.
 The diff preview shows both the source replacement and the resource file changes that will be written. When a key conflicts with an existing one, `u` lets you reuse it (source replacement only, no resource write).
+Existing keys whose primary-language value already stores the candidate's text are listed under "same text" in the preview (mode column `new ≈`). Only keys the candidate's translator can reach are listed, up to 10: i18next keys of the translator's namespace and next-intl keys below the bound namespace. They are never reused automatically because the same text may need a different translation elsewhere; press `u` to pick one. Apply rejects a picked key whose primary value no longer matches the text.
 
 Extraction is offered only when an unambiguous translation function obtained from `useTranslation`, `useTranslations`, or an awaited `getTranslations` is available in the candidate's lexical scope; the command does not invent a global `t` or insert imports/hooks. Dynamic namespace expressions and `useTranslation` options that can change key semantics, including `keyPrefix`, are refused.
 
@@ -428,6 +443,8 @@ Not supported:
 - Expressions with function calls
 - Conditional const bindings (`const K = cond ? "a" : "b"; t(K)` — use `t(cond ? "a" : "b")` directly instead)
 - Expressions that expand to more than 64 distinct keys (or 64 KiB of key text), and constant substitution beyond 1 MiB per file; they are treated as dynamic
+
+Calls whose keys are not supported are reported by Doctor as unresolved references, keeping any static prefix (`` t(`errors.${code}`) `` covers `errors.*`) so unused detection does not report keys they may reach.
 
 ## 📄 License
 

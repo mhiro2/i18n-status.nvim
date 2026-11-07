@@ -16,6 +16,15 @@ local uv = vim.uv
 ---@field col integer|nil
 ---@field file string|nil
 ---@field key string|nil
+---@field reference I18nStatusDoctorReference|nil
+
+---Details of an `unresolved` translation call, or of the dynamic usage behind `possibly_used`.
+---@class I18nStatusDoctorReference
+---@field reason 'dynamic'|'partial'|'limit'|nil
+---@field expression string|nil Source text of the key argument
+---@field key_prefixes string[]|nil Canonical prefixes the keys start with (or the prefix that matched)
+---@field unbounded boolean|nil Whether some keys of the call may be any key
+---@field declared_pattern string|nil `doctor.dynamic_keys` pattern that matched
 
 ---@alias I18nStatusDoctorKeySet table<string, boolean>
 ---@alias I18nStatusDoctorIgnoreFn fun(key: string): boolean
@@ -27,6 +36,7 @@ local uv = vim.uv
 ---@field start_dir string
 ---@field fallback_ns string
 ---@field ignore_patterns string[]
+---@field dynamic_patterns string[]
 ---@field is_ignored I18nStatusDoctorIgnoreFn
 ---@field buffers integer[]
 ---@field items_by_buf table<integer, table[]>
@@ -107,6 +117,8 @@ local function summarize(issues)
     missing = 0,
     mismatch = 0,
     unused = 0,
+    possibly_used = 0,
+    unresolved = 0,
     drift = 0,
     resource = 0,
     root = 0,
@@ -118,6 +130,10 @@ local function summarize(issues)
       counts.mismatch = counts.mismatch + 1
     elseif issue.kind == "unused" then
       counts.unused = counts.unused + 1
+    elseif issue.kind == "possibly_used" then
+      counts.possibly_used = counts.possibly_used + 1
+    elseif issue.kind == "unresolved" then
+      counts.unresolved = counts.unresolved + 1
     elseif issue.kind == "drift_missing" or issue.kind == "drift_extra" then
       counts.drift = counts.drift + 1
     elseif issue.kind == "resource_error" then
@@ -131,11 +147,13 @@ local function summarize(issues)
     missing = "missing",
     mismatch = "mismatch",
     unused = "unused",
+    possibly_used = "possibly used",
+    unresolved = "unresolved",
     drift = "drift",
     resource = "resource errors",
     root = "roots missing",
   }
-  for _, key in ipairs({ "missing", "mismatch", "unused", "drift", "resource", "root" }) do
+  for _, key in ipairs({ "missing", "mismatch", "unused", "possibly_used", "unresolved", "drift", "resource", "root" }) do
     local count = counts[key]
     if count and count > 0 then
       table.insert(parts, string.format("%s %d", labels[key], count))
@@ -187,6 +205,7 @@ local function convert_issues(rust_issues)
       key = issue.key,
       lnum = issue.lnum,
       col = issue.col,
+      reference = issue.reference,
     })
   end
   return issues
@@ -480,6 +499,7 @@ local function prepare_context(bufnr, config, deadline)
     }
   local fallback_ns = fallback_namespace_from_cache(cache)
   local ignore_patterns = sanitize_ignore_patterns((config.doctor and config.doctor.ignore_keys) or {})
+  local dynamic_patterns = sanitize_ignore_patterns((config.doctor and config.doctor.dynamic_keys) or {})
   local is_ignored = make_ignore_fn(ignore_patterns)
 
   local project_root = resources.project_root(start_dir, root_list, { resolve_empty = false }) or start_dir
@@ -499,6 +519,7 @@ local function prepare_context(bufnr, config, deadline)
     start_dir = start_dir,
     fallback_ns = fallback_ns,
     ignore_patterns = ignore_patterns,
+    dynamic_patterns = dynamic_patterns,
     is_ignored = is_ignored,
     buffers = buffers,
     items_by_buf = {},
@@ -818,6 +839,7 @@ function M.diagnose(bufnr, config, cb, opts)
     languages = ctx.cache.languages or {},
     fallback_namespace = ctx.fallback_ns,
     ignore_patterns = ctx.ignore_patterns,
+    dynamic_patterns = ctx.dynamic_patterns,
     open_buf_paths = open_payload.open_buf_paths,
     open_buffers = open_payload.open_buffers,
     cancel_token_path = cancel_token_path,

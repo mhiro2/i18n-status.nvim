@@ -206,6 +206,23 @@ describe("config validation", function()
     vim.notify = original_notify
   end)
 
+  it("validates doctor.dynamic_keys", function()
+    local notify_calls = {}
+    local original_notify = vim.notify
+    vim.notify = function(msg, level)
+      table.insert(notify_calls, { msg = msg, level = level })
+    end
+
+    local cfg1 = config.setup({ doctor = { dynamic_keys = "^errors." } })
+    local cfg2 = config.setup({ doctor = { dynamic_keys = { "^errors.", false } } })
+
+    vim.notify = original_notify
+    assert.are.same({}, cfg1.doctor.dynamic_keys)
+    assert.are.same({ "^errors." }, cfg2.doctor.dynamic_keys)
+    assert.are.equal(2, #notify_calls)
+    assert.is_truthy(notify_calls[2].msg:find("doctor.dynamic_keys[2] must be a string", 1, true))
+  end)
+
   it("validates primary_lang", function()
     local notify_calls = {}
     local original_notify = vim.notify

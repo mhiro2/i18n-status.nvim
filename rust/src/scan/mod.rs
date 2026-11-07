@@ -28,6 +28,46 @@ pub struct ScanItem {
     /// Namespace argument bound to the owning translator, as written in source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translator_namespace: Option<String>,
+    /// Whether the owning translator rewrites keys in ways its metadata cannot describe (a
+    /// dynamic namespace or i18next options such as `keyPrefix`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub opaque_binding: bool,
+}
+
+/// Why a translation call's key could not be resolved to exact keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnresolvedReason {
+    /// Every key the call may produce is decided at runtime.
+    Dynamic,
+    /// Only a leading part of each key is known statically.
+    Partial,
+    /// The key expands to more candidates than the scanner enumerates.
+    Limit,
+}
+
+/// A translation call whose key is not (fully) known statically.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnresolvedRef {
+    pub lnum: u32,
+    pub col: u32,
+    pub end_lnum: u32,
+    pub end_col: u32,
+    pub reason: UnresolvedReason,
+    /// Source text of the key argument, shortened for display.
+    pub expression: String,
+    /// Canonical `namespace:path` prefixes that every key of the call starts with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_prefixes: Vec<String>,
+    /// Whether some keys of the call have no known prefix and may be any key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unbounded: bool,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct ExtractResult {
+    pub items: Vec<ScanItem>,
+    pub unresolved: Vec<UnresolvedRef>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,17 +154,21 @@ pub struct TranslationContext {
     pub shadowed: bool,
 }
 
-pub fn extract(params: ExtractParams) -> Result<Value> {
+/// Translation calls of a source: statically resolved keys and calls whose keys are not.
+pub fn extract_calls(params: ExtractParams) -> Result<ExtractResult> {
     let (module, cm) = parser::parse_module(&params.source, &params.lang)?;
     let scopes = scope::collect_scopes_precise(&module, &cm);
-    let items = call_extract::extract_calls(
+    Ok(call_extract::extract_calls(
         &module,
         &cm,
         &scopes,
         &params.fallback_namespace,
         &params.range,
-    );
-    Ok(serde_json::json!({ "items": items }))
+    ))
+}
+
+pub fn extract(params: ExtractParams) -> Result<Value> {
+    Ok(serde_json::to_value(extract_calls(params)?)?)
 }
 
 pub fn extract_resource(params: ExtractResourceParams) -> Result<Value> {

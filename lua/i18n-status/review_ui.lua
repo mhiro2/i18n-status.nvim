@@ -23,9 +23,11 @@ M.STATUS_SUMMARY_LABELS = {
   ["="] = "same",
 }
 
-M.PROBLEMS_SECTION_ORDER = { "unused", "×", "!", "?", "≠", "=" }
+M.PROBLEMS_SECTION_ORDER = { "unused", "possibly_used", "unresolved", "×", "!", "?", "≠", "=" }
 M.PROBLEMS_SECTION_LABELS = {
   unused = "Unused",
+  possibly_used = "Possibly used (dynamic)",
+  unresolved = "Unresolved references",
   ["×"] = "Missing",
   ["!"] = "Mismatch",
   ["?"] = "Fallback",
@@ -34,6 +36,8 @@ M.PROBLEMS_SECTION_LABELS = {
 }
 M.PROBLEMS_SUMMARY_LABELS = {
   unused = "unused",
+  possibly_used = "possibly used",
+  unresolved = "unresolved",
   ["×"] = "missing",
   ["!"] = "mismatch",
   ["?"] = "fallback",

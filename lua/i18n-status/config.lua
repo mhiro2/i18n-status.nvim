@@ -29,6 +29,7 @@ local util = require("i18n-status.util")
 
 ---@class I18nStatusDoctorConfig
 ---@field ignore_keys string[]
+---@field dynamic_keys string[]
 ---@field float I18nStatusDoctorFloatConfig
 
 ---@class I18nStatusAutoHoverConfig
@@ -66,6 +67,7 @@ local defaults = {
   },
   doctor = {
     ignore_keys = {},
+    dynamic_keys = {},
     float = {
       width = 0.8,
       height = 0.8,
@@ -203,22 +205,26 @@ local function validate(config)
     end
   end
 
-  -- Validate doctor.ignore_keys
-  if config.doctor and config.doctor.ignore_keys ~= nil then
-    if type(config.doctor.ignore_keys) ~= "table" then
-      table.insert(warnings, "doctor.ignore_keys must be a table (array), got " .. type(config.doctor.ignore_keys))
-      config.doctor.ignore_keys = defaults.doctor.ignore_keys
-    else
-      -- Check if all elements are strings and filter out invalid ones
-      local valid_keys = {}
-      for i, v in ipairs(config.doctor.ignore_keys) do
-        if type(v) == "string" then
-          table.insert(valid_keys, v)
-        else
-          table.insert(warnings, "doctor.ignore_keys[" .. i .. "] must be a string, got " .. type(v))
+  -- Validate doctor key pattern lists
+  for _, field in ipairs({ "ignore_keys", "dynamic_keys" }) do
+    local patterns = config.doctor and config.doctor[field]
+    if patterns ~= nil then
+      local name = "doctor." .. field
+      if type(patterns) ~= "table" then
+        table.insert(warnings, name .. " must be a table (array), got " .. type(patterns))
+        config.doctor[field] = defaults.doctor[field]
+      else
+        -- Check if all elements are strings and filter out invalid ones
+        local valid_keys = {}
+        for i, v in ipairs(patterns) do
+          if type(v) == "string" then
+            table.insert(valid_keys, v)
+          else
+            table.insert(warnings, name .. "[" .. i .. "] must be a string, got " .. type(v))
+          end
         end
+        config.doctor[field] = valid_keys
       end
-      config.doctor.ignore_keys = valid_keys
     end
   end
 

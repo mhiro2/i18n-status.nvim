@@ -1627,6 +1627,134 @@ describe("extract review integration", function()
     end)
   end)
 
+  it("offers existing keys with the same text for reuse", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(
+      root .. "/locales/en/common.json",
+      '{"actions":{"save":"Save"},"buttons":{"save":"Save"},"save button":"Save","cancel":"Cancel"}'
+    )
+    helpers.write_file(root .. "/locales/ja/common.json", '{"actions":{"save":"保存"},"buttons":{"save":"保存"}}')
+    -- The translator only loads `common`, so same-text keys of other namespaces are not offered.
+    helpers.write_file(root .. "/locales/en/checkout.json", '{"save":"Save"}')
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf({
+        'const { t } = useTranslation("common")',
+        "export function Page() {",
+        "  return <button>Save</button>",
+        "}",
+      }, "typescriptreact", root .. "/src/page.tsx")
+
+      local ctx = extract.run(buf, config_mod.setup({ primary_lang = "en" }), {})
+      assert.is_not_nil(ctx)
+      local candidate = ctx.candidates[1]
+      assert.are.equal("ready", candidate.status)
+      assert.are.equal("new", candidate.mode)
+      assert.are.same({ "common:actions.save", "common:buttons.save" }, candidate.reuse_suggestions)
+
+      local line = find_candidate_line(ctx, "Save")
+      vim.api.nvim_set_current_win(ctx.list_win)
+      vim.api.nvim_win_set_cursor(ctx.list_win, { line, 0 })
+      local list_line = vim.api.nvim_buf_get_lines(ctx.list_buf, line - 1, line, false)[1]
+      assert.is_truthy(list_line:find("new ≈", 1, true))
+      local preview = table.concat(vim.api.nvim_buf_get_lines(ctx.resource_buf, 0, -1, false), "\n")
+      assert.is_truthy(preview:find("same text (u: reuse):\n  common:actions.save\n  common:buttons.save", 1, true))
+
+      local offered = nil
+      add_stub(vim.ui, "select", function(items, opts, on_choice)
+        offered = vim.tbl_map(opts.format_item, items)
+        on_choice(items[2])
+      end)
+      vim.api.nvim_feedkeys("u", "x", false)
+
+      assert.are.same({
+        "Reuse key with the same text: common:actions.save",
+        "Reuse key with the same text: common:buttons.save",
+      }, offered)
+      assert.are.equal("reuse", candidate.mode)
+      assert.are.equal("common:buttons.save", candidate.proposed_key)
+      assert.are.equal("ready", candidate.status)
+
+      local before_en = helpers.read_file(root .. "/locales/en/common.json")
+      vim.api.nvim_feedkeys("\r", "x", false)
+      local applied = vim.wait(1000, function()
+        return vim.api.nvim_buf_get_lines(buf, 2, 3, false)[1]:find('{t("common:buttons.save")}', 1, true) ~= nil
+      end, 10)
+      assert.is_true(applied)
+      assert.are.equal(before_en, helpers.read_file(root .. "/locales/en/common.json"))
+    end)
+  end)
+
+  it("rejects a same-text reuse target whose text changed before apply", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/locales/en/common.json", '{"conflict":"Other","buttons":{"save":"Save"}}')
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf({
+        'const { t } = useTranslation("common")',
+        "export function Page() {",
+        "  return <button>Save</button>",
+        "}",
+      }, "typescriptreact", root .. "/src/page.tsx")
+
+      local ctx = extract.run(buf, config_mod.setup({ primary_lang = "en" }), {})
+      assert.is_not_nil(ctx)
+      local candidate = ctx.candidates[1]
+      assert.are.same({ "common:buttons.save" }, candidate.reuse_suggestions)
+
+      vim.api.nvim_set_current_win(ctx.list_win)
+      vim.api.nvim_win_set_cursor(ctx.list_win, { find_candidate_line(ctx, "Save"), 0 })
+      vim.api.nvim_feedkeys("u", "x", false)
+      assert.are.equal("common:buttons.save", candidate.proposed_key)
+      assert.is_true(candidate.reuse_same_text)
+      -- Picking the same suggestion again must keep its text revalidation.
+      vim.api.nvim_feedkeys("u", "x", false)
+      assert.is_true(candidate.reuse_same_text)
+
+      helpers.write_file(root .. "/locales/en/common.json", '{"conflict":"Other","buttons":{"save":"Delete forever"}}')
+      vim.api.nvim_feedkeys("\r", "x", false)
+
+      local finished = vim.wait(1000, function()
+        return type(ctx.status_message) == "string" and ctx.status_message:find("failed=1", 1, true) ~= nil
+      end, 10)
+      assert.is_true(finished)
+      assert.are.equal("  return <button>Save</button>", vim.api.nvim_buf_get_lines(buf, 2, 3, false)[1])
+      assert.is_truthy(candidate.apply_error:find("its text no longer matches", 1, true))
+    end)
+  end)
+
+  it("only suggests same-text keys that the next-intl translator can reach", function()
+    local root = helpers.tmpdir()
+    helpers.write_file(root .. "/messages/en.json", '{"Home":{"send":"Send it"},"Auth":{"send":"Send it"}}')
+
+    helpers.with_cwd(root, function()
+      local buf = make_buf({
+        "export function Page() {",
+        '  const t = useTranslations("Home")',
+        "  return <button>Send it</button>",
+        "}",
+      }, "typescriptreact", root .. "/src/page.tsx")
+
+      local ctx = extract.run(buf, config_mod.setup({ primary_lang = "en" }), {})
+      assert.is_not_nil(ctx)
+      local candidate = ctx.candidates[1]
+      assert.are.same({ "Home:send" }, candidate.reuse_suggestions)
+
+      local selected = false
+      add_stub(vim.ui, "select", function()
+        selected = true
+      end)
+      vim.api.nvim_set_current_win(ctx.list_win)
+      vim.api.nvim_win_set_cursor(ctx.list_win, { find_candidate_line(ctx, "Send it"), 0 })
+      vim.api.nvim_feedkeys("u", "x", false)
+
+      assert.is_false(selected)
+      assert.are.equal("reuse", candidate.mode)
+      assert.are.equal("Home:send", candidate.proposed_key)
+      assert.are.equal("ready", candidate.status)
+    end)
+  end)
+
   it("rejects a reuse target removed during final source validation", function()
     local root = helpers.tmpdir()
     helpers.write_file(root .. "/locales/ja/common.json", '{"hello-world":"登録済み"}')

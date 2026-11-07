@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use swc_ecma_ast::*;
 
 /// Upper bound on the distinct strings a single expression may expand to. Expressions that
@@ -89,94 +87,163 @@ pub(super) fn string_operand_idents<'a>(expr: &'a Expr, idents: &mut Vec<&'a Ide
     }
 }
 
-/// Keep a candidate list only when it stays within the count and byte limits.
-fn within_limits(candidates: Vec<String>) -> Option<Vec<String>> {
-    let total_bytes: usize = candidates.iter().map(String::len).sum();
-    (candidates.len() <= MAX_STRING_CANDIDATES && total_bytes <= MAX_CANDIDATE_BYTES)
-        .then_some(candidates)
+/// One string a key expression may evaluate to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum KeyCandidate {
+    /// The whole string is known statically.
+    Exact(String),
+    /// Only this leading part is known; the rest is decided at runtime.
+    Prefix(String),
+}
+
+impl KeyCandidate {
+    fn text(&self) -> &str {
+        match self {
+            Self::Exact(text) | Self::Prefix(text) => text,
+        }
+    }
+
+    /// The candidate for `self` followed by `suffix`. A prefix absorbs whatever follows it.
+    fn concat(&self, suffix: &Self) -> Self {
+        match (self, suffix) {
+            (Self::Exact(left), Self::Exact(right)) => Self::Exact(format!("{left}{right}")),
+            (Self::Exact(left), Self::Prefix(right)) => Self::Prefix(format!("{left}{right}")),
+            (Self::Prefix(_), _) => self.clone(),
+        }
+    }
+
+    fn into_prefix(self) -> Self {
+        match self {
+            Self::Exact(text) => Self::Prefix(text),
+            prefix @ Self::Prefix(_) => prefix,
+        }
+    }
+}
+
+/// Distinct candidates within the count and byte limits. Exact strings and prefixes have separate
+/// allowances, so dynamic branches never cost an expression its statically known keys. Prefixes
+/// beyond their allowance collapse into the empty prefix, which covers all of them.
+#[derive(Default)]
+struct CandidateSet {
+    candidates: Vec<KeyCandidate>,
+    exact_count: usize,
+    exact_bytes: usize,
+    prefix_count: usize,
+    prefix_bytes: usize,
+}
+
+impl CandidateSet {
+    /// Add `candidate` unless it is already present. Returns `None` when the exact strings would
+    /// exceed the candidate limits.
+    fn insert(&mut self, candidate: KeyCandidate) -> Option<()> {
+        if self.candidates.contains(&candidate) {
+            return Some(());
+        }
+        let len = candidate.text().len();
+        match candidate {
+            KeyCandidate::Exact(_) => {
+                self.exact_bytes = self.exact_bytes.saturating_add(len);
+                if self.exact_count == MAX_STRING_CANDIDATES
+                    || self.exact_bytes > MAX_CANDIDATE_BYTES
+                {
+                    return None;
+                }
+                self.exact_count += 1;
+            }
+            KeyCandidate::Prefix(_) => {
+                if self
+                    .candidates
+                    .contains(&KeyCandidate::Prefix(String::new()))
+                {
+                    // The empty prefix already covers every other prefix.
+                    return Some(());
+                }
+                self.prefix_bytes = self.prefix_bytes.saturating_add(len);
+                if self.prefix_count == MAX_STRING_CANDIDATES
+                    || self.prefix_bytes > MAX_CANDIDATE_BYTES
+                {
+                    self.candidates
+                        .retain(|candidate| matches!(candidate, KeyCandidate::Exact(_)));
+                    self.candidates.push(KeyCandidate::Prefix(String::new()));
+                    self.prefix_count = 1;
+                    self.prefix_bytes = 0;
+                    return Some(());
+                }
+                self.prefix_count += 1;
+            }
+        }
+        self.candidates.push(candidate);
+        Some(())
+    }
+
+    fn from_candidates(
+        candidates: impl IntoIterator<Item = KeyCandidate>,
+    ) -> Option<Vec<KeyCandidate>> {
+        let mut set = Self::default();
+        for candidate in candidates {
+            set.insert(candidate)?;
+        }
+        Some(set.candidates)
+    }
 }
 
 /// Combine every prefix with every suffix, dropping duplicates. Returns `None` when the
 /// distinct result set would exceed the candidate limits.
-fn concat_candidates(prefixes: &[String], suffixes: &[String]) -> Option<Vec<String>> {
-    let mut seen = HashSet::new();
-    let mut results = Vec::new();
-    let mut total_bytes = 0usize;
-    for prefix in prefixes {
-        for suffix in suffixes {
-            let value = format!("{prefix}{suffix}");
-            if seen.contains(&value) {
-                continue;
-            }
-            total_bytes = total_bytes.saturating_add(value.len());
-            if results.len() == MAX_STRING_CANDIDATES || total_bytes > MAX_CANDIDATE_BYTES {
-                return None;
-            }
-            seen.insert(value.clone());
-            results.push(value);
-        }
-    }
-    Some(results)
+fn concat_candidates(
+    prefixes: &[KeyCandidate],
+    suffixes: &[KeyCandidate],
+) -> Option<Vec<KeyCandidate>> {
+    CandidateSet::from_candidates(
+        prefixes
+            .iter()
+            .flat_map(|prefix| suffixes.iter().map(|suffix| prefix.concat(suffix))),
+    )
 }
 
-/// Expand an expression into its distinct candidate strings. An empty list means some required
-/// part is dynamic; `None` means the expansion exceeded the candidate limits.
-fn eval_string_candidates<F>(expr: &Expr, resolve_ident: &F) -> Option<Vec<String>>
+/// Expand a key expression into every distinct string it may produce, expanding conditional
+/// branches. A part that cannot be evaluated statically turns the candidate into a `Prefix` of
+/// the text known before it. Returns `None` when the expansion exceeds the candidate limits.
+pub(super) fn eval_key_candidates<F>(expr: &Expr, resolve_ident: &F) -> Option<Vec<KeyCandidate>>
 where
     F: Fn(&Ident) -> Option<String>,
 {
     match expr {
         Expr::Cond(cond) => {
-            // Each branch contributes what it can; an unresolvable branch adds nothing.
-            let mut results = eval_string_candidates(&cond.cons, resolve_ident)?;
-            for value in eval_string_candidates(&cond.alt, resolve_ident)? {
-                if !results.contains(&value) {
-                    results.push(value);
-                }
-            }
-            within_limits(results)
+            let mut branches = eval_key_candidates(&cond.cons, resolve_ident)?;
+            branches.extend(eval_key_candidates(&cond.alt, resolve_ident)?);
+            CandidateSet::from_candidates(branches)
         }
         Expr::Bin(bin) if bin.op == BinaryOp::Add => {
-            let lefts = eval_string_candidates(&bin.left, resolve_ident)?;
-            let rights = eval_string_candidates(&bin.right, resolve_ident)?;
+            let lefts = eval_key_candidates(&bin.left, resolve_ident)?;
+            let rights = eval_key_candidates(&bin.right, resolve_ident)?;
             concat_candidates(&lefts, &rights)
         }
         Expr::Tpl(tpl) => {
-            let mut accum = vec![String::new()];
+            let mut accum = vec![KeyCandidate::Exact(String::new())];
             for (i, quasi) in tpl.quasis.iter().enumerate() {
                 let Some(quasi_str) = quasi.cooked.as_ref().and_then(wtf8_to_string) else {
-                    return Some(Vec::new());
+                    return CandidateSet::from_candidates(
+                        accum.into_iter().map(KeyCandidate::into_prefix),
+                    );
                 };
-                for value in &mut accum {
-                    value.push_str(&quasi_str);
-                }
+                accum = concat_candidates(&accum, &[KeyCandidate::Exact(quasi_str)])?;
                 if let Some(expr) = tpl.exprs.get(i) {
-                    let values = eval_string_candidates(expr, resolve_ident)?;
+                    let values = eval_key_candidates(expr, resolve_ident)?;
                     accum = concat_candidates(&accum, &values)?;
-                    if accum.is_empty() {
-                        return Some(accum);
-                    }
                 }
             }
-            within_limits(accum)
+            Some(accum)
         }
-        Expr::Paren(paren) => eval_string_candidates(&paren.expr, resolve_ident),
-        Expr::TsAs(ts_as) => eval_string_candidates(&ts_as.expr, resolve_ident),
-        Expr::TsSatisfies(ts_sat) => eval_string_candidates(&ts_sat.expr, resolve_ident),
-        Expr::TsNonNull(ts_nn) => eval_string_candidates(&ts_nn.expr, resolve_ident),
-        Expr::TsConstAssertion(ts_const) => eval_string_candidates(&ts_const.expr, resolve_ident),
-        _ => within_limits(eval_string_expr(expr, resolve_ident).into_iter().collect()),
+        Expr::Paren(paren) => eval_key_candidates(&paren.expr, resolve_ident),
+        Expr::TsAs(ts_as) => eval_key_candidates(&ts_as.expr, resolve_ident),
+        Expr::TsSatisfies(ts_sat) => eval_key_candidates(&ts_sat.expr, resolve_ident),
+        Expr::TsNonNull(ts_nn) => eval_key_candidates(&ts_nn.expr, resolve_ident),
+        Expr::TsConstAssertion(ts_const) => eval_key_candidates(&ts_const.expr, resolve_ident),
+        _ => CandidateSet::from_candidates([match eval_string_expr(expr, resolve_ident) {
+            Some(value) => KeyCandidate::Exact(value),
+            None => KeyCandidate::Prefix(String::new()),
+        }]),
     }
-}
-
-/// Evaluate an expression to every distinct static string it may produce, expanding
-/// conditional branches. Returns an empty list when any part is dynamic or when the expansion
-/// exceeds the candidate limits.
-pub(super) fn eval_string_exprs<F>(expr: &Expr, resolve_ident: &F) -> Vec<String>
-where
-    F: Fn(&Ident) -> Option<String>,
-{
-    eval_string_candidates(expr, resolve_ident).unwrap_or_default()
 }
 
 #[cfg(test)]

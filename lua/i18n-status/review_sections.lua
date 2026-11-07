@@ -40,11 +40,15 @@ end
 ---@param default_status string
 ---@return table<string, I18nStatusResolved[]>
 function M.group_problem_items(items, section_order, status_order, default_status)
-  local groups = { unused = {} }
+  local groups = { unused = {}, possibly_used = {}, unresolved = {} }
   local problem_items = {}
   for _, item in ipairs(items or {}) do
-    if item.unused then
-      groups.unused[#groups.unused + 1] = item
+    local usage = (item.reference and "unresolved")
+      or (item.unused and "unused")
+      or (item.possibly_used and "possibly_used")
+      or nil
+    if usage then
+      groups[usage][#groups[usage] + 1] = item
     else
       problem_items[#problem_items + 1] = item
     end
@@ -52,7 +56,7 @@ function M.group_problem_items(items, section_order, status_order, default_statu
   local grouped = M.group_items_by_status(problem_items, status_order, default_status)
 
   for _, section in ipairs(section_order or {}) do
-    if section ~= "unused" then
+    if not groups[section] then
       groups[section] = grouped[section] or {}
     end
   end

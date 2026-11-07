@@ -40,6 +40,9 @@ pub struct DiagnoseParams {
     pub fallback_namespace: String,
     #[serde(default)]
     pub ignore_patterns: Vec<String>,
+    /// Key patterns (same syntax as `ignore_patterns`) declared as used at runtime.
+    #[serde(default)]
+    pub dynamic_patterns: Vec<String>,
     #[serde(default)]
     pub open_buf_paths: Vec<String>,
     #[serde(default)]
@@ -77,6 +80,40 @@ pub struct DoctorIssue {
     pub lnum: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub col: Option<u32>,
+    /// Details of an `unresolved` reference or of the dynamic usage behind `possibly_used`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference: Option<IssueReference>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IssueReference {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<scan::UnresolvedReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+    /// Canonical key prefixes (`unresolved`) or the prefix or declared pattern that matched
+    /// (`possibly_used`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub key_prefixes: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unbounded: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declared_pattern: Option<String>,
+}
+
+impl DoctorIssue {
+    fn new(kind: &str, message: String, severity: u32) -> Self {
+        Self {
+            kind: kind.to_string(),
+            message,
+            severity,
+            file: None,
+            key: None,
+            lnum: None,
+            col: None,
+            reference: None,
+        }
+    }
 }
 
 fn is_js_ts_file(path: &std::path::Path) -> bool {
@@ -96,7 +133,13 @@ fn lang_from_extension(path: &std::path::Path) -> &str {
 }
 
 fn should_ignore_key(key: &str, ignore_patterns: &[String]) -> bool {
-    ignore_patterns.iter().any(|pattern| {
+    matching_pattern(key, ignore_patterns).is_some()
+}
+
+/// First pattern matching `key`. `^` and `$` anchor a pattern to the start or end of the key;
+/// otherwise it matches anywhere.
+fn matching_pattern<'a>(key: &str, patterns: &'a [String]) -> Option<&'a String> {
+    patterns.iter().find(|pattern| {
         if pattern.is_empty() {
             return false;
         }
@@ -121,22 +164,25 @@ fn should_ignore_key(key: &str, ignore_patterns: &[String]) -> bool {
     })
 }
 
+/// A translation call of a scanned file whose key is not statically known.
+struct UnresolvedSite {
+    file: Option<String>,
+    reference: scan::UnresolvedRef,
+}
+
 /// Result of scanning a single file
+#[derive(Default)]
 struct FileResult {
     keys: Vec<String>,
     issues: Vec<DoctorIssue>,
+    unresolved: Vec<UnresolvedSite>,
     scan_failed: bool,
 }
 
 fn scan_error_issue(file: Option<&str>, message: String) -> DoctorIssue {
     DoctorIssue {
-        kind: "scan_error".to_string(),
-        message,
-        severity: 2,
         file: file.map(ToOwned::to_owned),
-        key: None,
-        lnum: None,
-        col: None,
+        ..DoctorIssue::new("scan_error", message, 2)
     }
 }
 
@@ -144,9 +190,9 @@ fn scan_error_issue(file: Option<&str>, message: String) -> DoctorIssue {
 /// not trust the collected key set.
 fn scan_failure(file: Option<&str>, message: String) -> FileResult {
     FileResult {
-        keys: Vec::new(),
         issues: vec![scan_error_issue(file, message)],
         scan_failed: true,
+        ..FileResult::default()
     }
 }
 
@@ -186,11 +232,7 @@ fn process_file(
 ) -> FileResult {
     let file_str = file_path.to_string_lossy().to_string();
     if params.open_buf_paths.iter().any(|p| p == &file_str) {
-        return FileResult {
-            keys: Vec::new(),
-            issues: Vec::new(),
-            scan_failed: false,
-        };
+        return FileResult::default();
     }
     let source = match std::fs::read_to_string(file_path) {
         Ok(s) => s,
@@ -209,97 +251,131 @@ fn process_source(
     params: &DiagnoseParams,
     index_data: &crate::resource::index::IndexResult,
 ) -> FileResult {
-    let mut keys = Vec::new();
-    let mut issues = Vec::new();
-    let extracted = scan::extract(scan::ExtractParams {
+    let extracted = match scan::extract_calls(scan::ExtractParams {
         source: source.to_string(),
         lang: lang.to_string(),
         fallback_namespace: params.fallback_namespace.clone(),
         range: None,
-    });
+    }) {
+        Ok(extracted) => extracted,
+        Err(err) => return scan_failure(file, format!("Failed to analyze source: {}", err)),
+    };
 
-    if let Err(err) = &extracted {
-        return scan_failure(file, format!("Failed to analyze source: {}", err));
-    }
+    let mut result = FileResult {
+        unresolved: extracted
+            .unresolved
+            .into_iter()
+            .map(|reference| UnresolvedSite {
+                file: file.map(ToOwned::to_owned),
+                reference,
+            })
+            .collect(),
+        ..FileResult::default()
+    };
+    for item in extracted.items {
+        let key = item.key.as_str();
+        if should_ignore_key(key, &params.ignore_patterns) {
+            continue;
+        }
+        result.keys.push(key.to_string());
 
-    if let Ok(result) = extracted
-        && let Some(items) = result.get("items").and_then(|v| v.as_array())
-    {
-        for item in items {
-            if let Some(key) = item.get("key").and_then(|v| v.as_str()) {
-                if should_ignore_key(key, &params.ignore_patterns) {
+        let primary_entry = index_data
+            .index
+            .get(&params.primary_lang)
+            .and_then(|m| m.get(key));
+        let primary_value = primary_entry.and_then(|e| e.value.as_deref());
+
+        let key_path = key.split_once(':').map(|(_, path)| path).unwrap_or(key);
+        let is_missing = match primary_value {
+            None => true,
+            Some(v) => {
+                v.is_empty() || v == key || (!item.raw.is_empty() && v == item.raw) || v == key_path
+            }
+        };
+
+        if is_missing {
+            result.issues.push(DoctorIssue {
+                file: file.map(|p| p.to_string()),
+                key: Some(key.to_string()),
+                lnum: Some(item.lnum),
+                col: Some(item.col),
+                ..DoctorIssue::new(
+                    "missing",
+                    format!(
+                        "Key '{}' is missing in primary language '{}'",
+                        key, params.primary_lang
+                    ),
+                    2,
+                )
+            });
+        } else if let Some(pv) = primary_value {
+            let base_ph = extract_placeholders(pv, primary_entry.and_then(|e| e.framework));
+            for lang in &params.languages {
+                if lang == &params.primary_lang {
                     continue;
                 }
-                keys.push(key.to_string());
+                let other_entry = index_data.index.get(lang.as_str()).and_then(|m| m.get(key));
 
-                let primary_entry = index_data
-                    .index
-                    .get(&params.primary_lang)
-                    .and_then(|m| m.get(key));
-                let primary_value = primary_entry.and_then(|e| e.value.as_deref());
-
-                let raw = item.get("raw").and_then(|v| v.as_str()).unwrap_or("");
-                let key_path = key.split_once(':').map(|(_, path)| path).unwrap_or(key);
-                let is_missing = match primary_value {
-                    None => true,
-                    Some(v) => {
-                        v.is_empty() || v == key || (!raw.is_empty() && v == raw) || v == key_path
-                    }
-                };
-
-                if is_missing {
-                    let lnum = item.get("lnum").and_then(|v| v.as_u64()).map(|v| v as u32);
-                    let col = item.get("col").and_then(|v| v.as_u64()).map(|v| v as u32);
-
-                    issues.push(DoctorIssue {
-                        kind: "missing".to_string(),
-                        message: format!(
-                            "Key '{}' is missing in primary language '{}'",
-                            key, params.primary_lang
-                        ),
-                        severity: 2,
-                        file: file.map(|p| p.to_string()),
-                        key: Some(key.to_string()),
-                        lnum,
-                        col,
-                    });
-                } else if let Some(pv) = primary_value {
-                    let base_ph = extract_placeholders(pv, primary_entry.and_then(|e| e.framework));
-                    for lang in &params.languages {
-                        if lang == &params.primary_lang {
-                            continue;
-                        }
-                        let other_entry =
-                            index_data.index.get(lang.as_str()).and_then(|m| m.get(key));
-
-                        if let Some(ov) = other_entry.and_then(|e| e.value.as_deref()) {
-                            let other_ph =
-                                extract_placeholders(ov, other_entry.and_then(|e| e.framework));
-                            if !placeholder_equal(&base_ph, &other_ph) {
-                                issues.push(DoctorIssue {
-                                    kind: "mismatch".to_string(),
-                                    message: format!(
-                                        "Placeholder mismatch for '{}' between '{}' and '{}'",
-                                        key, params.primary_lang, lang
-                                    ),
-                                    severity: 2,
-                                    file: file.map(|p| p.to_string()),
-                                    key: Some(key.to_string()),
-                                    lnum: None,
-                                    col: None,
-                                });
-                            }
-                        }
+                if let Some(ov) = other_entry.and_then(|e| e.value.as_deref()) {
+                    let other_ph = extract_placeholders(ov, other_entry.and_then(|e| e.framework));
+                    if !placeholder_equal(&base_ph, &other_ph) {
+                        result.issues.push(DoctorIssue {
+                            file: file.map(|p| p.to_string()),
+                            key: Some(key.to_string()),
+                            ..DoctorIssue::new(
+                                "mismatch",
+                                format!(
+                                    "Placeholder mismatch for '{}' between '{}' and '{}'",
+                                    key, params.primary_lang, lang
+                                ),
+                                2,
+                            )
+                        });
                     }
                 }
             }
         }
     }
 
-    FileResult {
-        keys,
-        issues,
-        scan_failed: false,
+    result
+}
+
+fn unresolved_message(reference: &scan::UnresolvedRef) -> String {
+    let what = match reference.reason {
+        scan::UnresolvedReason::Dynamic => "is decided at runtime",
+        scan::UnresolvedReason::Partial => "is only partially static",
+        scan::UnresolvedReason::Limit => "expands to too many keys to enumerate",
+    };
+    let range = match (reference.key_prefixes.is_empty(), reference.unbounded) {
+        (true, _) => "it may be any key".to_string(),
+        (false, unbounded) => format!(
+            "it may be any key starting with {}{}",
+            reference
+                .key_prefixes
+                .iter()
+                .map(|prefix| format!("'{prefix}'"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if unbounded { " or any other key" } else { "" }
+        ),
+    };
+    format!("Translation key `{}` {what}; {range}", reference.expression)
+}
+
+fn unresolved_issue(site: UnresolvedSite) -> DoctorIssue {
+    let reference = site.reference;
+    DoctorIssue {
+        file: site.file,
+        lnum: Some(reference.lnum),
+        col: Some(reference.col),
+        reference: Some(IssueReference {
+            reason: Some(reference.reason),
+            expression: Some(reference.expression.clone()),
+            key_prefixes: reference.key_prefixes.clone(),
+            unbounded: reference.unbounded,
+            declared_pattern: None,
+        }),
+        ..DoctorIssue::new("unresolved", unresolved_message(&reference), 3)
     }
 }
 
@@ -314,21 +390,19 @@ pub fn diagnose(
     let mut issues: Vec<DoctorIssue> = Vec::new();
     let mut used_keys_set: HashSet<String> = HashSet::new();
     let mut has_scan_failures = false;
+    let mut unresolved: Vec<UnresolvedSite> = Vec::new();
 
     if is_cancelled_now() {
         return Ok(make_result(issues, used_keys_set, true));
     }
 
     if params.roots.is_empty() {
-        issues.push(DoctorIssue {
-            kind: "resource_root_missing".to_string(),
-            message: "No resource roots found. Expected locales/, public/locales/, or messages/ directory.".to_string(),
-            severity: 1,
-            file: None,
-            key: None,
-            lnum: None,
-            col: None,
-        });
+        issues.push(DoctorIssue::new(
+            "resource_root_missing",
+            "No resource roots found. Expected locales/, public/locales/, or messages/ directory."
+                .to_string(),
+            1,
+        ));
         return Ok(make_result(issues, used_keys_set, false));
     }
 
@@ -369,13 +443,12 @@ pub fn diagnose(
 
     for error in &index_data.errors {
         issues.push(DoctorIssue {
-            kind: "resource_error".to_string(),
-            message: format!("Failed to parse {}: {}", error.file, error.error),
-            severity: 2,
             file: Some(error.file.clone()),
-            key: None,
-            lnum: None,
-            col: None,
+            ..DoctorIssue::new(
+                "resource_error",
+                format!("Failed to parse {}: {}", error.file, error.error),
+                2,
+            )
         });
     }
 
@@ -403,9 +476,8 @@ pub fn diagnose(
         if result.scan_failed {
             has_scan_failures = true;
         }
-        for key in result.keys {
-            used_keys_set.insert(key);
-        }
+        used_keys_set.extend(result.keys);
+        unresolved.extend(result.unresolved);
         issues.extend(result.issues);
     }
 
@@ -504,9 +576,8 @@ pub fn diagnose(
             if result.scan_failed {
                 has_scan_failures = true;
             }
-            for key in result.keys {
-                used_keys_set.insert(key);
-            }
+            used_keys_set.extend(result.keys);
+            unresolved.extend(result.unresolved);
             issues.extend(result.issues);
         }
 
@@ -521,38 +592,95 @@ pub fn diagnose(
         );
     }
 
-    // Check for unused keys
+    // A key without a static reference is only reported unused when no dynamic reference or
+    // declared pattern can reach it.
+    let mut dynamic_prefixes: Vec<String> = unresolved
+        .iter()
+        .flat_map(|site| site.reference.key_prefixes.iter().cloned())
+        .collect();
+    dynamic_prefixes.sort();
+    dynamic_prefixes.dedup();
+    let unbounded_count = unresolved
+        .iter()
+        .filter(|site| site.reference.unbounded)
+        .count();
+    issues.extend(unresolved.into_iter().map(unresolved_issue));
+
     if has_scan_failures {
-        issues.push(DoctorIssue {
-            kind: "unused_skipped".to_string(),
-            message:
-                "Skipped unused key detection because one or more source files failed to analyze."
-                    .to_string(),
-            severity: 1,
-            file: None,
-            key: None,
-            lnum: None,
-            col: None,
-        });
+        issues.push(DoctorIssue::new(
+            "unused_skipped",
+            "Skipped unused key detection because one or more source files failed to analyze."
+                .to_string(),
+            1,
+        ));
     } else if let Some(primary_index) = index_data.index.get(&params.primary_lang) {
+        let mut has_unused = false;
         for (key, entry) in primary_index {
             if is_cancelled_now() {
                 return Ok(make_result(issues, used_keys_set, true));
             }
-            if should_ignore_key(key, &params.ignore_patterns) {
+            if should_ignore_key(key, &params.ignore_patterns) || used_keys_set.contains(key) {
                 continue;
             }
-            if !used_keys_set.contains(key) {
-                issues.push(DoctorIssue {
-                    kind: "unused".to_string(),
-                    message: format!("Key '{}' exists in resources but is not used in code", key),
-                    severity: 3,
-                    file: entry.file.clone(),
-                    key: Some(key.clone()),
-                    lnum: None,
-                    col: None,
-                });
-            }
+            let issue = if let Some(pattern) = matching_pattern(key, &params.dynamic_patterns) {
+                DoctorIssue {
+                    reference: Some(IssueReference {
+                        reason: None,
+                        expression: None,
+                        key_prefixes: Vec::new(),
+                        unbounded: false,
+                        declared_pattern: Some(pattern.clone()),
+                    }),
+                    ..DoctorIssue::new(
+                        "possibly_used",
+                        format!(
+                            "Key '{key}' has no static reference but matches the dynamic key pattern '{pattern}'"
+                        ),
+                        3,
+                    )
+                }
+            } else if let Some(prefix) = dynamic_prefixes
+                .iter()
+                .find(|prefix| key.starts_with(prefix.as_str()))
+            {
+                DoctorIssue {
+                    reference: Some(IssueReference {
+                        reason: None,
+                        expression: None,
+                        key_prefixes: vec![prefix.clone()],
+                        unbounded: false,
+                        declared_pattern: None,
+                    }),
+                    ..DoctorIssue::new(
+                        "possibly_used",
+                        format!(
+                            "Key '{key}' has no static reference but may be used by a dynamic key starting with '{prefix}'"
+                        ),
+                        3,
+                    )
+                }
+            } else {
+                has_unused = true;
+                DoctorIssue::new(
+                    "unused",
+                    format!("Key '{}' exists in resources but is not used in code", key),
+                    3,
+                )
+            };
+            issues.push(DoctorIssue {
+                file: entry.file.clone(),
+                key: Some(key.clone()),
+                ..issue
+            });
+        }
+        if has_unused && unbounded_count > 0 {
+            issues.push(DoctorIssue::new(
+                "unused_uncertain",
+                format!(
+                    "{unbounded_count} translation call(s) use keys that cannot be narrowed statically; keys reported as unused may still be used at runtime."
+                ),
+                1,
+            ));
         }
     }
 
@@ -582,16 +710,15 @@ pub fn diagnose(
 
                 if !has_value {
                     issues.push(DoctorIssue {
-                        kind: "drift_missing".to_string(),
-                        message: format!(
-                            "Key '{}' exists in '{}' but is missing in '{}'",
-                            key, params.primary_lang, lang
-                        ),
-                        severity: 3,
-                        file: None,
                         key: Some(key.clone()),
-                        lnum: None,
-                        col: None,
+                        ..DoctorIssue::new(
+                            "drift_missing",
+                            format!(
+                                "Key '{}' exists in '{}' but is missing in '{}'",
+                                key, params.primary_lang, lang
+                            ),
+                            3,
+                        )
                     });
                 }
             }
@@ -606,16 +733,15 @@ pub fn diagnose(
                     }
                     if !primary_index.contains_key(key) {
                         issues.push(DoctorIssue {
-                            kind: "drift_extra".to_string(),
-                            message: format!(
-                                "Key '{}' exists in '{}' but not in primary '{}'",
-                                key, lang, params.primary_lang
-                            ),
-                            severity: 3,
-                            file: None,
                             key: Some(key.clone()),
-                            lnum: None,
-                            col: None,
+                            ..DoctorIssue::new(
+                                "drift_extra",
+                                format!(
+                                    "Key '{}' exists in '{}' but not in primary '{}'",
+                                    key, lang, params.primary_lang
+                                ),
+                                3,
+                            )
                         });
                     }
                 }

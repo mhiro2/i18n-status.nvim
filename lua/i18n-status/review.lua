@@ -1,6 +1,7 @@
 ---@class I18nStatusReview
 local M = {}
 
+local fs = require("i18n-status.fs")
 local resolve = require("i18n-status.resolve")
 local state = require("i18n-status.state")
 local review_buffers = require("i18n-status.review_buffers")
@@ -103,7 +104,7 @@ local KEYMAP_HELP = {
   { keys = "E", desc = "Edit selected locale" },
   { keys = "r", desc = "Rename key" },
   { keys = "a", desc = "Add missing key" },
-  { keys = "gd", desc = "Jump to definition file" },
+  { keys = "gd", desc = "Jump to definition file (or call site)" },
   { keys = "Tab", desc = "Toggle Problems/Overview" },
   { keys = "?", desc = "Toggle keymap help" },
 }
@@ -268,6 +269,26 @@ local function build_resolved_items(keys, cache, primary_lang, display_lang)
   return resolve.compute(items, project, cache.index)
 end
 
+---List entry of an unresolved translation call: its location and the key range it may reach.
+---@param issue I18nStatusDoctorIssue
+---@return table
+local function reference_item(issue)
+  local reference = issue.reference or {}
+  local ranges = {}
+  for _, prefix in ipairs(reference.key_prefixes or {}) do
+    ranges[#ranges + 1] = prefix .. "*"
+  end
+  if reference.unbounded or #ranges == 0 then
+    ranges[#ranges + 1] = "(any key)"
+  end
+  local location = string.format("%s:%d", fs.shorten_path(issue.file or "(buffer)"), (issue.lnum or 0) + 1)
+  return {
+    key = location .. "  " .. table.concat(ranges, ", "),
+    status = "~",
+    reference = issue,
+  }
+end
+
 ---@param issues I18nStatusDoctorIssue[]
 ---@param cache table
 ---@param primary_lang string
@@ -275,13 +296,23 @@ end
 local function aggregate_issues_by_key(issues, cache, primary_lang, display_lang)
   local keys_map = {}
   local unused_keys = {}
+  local possibly_used = {}
+  local references = {}
+  local unused_note = nil
 
   -- Collect all keys from issues
   for _, issue in ipairs(issues) do
+    if issue.kind == "unresolved" then
+      references[#references + 1] = issue
+    elseif issue.kind == "unused_uncertain" then
+      unused_note = issue.message
+    end
     if issue.key then
       keys_map[issue.key] = true
       if issue.kind == "unused" then
         unused_keys[issue.key] = true
+      elseif issue.kind == "possibly_used" then
+        possibly_used[issue.key] = issue
       end
     end
   end
@@ -297,7 +328,19 @@ local function aggregate_issues_by_key(issues, cache, primary_lang, display_lang
   for _, item in ipairs(items) do
     if unused_keys[item.key] then
       item.unused = true
+      item.unused_note = unused_note
     end
+    item.possibly_used = possibly_used[item.key]
+  end
+
+  table.sort(references, function(a, b)
+    if (a.file or "") ~= (b.file or "") then
+      return (a.file or "") < (b.file or "")
+    end
+    return (a.lnum or 0) < (b.lnum or 0)
+  end)
+  for _, issue in ipairs(references) do
+    items[#items + 1] = reference_item(issue)
   end
   return items
 end

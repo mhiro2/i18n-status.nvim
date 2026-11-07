@@ -541,6 +541,7 @@ mod tests {
                 languages: vec!["en".to_string()],
                 fallback_namespace: "translation".to_string(),
                 ignore_patterns: vec![],
+                dynamic_patterns: vec![],
                 open_buf_paths: vec![],
                 open_buffers: vec![],
                 cancel_token_path: None,

@@ -1,7 +1,9 @@
 ---@class I18nStatusExtract
 local M = {}
 
+local extract_candidate = require("i18n-status.extract_candidate")
 local extract_review = require("i18n-status.extract_review")
+local extract_review_apply = require("i18n-status.extract_review_apply")
 local hardcoded = require("i18n-status.hardcoded")
 local message_escape = require("i18n-status.message_escape")
 local next_intl_key = require("i18n-status.next_intl_key")
@@ -66,6 +68,58 @@ local function collect_existing_keys(cache)
   return resource_catalog.collect_existing_keys(cache)
 end
 
+local MAX_REUSE_SUGGESTIONS = 10
+
+---Existing keys grouped by their primary-language value, sorted by key.
+---@param catalog I18nStatusFrameworkCatalog
+---@return table<string, string[]>
+local function keys_by_message(catalog)
+  local grouped = {}
+  for key, entry in pairs(catalog.index[catalog.primary_lang] or {}) do
+    if key ~= "__error__" and type(entry.value) == "string" and entry.value ~= "" then
+      grouped[entry.value] = grouped[entry.value] or {}
+      table.insert(grouped[entry.value], key)
+    end
+  end
+  for _, keys in pairs(grouped) do
+    table.sort(keys)
+  end
+  return grouped
+end
+
+---Whether the candidate's translator can use `key` as a reuse target. i18next translators only
+---load the namespace they request, so other namespaces are left out; next-intl keys must lie
+---below the bound namespace. The key must also pass the validation applied to reuse targets.
+---@param candidate I18nStatusExtractCandidate
+---@param key string
+---@return boolean
+local function reusable(candidate, key)
+  if candidate.framework == "i18next" and key:sub(1, #candidate.namespace + 1) ~= candidate.namespace .. ":" then
+    return false
+  end
+  return extract_review_apply.normalize_key_input(key, candidate.namespace) == key
+    and extract_candidate.source_key(vim.tbl_extend("force", candidate, { proposed_key = key })) ~= nil
+end
+
+---Existing keys whose primary-language value already stores the candidate's message and that the
+---candidate's translator can reach. They are only offered for reuse: the same text may need a
+---different translation in another context, so nothing is merged automatically.
+---@param candidate I18nStatusExtractCandidate
+---@param grouped table<string, string[]>
+---@return string[]
+local function reuse_suggestions(candidate, grouped)
+  local suggestions = {}
+  for _, key in ipairs(grouped[candidate.message] or {}) do
+    if reusable(candidate, key) then
+      suggestions[#suggestions + 1] = key
+      if #suggestions == MAX_REUSE_SUGGESTIONS then
+        break
+      end
+    end
+  end
+  return suggestions
+end
+
 ---@param bufnr integer
 ---@param items I18nStatusHardcodedItem[]
 ---@param fallback_ns string
@@ -85,6 +139,8 @@ local function build_candidates(bufnr, items, fallback_ns, extract_cfg, catalogs
 
   local separator = (extract_cfg and extract_cfg.key_separator) or "-"
   local generated_keys = {}
+  ---@type table<string, table<string, string[]>>
+  local messages_by_framework = {}
   local candidates = {}
   local rejected_count = 0
   local unrepresentable_count = 0
@@ -144,7 +200,7 @@ local function build_candidates(bufnr, items, fallback_ns, extract_cfg, catalogs
         framework_generated_keys[proposed_key] = true
       end
 
-      candidates[#candidates + 1] = {
+      local candidate = {
         id = idx,
         lnum = item.lnum,
         col = item.col,
@@ -171,6 +227,9 @@ local function build_candidates(bufnr, items, fallback_ns, extract_cfg, catalogs
         selected = false,
         status = status,
       }
+      messages_by_framework[context.framework] = messages_by_framework[context.framework] or keys_by_message(catalog)
+      candidate.reuse_suggestions = reuse_suggestions(candidate, messages_by_framework[context.framework])
+      candidates[#candidates + 1] = candidate
     end
   end
 

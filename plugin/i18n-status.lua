@@ -87,6 +87,12 @@ vim.api.nvim_create_user_command("I18nAddKey", function()
   end)
 end, {})
 
+vim.api.nvim_create_user_command("I18nFind", function(args)
+  with_module(function(mod)
+    mod.find({ query = args.args, action = args.bang and "open" or nil })
+  end)
+end, { nargs = "*", bang = true })
+
 vim.api.nvim_create_user_command("I18nExtract", function(args)
   with_module(function(mod)
     local opts = nil
