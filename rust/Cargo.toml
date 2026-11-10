@@ -14,8 +14,8 @@ name = "i18n_status_core"
 path = "src/lib.rs"
 
 [dependencies]
-swc_ecma_parser = "45"
-swc_ecma_ast = "29"
+swc_ecma_parser = "47"
+swc_ecma_ast = "30"
 swc_ecma_visit = "30"
 swc_common = "27"
 swc_atoms = "10"
