@@ -2,11 +2,11 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
-use swc_common::{SourceMap, SourceMapper, Spanned};
-use swc_ecma_ast::*;
+use swc_core::common::{SourceMap, SourceMapper, Spanned};
+use swc_core::ecma::ast::*;
 
 /// Convert a Wtf8Atom (string literal value) to a Rust String
-fn wtf8_to_string(atom: &swc_atoms::Wtf8Atom) -> String {
+fn wtf8_to_string(atom: &swc_core::atoms::Wtf8Atom) -> String {
     atom.as_wtf8().as_str().unwrap_or_default().to_string()
 }
 
@@ -84,7 +84,7 @@ fn clean_jsx_text(text: &str) -> String {
     cleaned
 }
 
-fn span_source(cm: &SourceMap, span: swc_common::Span) -> String {
+fn span_source(cm: &SourceMap, span: swc_core::common::Span) -> String {
     cm.span_to_snippet(span).unwrap_or_default()
 }
 
@@ -403,7 +403,7 @@ impl<'a> HardcodedVisitor<'a> {
         }
     }
 
-    fn check_jsx_literal(&mut self, expr: &Expr, span: swc_common::Span) {
+    fn check_jsx_literal(&mut self, expr: &Expr, span: swc_core::common::Span) {
         let (start_line, _, end_line, _) = crate::scan::parser::span_to_byte_range(self.cm, span);
 
         if !in_range(start_line, end_line, self.range) {

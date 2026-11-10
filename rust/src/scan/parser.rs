@@ -1,7 +1,7 @@
 use anyhow::Result;
-use swc_common::{FileName, SourceMap, Span, input::SourceFileInput, sync::Lrc};
-use swc_ecma_ast::Module;
-use swc_ecma_parser::{EsSyntax, Parser, Syntax, TsSyntax, lexer::Lexer};
+use swc_core::common::{FileName, SourceMap, Span, input::SourceFileInput, sync::Lrc};
+use swc_core::ecma::ast::Module;
+use swc_core::ecma::parser::{EsSyntax, Parser, Syntax, TsSyntax, lexer::Lexer};
 
 pub(crate) fn parse_module(source: &str, lang: &str) -> Result<(Module, Lrc<SourceMap>)> {
     if source.len() > crate::util::MAX_SOURCE_BYTES {

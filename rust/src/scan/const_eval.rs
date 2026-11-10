@@ -1,4 +1,4 @@
-use swc_ecma_ast::*;
+use swc_core::ecma::ast::*;
 
 /// Upper bound on the distinct strings a single expression may expand to. Expressions that
 /// exceed it are treated as unevaluable rather than enumerated.
@@ -9,7 +9,7 @@ pub(super) const MAX_CANDIDATE_BYTES: usize = 64 * 1024;
 /// Upper bound on the bytes that const substitution may produce while analyzing one source.
 pub(super) const MAX_CONST_SUBSTITUTION_BYTES: usize = 1024 * 1024;
 
-fn wtf8_to_string(atom: &swc_atoms::Wtf8Atom) -> Option<String> {
+fn wtf8_to_string(atom: &swc_core::atoms::Wtf8Atom) -> Option<String> {
     atom.as_wtf8().as_str().map(ToOwned::to_owned)
 }
 
