@@ -1,6 +1,6 @@
-use swc_common::{SourceMap, SourceMapper, Spanned};
-use swc_ecma_ast::*;
-use swc_ecma_visit::{Visit, VisitWith};
+use swc_core::common::{SourceMap, SourceMapper, Spanned};
+use swc_core::ecma::ast::*;
+use swc_core::ecma::visit::{Visit, VisitWith};
 
 use super::const_eval::{KeyCandidate, eval_key_candidates};
 use super::parser::span_to_byte_range;

@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use swc_ecma_ast::{Expr, ModuleItem, Stmt};
+use swc_core::ecma::ast::{Expr, ModuleItem, Stmt};
 
 use super::*;
 use crate::scan::parser::parse_module;

@@ -1,9 +1,9 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
-use swc_common::{SourceMap, Span, Spanned};
-use swc_ecma_ast::*;
-use swc_ecma_visit::{Visit, VisitWith};
+use swc_core::common::{SourceMap, Span, Spanned};
+use swc_core::ecma::ast::*;
+use swc_core::ecma::visit::{Visit, VisitWith};
 
 use super::const_eval::{
     MAX_CONST_SUBSTITUTION_BYTES, eval_string_expr, is_string_expr, string_operand_idents,
