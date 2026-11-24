@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -73,6 +73,11 @@ pub struct IndexResult {
     pub languages: Vec<String>,
     pub errors: Vec<IndexError>,
     pub namespaces: Vec<String>,
+    /// lang -> canonical keys that more than one file defines. `index` keeps only the winning
+    /// entry of such a key, so an incremental update touching it cannot tell what a full build
+    /// would pick.
+    #[serde(skip)]
+    pub contested: HashMap<String, HashSet<String>>,
 }
 
 /// In-process cache for resource indices.
@@ -118,12 +123,14 @@ impl Default for IndexCache {
     }
 }
 
-/// Insert items into the index. Only replaces if the new priority is lower (wins).
+/// Insert items into the index. Only replaces if the new priority is lower (wins). Keys that are
+/// already defined by another file are recorded in `contested`.
 fn insert_items(
     index: &mut HashMap<String, HashMap<String, ResourceItem>>,
+    contested: &mut HashMap<String, HashSet<String>>,
     lang: &str,
     namespace: &str,
-    flat: &std::collections::BTreeMap<String, String>,
+    flat: &BTreeMap<String, String>,
     file_path: &str,
     source: ResourceSource,
 ) {
@@ -141,6 +148,10 @@ fn insert_items(
                 e.insert(item);
             }
             std::collections::hash_map::Entry::Occupied(mut e) => {
+                contested
+                    .entry(lang.to_string())
+                    .or_default()
+                    .insert(e.key().clone());
                 if source.priority < e.get().priority {
                     e.insert(item);
                 }
@@ -153,6 +164,7 @@ fn insert_items(
 fn process_i18next(
     root: &Path,
     index: &mut HashMap<String, HashMap<String, ResourceItem>>,
+    contested: &mut HashMap<String, HashSet<String>>,
     files: &mut HashMap<String, u64>,
     languages: &mut BTreeSet<String>,
     namespaces: &mut BTreeSet<String>,
@@ -201,7 +213,15 @@ fn process_i18next(
             match read_json_file(&file_path) {
                 Ok(value) => {
                     let flat = flatten_table(&value, "");
-                    insert_items(index, &lang, &ns, &flat, &file_str, I18NEXT_NAMESPACE_FILE);
+                    insert_items(
+                        index,
+                        contested,
+                        &lang,
+                        &ns,
+                        &flat,
+                        &file_str,
+                        I18NEXT_NAMESPACE_FILE,
+                    );
                 }
                 Err(e) => {
                     errors.push(IndexError {
@@ -223,6 +243,7 @@ fn process_i18next(
 fn process_next_intl(
     root: &Path,
     index: &mut HashMap<String, HashMap<String, ResourceItem>>,
+    contested: &mut HashMap<String, HashSet<String>>,
     files: &mut HashMap<String, u64>,
     languages: &mut BTreeSet<String>,
     namespaces: &mut BTreeSet<String>,
@@ -272,6 +293,7 @@ fn process_next_intl(
                         let flat = flatten_table(&value, "");
                         insert_items(
                             index,
+                            contested,
                             &lang,
                             &ns,
                             &flat,
@@ -312,7 +334,15 @@ fn process_next_intl(
                     for (ns, ns_value) in &map {
                         namespaces.insert(ns.clone());
                         let flat = flatten_table(ns_value, "");
-                        insert_items(index, &lang, ns, &flat, &file_str, NEXT_INTL_ROOT_FILE);
+                        insert_items(
+                            index,
+                            contested,
+                            &lang,
+                            ns,
+                            &flat,
+                            &file_str,
+                            NEXT_INTL_ROOT_FILE,
+                        );
                     }
                 }
                 Ok(_) => {
@@ -338,6 +368,7 @@ pub fn build_index(params: BuildIndexParams, cache: &IndexCache) -> Result<Value
     let cache_key = serde_json::to_string(&params.roots)?;
 
     let mut index: HashMap<String, HashMap<String, ResourceItem>> = HashMap::new();
+    let mut contested: HashMap<String, HashSet<String>> = HashMap::new();
     let mut files: HashMap<String, u64> = HashMap::new();
     let mut languages: BTreeSet<String> = BTreeSet::new();
     let mut namespaces: BTreeSet<String> = BTreeSet::new();
@@ -350,6 +381,7 @@ pub fn build_index(params: BuildIndexParams, cache: &IndexCache) -> Result<Value
                 process_i18next(
                     &root_path,
                     &mut index,
+                    &mut contested,
                     &mut files,
                     &mut languages,
                     &mut namespaces,
@@ -360,6 +392,7 @@ pub fn build_index(params: BuildIndexParams, cache: &IndexCache) -> Result<Value
                 process_next_intl(
                     &root_path,
                     &mut index,
+                    &mut contested,
                     &mut files,
                     &mut languages,
                     &mut namespaces,
@@ -378,6 +411,7 @@ pub fn build_index(params: BuildIndexParams, cache: &IndexCache) -> Result<Value
         languages: languages.into_iter().collect(),
         errors,
         namespaces: namespaces.into_iter().collect(),
+        contested,
     };
 
     cache.set(cache_key.clone(), result.clone());
@@ -397,6 +431,33 @@ fn remove_entries_by_file(
         lang_map.retain(|_, item| item.file.as_deref() != Some(file_path));
     }
     index.retain(|_, lang_map| !lang_map.is_empty());
+}
+
+/// Whether a key `file_path` defines in the index is also defined by another file. Removing such
+/// a key would drop the other file's definition, which the index no longer holds.
+fn defines_contested_key(result: &IndexResult, file_path: &str) -> bool {
+    result.index.iter().any(|(lang, lang_map)| {
+        result.contested.get(lang).is_some_and(|keys| {
+            lang_map
+                .iter()
+                .any(|(key, item)| item.file.as_deref() == Some(file_path) && keys.contains(key))
+        })
+    })
+}
+
+/// Whether another file already defines one of `flat`'s keys, checked after the changed file's
+/// own entries were removed. Which definition wins then depends on the order of a full build.
+fn defined_by_other_files(
+    result: &IndexResult,
+    lang: &str,
+    namespace: &str,
+    flat: &BTreeMap<String, String>,
+) -> bool {
+    let Some(lang_map) = result.index.get(lang) else {
+        return false;
+    };
+    flat.keys()
+        .any(|key| lang_map.contains_key(&format!("{}:{}", namespace, key)))
 }
 
 /// Add the languages and namespaces of changed files, as a full build lists them from files rather
@@ -496,6 +557,14 @@ pub fn apply_changes(params: ApplyChangesParams, cache: &IndexCache) -> Result<V
             }));
         }
 
+        // Keys shared with other files need a full build to pick the winning definition.
+        if defines_contested_key(&updated, path_str) {
+            return Ok(serde_json::json!({
+                "success": false,
+                "needs_rebuild": true
+            }));
+        }
+
         // Remove old entries/errors for this file regardless of change type.
         remove_entries_by_file(&mut updated.index, path_str);
         updated.files.remove(path_str);
@@ -539,7 +608,21 @@ pub fn apply_changes(params: ApplyChangesParams, cache: &IndexCache) -> Result<V
             .and_then(|n| n.to_str())
             .unwrap_or("");
         let flat = flatten_table(&new_value, "");
-        insert_items(&mut updated.index, lang, ns, &flat, path_str, source);
+        if defined_by_other_files(&updated, lang, ns, &flat) {
+            return Ok(serde_json::json!({
+                "success": false,
+                "needs_rebuild": true
+            }));
+        }
+        insert_items(
+            &mut updated.index,
+            &mut updated.contested,
+            lang,
+            ns,
+            &flat,
+            path_str,
+            source,
+        );
         changed.push((lang.clone(), ns.to_string()));
     }
 
@@ -569,6 +652,7 @@ mod tests {
             languages: vec![],
             errors: vec![],
             namespaces: vec![],
+            contested: HashMap::new(),
         };
         cache.set("k".to_string(), sample.clone());
 
@@ -636,5 +720,141 @@ mod tests {
         assert_eq!(result["languages"], serde_json::json!(["en", "ja", "ko"]));
         assert_eq!(result["namespaces"], serde_json::json!(["admin", "common"]));
         assert_eq!(result["index"]["en"]["common:hello"]["value"], "Hi");
+    }
+
+    /// Two i18next roots, as in a monorepo whose packages both ship `en/common.json`.
+    struct TwoRoots {
+        base: PathBuf,
+        roots: Vec<RootConfig>,
+    }
+
+    impl TwoRoots {
+        fn new(name: &str) -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should follow the Unix epoch")
+                .as_nanos();
+            let base = std::env::temp_dir().join(format!(
+                "i18n-status-index-{name}-{}-{unique}",
+                std::process::id()
+            ));
+            let roots = ["pkg-a", "pkg-b"]
+                .iter()
+                .map(|pkg| RootConfig {
+                    kind: "i18next".to_string(),
+                    path: base.join(pkg).to_string_lossy().to_string(),
+                })
+                .collect();
+            Self { base, roots }
+        }
+
+        fn write(&self, pkg: &str, contents: &str) -> String {
+            let path = self.base.join(pkg).join("en/common.json");
+            std::fs::create_dir_all(path.parent().expect("file should have a parent"))
+                .expect("directory should be created");
+            std::fs::write(&path, contents).expect("file should be written");
+            path.to_string_lossy().to_string()
+        }
+
+        fn build(&self, cache: &IndexCache) -> Value {
+            build_index(
+                BuildIndexParams {
+                    roots: self.roots.clone(),
+                },
+                cache,
+            )
+            .expect("index should build")
+        }
+    }
+
+    impl Drop for TwoRoots {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    fn apply(cache: &IndexCache, built: &Value, path: String) -> Value {
+        let cache_key = built["cache_key"]
+            .as_str()
+            .expect("build should report its cache key")
+            .to_string();
+        apply_changes(
+            ApplyChangesParams {
+                cache_key,
+                paths: vec![path],
+            },
+            cache,
+        )
+        .expect("changes should apply")
+    }
+
+    #[test]
+    fn apply_changes_rebuilds_when_removing_key_another_file_defines() {
+        let roots = TwoRoots::new("remove-shared");
+        let a = roots.write("pkg-a", r#"{"title":"A"}"#);
+        roots.write("pkg-b", r#"{"title":"B"}"#);
+        let cache = IndexCache::new();
+        let built = roots.build(&cache);
+        assert_eq!(built["index"]["en"]["common:title"]["value"], "A");
+
+        // A full build falls back to the other root's definition, which the index does not hold.
+        roots.write("pkg-a", "{}");
+        let applied = apply(&cache, &built, a);
+        assert_eq!(applied["needs_rebuild"], serde_json::json!(true));
+        let rebuilt = roots.build(&IndexCache::new());
+        assert_eq!(rebuilt["index"]["en"]["common:title"]["value"], "B");
+    }
+
+    #[test]
+    fn apply_changes_rebuilds_when_adding_key_another_file_defines() {
+        let roots = TwoRoots::new("add-shared");
+        let a = roots.write("pkg-a", r#"{"other":"x"}"#);
+        roots.write("pkg-b", r#"{"title":"B"}"#);
+        let cache = IndexCache::new();
+        let built = roots.build(&cache);
+        assert_eq!(built["index"]["en"]["common:title"]["value"], "B");
+
+        // The first root wins ties in a full build, so its new definition must replace the other.
+        roots.write("pkg-a", r#"{"other":"x","title":"A"}"#);
+        let applied = apply(&cache, &built, a);
+        assert_eq!(applied["needs_rebuild"], serde_json::json!(true));
+        let rebuilt = roots.build(&IndexCache::new());
+        assert_eq!(rebuilt["index"]["en"]["common:title"]["value"], "A");
+    }
+
+    #[test]
+    fn apply_changes_stays_incremental_when_losing_file_removes_shared_key() {
+        let roots = TwoRoots::new("remove-losing");
+        roots.write("pkg-a", r#"{"title":"A"}"#);
+        let b = roots.write("pkg-b", r#"{"title":"B"}"#);
+        let cache = IndexCache::new();
+        let built = roots.build(&cache);
+
+        // The winning definition is unaffected, so the incremental result matches a full build.
+        roots.write("pkg-b", "{}");
+        let applied = apply(&cache, &built, b);
+        assert_eq!(applied["success"], serde_json::json!(true));
+        let rebuilt = roots.build(&IndexCache::new());
+        assert_eq!(
+            applied["result"]["index"]["en"]["common:title"],
+            rebuilt["index"]["en"]["common:title"]
+        );
+    }
+
+    #[test]
+    fn apply_changes_stays_incremental_for_keys_no_other_file_defines() {
+        let roots = TwoRoots::new("disjoint");
+        let a = roots.write("pkg-a", r#"{"title":"A"}"#);
+        roots.write("pkg-b", r#"{"other":"B"}"#);
+        let cache = IndexCache::new();
+        let built = roots.build(&cache);
+
+        roots.write("pkg-a", r#"{"heading":"A"}"#);
+        let applied = apply(&cache, &built, a);
+        assert_eq!(applied["success"], serde_json::json!(true));
+        let index = &applied["result"]["index"]["en"];
+        assert!(index["common:title"].is_null());
+        assert_eq!(index["common:heading"]["value"], "A");
+        assert_eq!(index["common:other"]["value"], "B");
     }
 }
